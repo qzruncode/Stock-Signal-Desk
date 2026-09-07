@@ -6,7 +6,9 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from api.v1.endpoints.financials import _resolve_post_publish_time
+from market_data_service.providers.sentiment_support._analysis import (
+    _resolve_post_publish_time,
+)
 
 
 class ResolvePostPublishTimeTestCase(unittest.TestCase):

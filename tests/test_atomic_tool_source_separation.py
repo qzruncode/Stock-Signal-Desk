@@ -7,24 +7,30 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
-from src.tools.get_financials import read_core_financial_indicators_ths
-from src.tools.get_index_data import read_index_daily_history_sina, read_index_quote_sina
-from src.tools.get_stock_info import (
+from market_data_service.data_provider.realtime_types import (
+    RealtimeSource,
+    UnifiedRealtimeQuote,
+)
+from market_data_service.providers.financials import read_core_financial_indicators_ths
+from market_data_service.providers.get_index_data import (
+    read_index_daily_history_sina,
+    read_index_quote_sina,
+)
+from market_data_service.providers.get_stock_info import (
     _fetch_live_capital_fallback,
     read_stock_capital_snapshot_eastmoney,
 )
-from src.tools.get_stock_capital_flow import (
+from market_data_service.providers.get_stock_capital_flow import (
     read_stock_capital_flow_history_eastmoney,
     read_stock_capital_flow_quote_eastmoney,
 )
-from src.tools.get_valuation_ratios import (
+from market_data_service.providers.get_valuation_ratios import (
     read_dividend_history_eastmoney,
     read_peer_valuation_eastmoney,
     read_valuation_history_eastmoney,
     read_valuation_quote_eastmoney,
 )
-from src.tools.market_snapshot_tools import (
+from market_data_service.providers.market_snapshot_tools import (
     read_market_breadth_legu,
     read_market_breadth_sina,
     read_market_limit_up_pool_eastmoney,
@@ -34,10 +40,12 @@ from src.tools.search_stocks import search_stocks
 
 def test_core_financial_indicator_read_does_not_merge_statement_sources() -> None:
     with patch(
-        "src.tools.get_financials.fetch_core_indicators",
+        "market_data_service.providers.financials.fetch_core_indicators",
         return_value=[{"report_date": "2026-03-31", "revenue": 100.0}],
     ) as fetch:
-        result = read_core_financial_indicators_ths("600519", periods=2, use_cache=False)
+        result = read_core_financial_indicators_ths(
+            "600519", periods=2, use_cache=False
+        )
 
     fetch.assert_called_once_with("600519", 2)
     assert result["success"] is True
@@ -50,15 +58,32 @@ def test_capital_flow_history_and_quote_are_separate_source_reads() -> None:
         [{"date": "2026-08-06", "main_net_inflow": 10.0, "main_net_inflow_pct": 1.0}]
     )
     history.attrs["transport"] = "curl_cffi"
-    current = {"date": "2026-08-07", "_data_time": "2026-08-07T10:00:00+08:00", "main_net_inflow": 20.0}
+    current = {
+        "date": "2026-08-07",
+        "_data_time": "2026-08-07T10:00:00+08:00",
+        "main_net_inflow": 20.0,
+    }
 
     with (
-        patch("src.tools.get_stock_capital_flow._fetch_eastmoney_direct", return_value=history) as fetch_history,
-        patch("src.tools.get_stock_capital_flow._fetch_current_flow", return_value=current) as fetch_quote,
-        patch("src.tools.get_stock_capital_flow._is_stale", return_value=(False, None)),
+        patch(
+            "market_data_service.providers.get_stock_capital_flow._fetch_eastmoney_direct",
+            return_value=history,
+        ) as fetch_history,
+        patch(
+            "market_data_service.providers.get_stock_capital_flow._fetch_current_flow",
+            return_value=current,
+        ) as fetch_quote,
+        patch(
+            "market_data_service.providers.get_stock_capital_flow._is_stale",
+            return_value=(False, None),
+        ),
     ):
-        history_result = read_stock_capital_flow_history_eastmoney("600519", use_cache=False)
-        quote_result = read_stock_capital_flow_quote_eastmoney("600519", use_cache=False)
+        history_result = read_stock_capital_flow_history_eastmoney(
+            "600519", use_cache=False
+        )
+        quote_result = read_stock_capital_flow_quote_eastmoney(
+            "600519", use_cache=False
+        )
 
     assert history_result["source_scope"] == "daily_capital_flow_history"
     assert quote_result["source_scope"] == "current_session_capital_flow_quote"
@@ -69,8 +94,24 @@ def test_capital_flow_history_and_quote_are_separate_source_reads() -> None:
 def test_index_history_and_quote_do_not_call_each_other() -> None:
     history = pd.DataFrame(
         [
-            {"date": "2026-08-05", "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1, "amount": 2},
-            {"date": "2026-08-06", "open": 101, "high": 102, "low": 100, "close": 101, "volume": 3, "amount": 4},
+            {
+                "date": "2026-08-05",
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100,
+                "volume": 1,
+                "amount": 2,
+            },
+            {
+                "date": "2026-08-06",
+                "open": 101,
+                "high": 102,
+                "low": 100,
+                "close": 101,
+                "volume": 3,
+                "amount": 4,
+            },
         ]
     )
     snapshot = pd.DataFrame(
@@ -90,9 +131,18 @@ def test_index_history_and_quote_do_not_call_each_other() -> None:
         ]
     )
     with (
-        patch("src.tools.get_index_data._daily_frame", return_value=history) as fetch_history,
-        patch("src.tools.get_index_data._spot_frame", return_value=snapshot) as fetch_quote,
-        patch("src.tools.get_index_data._expected_session_date", return_value="2026-08-07"),
+        patch(
+            "market_data_service.providers.get_index_data._daily_frame",
+            return_value=history,
+        ) as fetch_history,
+        patch(
+            "market_data_service.providers.get_index_data._spot_frame",
+            return_value=snapshot,
+        ) as fetch_quote,
+        patch(
+            "market_data_service.providers.get_index_data._expected_session_date",
+            return_value="2026-08-07",
+        ),
     ):
         history_result = read_index_daily_history_sina(days=5, use_cache=False)
         quote_result = read_index_quote_sina(use_cache=False)
@@ -108,15 +158,39 @@ def test_valuation_reads_remain_source_specific() -> None:
         [{"数据日期": "2026-08-06", "当日收盘价": 10, "PE(TTM)": 20, "市净率": 3}]
     )
     dividends = pd.DataFrame(
-        [{"报告期": "2025-12-31", "除权除息日": "2026-06-01", "方案进度": "实施", "现金分红-现金分红比例": 10}]
+        [
+            {
+                "报告期": "2025-12-31",
+                "除权除息日": "2026-06-01",
+                "方案进度": "实施",
+                "现金分红-现金分红比例": 10,
+            }
+        ]
     )
     quote = {"price": 10.0, "pe_ttm": 20.0, "quote_time": "2026-08-07T10:00:00+08:00"}
-    peer = {"report_date": "2026-08-06", "median": {"pe_ttm": 18.0}, "average": {}, "total": 10}
+    peer = {
+        "report_date": "2026-08-06",
+        "median": {"pe_ttm": 18.0},
+        "average": {},
+        "total": 10,
+    }
     with (
-        patch("src.tools.get_valuation_ratios._fetch_history", return_value=history) as fetch_history,
-        patch("src.tools.get_valuation_ratios._fetch_quote", return_value=quote) as fetch_quote,
-        patch("src.tools.get_valuation_ratios._fetch_comparison", return_value=peer) as fetch_peer,
-        patch("src.tools.get_valuation_ratios._fetch_dividends", return_value=dividends) as fetch_dividends,
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_history",
+            return_value=history,
+        ) as fetch_history,
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_quote",
+            return_value=quote,
+        ) as fetch_quote,
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_comparison",
+            return_value=peer,
+        ) as fetch_peer,
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_dividends",
+            return_value=dividends,
+        ) as fetch_dividends,
     ):
         history_result = read_valuation_history_eastmoney("600519", use_cache=False)
         quote_result = read_valuation_quote_eastmoney("600519", use_cache=False)
@@ -127,15 +201,24 @@ def test_valuation_reads_remain_source_specific() -> None:
     assert quote_result["source_scope"] == "realtime_valuation_quote"
     assert peer_result["source_scope"] == "peer_valuation_comparison"
     assert dividend_result["source_scope"] == "dividend_implementation_history"
-    assert fetch_history.call_count == fetch_quote.call_count == fetch_peer.call_count == fetch_dividends.call_count == 1
+    assert (
+        fetch_history.call_count
+        == fetch_quote.call_count
+        == fetch_peer.call_count
+        == fetch_dividends.call_count
+        == 1
+    )
 
 
 def test_valuation_quote_marks_missing_source_timestamp_as_unavailable() -> None:
     quote = {"price": 10.0, "pe_ttm": 20.0, "quote_time": None}
     with (
-        patch("src.tools.get_valuation_ratios._fetch_quote", return_value=quote),
         patch(
-            "src.tools.get_valuation_ratios._fetch_history",
+            "market_data_service.providers.get_valuation_ratios._fetch_quote",
+            return_value=quote,
+        ),
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_history",
             side_effect=RuntimeError("history unavailable"),
         ),
     ):
@@ -162,8 +245,14 @@ def test_valuation_quote_falls_back_to_the_latest_dated_history_snapshot() -> No
         ]
     )
     with (
-        patch("src.tools.get_valuation_ratios._fetch_quote", return_value=quote),
-        patch("src.tools.get_valuation_ratios._fetch_history", return_value=history),
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_quote",
+            return_value=quote,
+        ),
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_history",
+            return_value=history,
+        ),
     ):
         result = read_valuation_quote_eastmoney("600519", use_cache=False)
 
@@ -188,10 +277,15 @@ def test_market_source_reads_do_not_activate_legacy_snapshot_fallbacks() -> None
         "data_time": "2026-08-07T10:00:00+08:00",
     }
     with (
-        patch("src.tools.market_snapshot_tools._fetch_legu_activity", return_value=breadth) as fetch_breadth,
-        patch("src.tools._trading_calendar.trade_dates", return_value=[date(2026, 8, 7)]),
         patch(
-            "src.tools.market_snapshot_tools._fetch_pool",
+            "market_data_service.providers.market_snapshot_tools._fetch_legu_activity",
+            return_value=breadth,
+        ) as fetch_breadth,
+        patch(
+            "market_data_service.calendar.trade_dates", return_value=[date(2026, 8, 7)]
+        ),
+        patch(
+            "market_data_service.providers.market_snapshot_tools._fetch_pool",
             return_value={"count": 42, "source": "stock_zt_pool_em"},
         ) as fetch_pool,
     ):
@@ -205,21 +299,38 @@ def test_market_source_reads_do_not_activate_legacy_snapshot_fallbacks() -> None
     assert pool_result["is_stale"] is False
 
 
-@pytest.mark.parametrize("now,data_time,stale", [
-    ("2026-09-05T18:30:00+08:00", "2026-09-04T15:00:00+08:00", False),
-    ("2026-09-07T08:30:00+08:00", "2026-09-04T15:00:00+08:00", False),
-    ("2026-09-07T14:30:00+08:00", "2026-09-04T15:00:00+08:00", True),
-    ("2026-10-06T18:30:00+08:00", "2026-09-30T15:00:00+08:00", False),
-    ("2026-09-05T18:30:00+08:00", "2026-09-03T15:00:00+08:00", True),
-])
+@pytest.mark.parametrize(
+    "now,data_time,stale",
+    [
+        ("2026-09-05T18:30:00+08:00", "2026-09-04T15:00:00+08:00", False),
+        ("2026-09-07T08:30:00+08:00", "2026-09-04T15:00:00+08:00", False),
+        ("2026-09-07T14:30:00+08:00", "2026-09-04T15:00:00+08:00", True),
+        ("2026-10-06T18:30:00+08:00", "2026-09-30T15:00:00+08:00", False),
+        ("2026-09-05T18:30:00+08:00", "2026-09-03T15:00:00+08:00", True),
+    ],
+)
 def test_breadth_freshness_uses_exchange_sessions(now, data_time, stale) -> None:
-    calendar = [date(2026, 9, 3), date(2026, 9, 4), date(2026, 9, 7), date(2026, 9, 30), date(2026, 10, 9)]
+    calendar = [
+        date(2026, 9, 3),
+        date(2026, 9, 4),
+        date(2026, 9, 7),
+        date(2026, 9, 30),
+        date(2026, 10, 9),
+    ]
     with (
-        patch("src.tools.market_snapshot_tools.datetime", wraps=datetime) as clock,
-        patch("src.tools._trading_calendar.trade_dates", return_value=calendar),
-        patch("src.tools.market_snapshot_tools._fetch_legu_activity", return_value={
-            "up_count": 2249, "down_count": 2773, "data_time": data_time,
-        }),
+        patch(
+            "market_data_service.providers.market_snapshot_tools.datetime",
+            wraps=datetime,
+        ) as clock,
+        patch("market_data_service.calendar.trade_dates", return_value=calendar),
+        patch(
+            "market_data_service.providers.market_snapshot_tools._fetch_legu_activity",
+            return_value={
+                "up_count": 2249,
+                "down_count": 2773,
+                "data_time": data_time,
+            },
+        ),
     ):
         clock.now.return_value = datetime.fromisoformat(now)
         result = read_market_breadth_legu(use_cache=False)
@@ -229,10 +340,18 @@ def test_breadth_freshness_uses_exchange_sessions(now, data_time, stale) -> None
 
 def test_breadth_does_not_certify_freshness_if_calendar_is_unavailable() -> None:
     with (
-        patch("src.tools._trading_calendar.trade_dates", side_effect=RuntimeError("unavailable")),
-        patch("src.tools.market_snapshot_tools._fetch_legu_activity", return_value={
-            "up_count": 2249, "down_count": 2773, "data_time": "2026-09-04T15:00:00+08:00",
-        }),
+        patch(
+            "market_data_service.calendar.trade_dates",
+            side_effect=RuntimeError("unavailable"),
+        ),
+        patch(
+            "market_data_service.providers.market_snapshot_tools._fetch_legu_activity",
+            return_value={
+                "up_count": 2249,
+                "down_count": 2773,
+                "data_time": "2026-09-04T15:00:00+08:00",
+            },
+        ),
     ):
         result = read_market_breadth_legu(use_cache=False)
     assert result["success"] is True
@@ -253,7 +372,7 @@ def test_stock_capital_snapshot_never_uses_fetch_time_as_quote_time() -> None:
         "quote_time": None,
     }
     with patch(
-        "src.tools.get_stock_info._fetch_eastmoney_capital",
+        "market_data_service.providers.get_stock_info._fetch_eastmoney_capital",
         return_value=snapshot,
     ):
         result = read_stock_capital_snapshot_eastmoney("600519", use_cache=False)
@@ -276,15 +395,15 @@ def test_live_capital_fallback_uses_tencent_without_cache_and_derives_shares() -
     )
     with (
         patch(
-            "data_provider.fetchers.realtime._get_stock_realtime_quote_em_push",
+            "market_data_service.data_provider.fetchers.realtime._get_stock_realtime_quote_em_push",
             return_value=None,
         ) as eastmoney_push,
         patch(
-            "data_provider.fetchers.realtime._get_stock_realtime_quote_tencent",
+            "market_data_service.data_provider.fetchers.realtime._get_stock_realtime_quote_tencent",
             return_value=quote,
         ) as tencent,
         patch(
-            "data_provider.fetchers.realtime._get_stock_realtime_quote_sina",
+            "market_data_service.data_provider.fetchers.realtime._get_stock_realtime_quote_sina",
         ) as sina,
     ):
         result = _fetch_live_capital_fallback("603529")
@@ -312,17 +431,22 @@ def test_stock_capital_snapshot_falls_back_to_live_source_not_old_cache() -> Non
         "_source_id": "tencent",
         "_source_label": "腾讯财经实时行情",
         "_source_attempts": [
-            {"source_id": "tencent", "source": "腾讯财经实时行情", "success": True, "cached": False}
+            {
+                "source_id": "tencent",
+                "source": "腾讯财经实时行情",
+                "success": True,
+                "cached": False,
+            }
         ],
         "_shares_inferred": True,
     }
     with (
         patch(
-            "src.tools.get_stock_info._fetch_eastmoney_capital",
+            "market_data_service.providers.get_stock_info._fetch_eastmoney_capital",
             side_effect=RuntimeError("ConnectError: SSL EOF"),
         ) as eastmoney,
         patch(
-            "src.tools.get_stock_info._fetch_live_capital_fallback",
+            "market_data_service.providers.get_stock_info._fetch_live_capital_fallback",
             return_value=fallback,
         ) as live_fallback,
     ):
@@ -350,7 +474,7 @@ def test_inferred_market_breadth_time_is_not_treated_as_source_time() -> None:
         "data_time_inferred": True,
     }
     with patch(
-        "src.tools.market_snapshot_tools._fetch_sina_a_breadth",
+        "market_data_service.providers.market_snapshot_tools._fetch_sina_a_breadth",
         return_value=breadth,
     ):
         result = read_market_breadth_sina(use_cache=False)
@@ -374,8 +498,14 @@ def test_sina_market_breadth_uses_the_shared_retry_policy() -> None:
         return fetcher(), False
 
     with (
-        patch("src.tools.market_snapshot_tools.cached_call", side_effect=cached_call_with_default_attempts),
-        patch("src.tools.market_snapshot_tools._fetch_sina_a_breadth", return_value=payload),
+        patch(
+            "market_data_service.providers.market_snapshot_tools.cached_call",
+            side_effect=cached_call_with_default_attempts,
+        ),
+        patch(
+            "market_data_service.providers.market_snapshot_tools._fetch_sina_a_breadth",
+            return_value=payload,
+        ),
     ):
         result = read_market_breadth_sina(use_cache=True)
 
@@ -383,53 +513,23 @@ def test_sina_market_breadth_uses_the_shared_retry_policy() -> None:
     assert calls == [("market-breadth:sina:atomic:v1", 2)]
 
 
-def test_stock_search_is_a_local_read_and_never_starts_maintenance() -> None:
-    item = MagicMock()
-    item.to_dict.return_value = {
+def test_stock_search_reads_authoritative_master_without_business_sql():
+    client = MagicMock()
+    item = {
         "code": "600519",
         "name": "贵州茅台",
         "market": "sh",
         "sector": "白酒",
         "status": "active",
     }
-
-    class Session:
-        def query(self, _model):
-            return self
-
-        def filter(self, *_conditions):
-            return self
-
-        def order_by(self, *_columns):
-            return self
-
-        def limit(self, _value):
-            return self
-
-        def all(self):
-            return [item]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-    class Database:
-        def get_session(self):
-            return Session()
-
+    client.securities.return_value = {"items": [item], "total": 1, "freshness": "fresh"}
     with patch(
-        "src.tools.search_stocks.DatabaseManager.get_instance",
-        return_value=Database(),
+        "src.services.market_data_client.get_market_data_client", return_value=client
     ):
         result = search_stocks("600519")
-
-    assert result["items"] == [item.to_dict.return_value]
-    assert result["data_source"] == "local_stock_meta"
-    assert result["source_scope"] == "local_security_master_identity_lookup"
-    assert result["data_time"] is None
-    assert result["data_time_provenance"] == "unavailable"
-    assert result["freshness_unknown"] is True
-    assert result["is_stale"] is None
-    assert "maintenance" not in result
+    assert result["items"] == [item] and result["data_source"] == "market-data-service"
+    assert (
+        result["source_scope"] == "security_master_identity_lookup"
+        and result["data_time"] is None
+    )
+    assert result["data_time_applicable"] is False and "maintenance" not in result

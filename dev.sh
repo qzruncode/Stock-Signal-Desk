@@ -448,7 +448,7 @@ stop_services() {
     stop_frontend_tunnel
     stop_firecrawl
     stop_searxng
-    [[ -n "$rsshub_pids" ]] && { log "停止 RSSHub (port $RSSHUB_PORT)..."; kill $rsshub_pids 2>/dev/null || true; }
+    [[ -n "$rsshub_pids" ]] && log "保留独立数据来源 RSSHub (port $RSSHUB_PORT)，业务停止不影响资讯采集"
     if [[ -n "$backend_pids" ]]; then
         if [[ "$BACKEND_MANAGED" == "1" ]]; then
             log "停止后端 (port $BACKEND_PORT)..."
@@ -464,9 +464,9 @@ stop_services() {
     # 强制清理残留进程
     local remaining
     if [[ "$BACKEND_MANAGED" == "1" ]]; then
-        remaining=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT"; get_pids "$SEARXNG_PORT"; get_pids "$RSSHUB_PORT"; get_pids "$BACKEND_PORT"; get_pids "$FRONTEND_PORT")
+        remaining=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT"; get_pids "$SEARXNG_PORT"; get_pids "$BACKEND_PORT"; get_pids "$FRONTEND_PORT")
     else
-        remaining=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT"; get_pids "$SEARXNG_PORT"; get_pids "$RSSHUB_PORT"; get_pids "$FRONTEND_PORT")
+        remaining=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT"; get_pids "$SEARXNG_PORT"; get_pids "$FRONTEND_PORT")
     fi
     if [[ -n "$remaining" ]]; then
         log "强制清理残留进程..."
@@ -482,8 +482,12 @@ stop_services() {
 
 start_services() {
     resolve_backend_port || return 1
+    if [[ "${DEV_MARKET_DATA:-1}" == "1" ]]; then
+        log "确认独立数据服务及自动采集进程..."
+        bash "$PROJECT_DIR/market_data_service/manage.sh" start || return 1
+    fi
 
-    if [[ -n "$(get_pids "$FIRECRAWL_PORT")" || -n "$(get_pids "$FIRECRAWL_PLAYWRIGHT_PORT")" || -n "$(get_pids "$FIRECRAWL_REDIS_PORT")" || -n "$(get_pids "$SEARXNG_PORT")" ]] || [[ -n "$(get_pids "$RSSHUB_PORT")" || -n "$(get_pids "$FRONTEND_PORT")" ]]; then
+    if [[ -n "$(get_pids "$FIRECRAWL_PORT")" || -n "$(get_pids "$FIRECRAWL_PLAYWRIGHT_PORT")" || -n "$(get_pids "$FIRECRAWL_REDIS_PORT")" || -n "$(get_pids "$SEARXNG_PORT")" ]] || [[ -n "$(get_pids "$FRONTEND_PORT")" ]]; then
         log "端口已被占用，请先运行: $0 restart"
         return 1
     fi
@@ -494,6 +498,7 @@ start_services() {
     start_searxng
     start_firecrawl
 
+    if [[ -z "$(get_pids "$RSSHUB_PORT")" ]]; then
     log "启动 RSSHub (port $RSSHUB_PORT)..."
     if [[ ! -d "$RSSHUB_DIR/app/.git" ]]; then
         log "初始化 RSSHub 源码与依赖..."
@@ -511,6 +516,9 @@ start_services() {
             env PORT="$RSSHUB_PORT" bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; exec npm start'
     else
         start_detached "$RSSHUB_DIR" "$PROJECT_DIR/logs/RSSHub.log" env PORT="$RSSHUB_PORT" npm start
+    fi
+    else
+        log "复用已运行的独立数据来源 RSSHub"
     fi
 
     if [[ "$BACKEND_ALREADY_RUNNING" == "1" ]]; then
@@ -577,6 +585,9 @@ start_services() {
 status() {
     local rp bp fp
     load_backend_state
+    if [[ -x "$PROJECT_DIR/.venv-data/bin/supervisorctl" ]]; then
+        "$PROJECT_DIR/.venv-data/bin/supervisorctl" -c "$PROJECT_DIR/market_data_service/supervisord.conf" status || true
+    fi
     rp=$(get_pids "$RSSHUB_PORT")
     bp=$(get_pids "$BACKEND_PORT")
     fp=$(get_pids "$FRONTEND_PORT")
@@ -657,12 +668,13 @@ case "${1:-}" in
         echo "用法: $0 {start|stop|restart|status|tunnel}"
         echo ""
         echo "  start    启动 SearXNG、Firecrawl、RSSHub、后端、前端服务，并默认创建前端公网隧道"
-        echo "  stop     停止所有服务和前端公网隧道"
+        echo "  stop     停止业务服务和前端公网隧道（独立数据服务继续维护）"
         echo "  restart  重启所有服务和前端公网隧道"
         echo "  status   查看服务和前端公网隧道状态"
         echo "  tunnel   在前端已运行时重建并打印前端公网隧道"
         echo ""
         echo "环境变量:"
+        echo "  DEV_MARKET_DATA=0 使用远端/外部部署的数据服务，不启动本地采集"
         echo "  DEV_TUNNEL=0     跳过前端公网隧道"
         echo "  PINGGY_HOST=...  覆盖 Pinggy SSH 入口，默认 free.pinggy.io"
         echo "  BACKEND_PORT=... 指定后端端口，未指定时读取 WEBUI_PORT/.env 或自动选择"

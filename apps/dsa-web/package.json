@@ -33,6 +33,7 @@
     "react-hook-form": "^7.85.0",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.0",
+    "reconnecting-eventsource": "1.6.5",
     "recharts": "^3.3.0",
     "remark-gfm": "^4.0.1",
     "remove-markdown": "^0.6.3",

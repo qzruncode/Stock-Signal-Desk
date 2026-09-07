@@ -36,6 +36,7 @@ requests>=2.31.0            # HTTP 请求
 markdown2>=2.4.0            # Markdown 转 HTML
 fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
 httpx[socks]                # HTTP 客户端 + SOCKS 代理支持（OpenAI 可选依赖）
+httpx-sse==0.4.3            # Standard SSE decoding for data-service job progress
 feedparser>=6.0.0           # RSS/Atom 订阅源解析
 # 数据库
 # SQLite 是 Python 内置，无需额外安装

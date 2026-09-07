@@ -4,9 +4,8 @@
 Covers:
 - Local mapping (STOCK_NAME_MAP reverse)
 - Code format boundary (_is_code_like, _normalize_code)
-- Pinyin match (when pypinyin available)
-- AkShare fallback (mocked)
-- Fuzzy match (difflib)
+- Maintained data service identities (mocked HTTP boundary)
+- No fuzzy guessing or hidden provider requests
 - Ambiguous names return None
 """
 
@@ -20,6 +19,15 @@ from src.services.name_to_code_resolver import (
     _normalize_code,
     _build_reverse_map_no_duplicates,
 )
+
+
+@pytest.fixture(autouse=True)
+def maintained_master():
+    with patch(
+        "src.services.name_to_code_resolver.get_database_stock_indexes",
+        return_value=({}, {}),
+    ) as lookup:
+        yield lookup
 
 
 # ---------------------------------------------------------------------------
@@ -131,16 +139,17 @@ class TestResolveNameToCode:
         "src.services.name_to_code_resolver.get_database_stock_indexes",
         return_value=({"维宏股份": "300508"}, {"300508": "维宏股份"}),
     )
-    def test_full_local_stock_universe_precedes_network_fallback(self, _mock_database):
-        with patch("src.services.name_to_code_resolver._get_akshare_name_to_code") as online:
-            assert resolve_name_to_code("维宏股份") == "300508"
-            online.assert_not_called()
+    def test_maintained_universe_is_resolved_once(self, _mock_database):
+        assert resolve_name_to_code("维宏股份") == "300508"
+        _mock_database.assert_called_once_with()
 
-    @patch("src.services.name_to_code_resolver.get_database_stock_indexes", return_value=({}, {}))
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_local_only_resolution_never_uses_akshare(self, mock_akshare, _mock_database):
+    @patch(
+        "src.services.name_to_code_resolver.get_database_stock_indexes",
+        return_value=({}, {}),
+    )
+    def test_unknown_identity_is_not_guessed(self, _mock_database):
         assert resolve_local_name_to_code("仅在线可解析的证券") is None
-        mock_akshare.assert_not_called()
+        _mock_database.assert_called_once_with()
 
     def test_returns_none_for_empty_or_invalid_input(self):
         assert resolve_name_to_code("") is None
@@ -151,38 +160,30 @@ class TestResolveNameToCode:
         # "阿里巴巴" maps to both BABA and 09988 in STOCK_NAME_MAP
         assert resolve_name_to_code("阿里巴巴") is None
 
-    @patch("src.services.name_to_code_resolver.get_database_stock_indexes", return_value=({}, {}))
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_akshare_fallback_when_not_in_local(self, mock_akshare, _mock_database):
-        mock_akshare.return_value = {"平安银行": "000001"}
-        # 000001 is in local map as 平安银行, so we use a name that's only in akshare
-        # Actually local has 000001 -> 平安银行. So "平安银行" would hit local first.
-        # Use a name not in STOCK_NAME_MAP - e.g. some A-share only in AkShare
-        mock_akshare.return_value = {"浦发银行": "600000"}
-        result = resolve_name_to_code("浦发银行")
-        assert result == "600000"
-        mock_akshare.assert_called()
+    def test_service_exact_match_when_not_in_static_aliases(self, maintained_master):
+        maintained_master.return_value = (
+            {"新维护证券": "600000"},
+            {"600000": "新维护证券"},
+        )
+        assert resolve_name_to_code("新维护证券") == "600000"
 
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_fuzzy_match_is_not_used(self, mock_akshare):
-        mock_akshare.return_value = {"贵州茅台": "600519"}
-        result = resolve_name_to_code("贵州茅苔")
-        assert result is None
+    def test_fuzzy_match_is_not_used(self, maintained_master):
+        maintained_master.return_value = (
+            {"贵州茅台": "600519"},
+            {"600519": "贵州茅台"},
+        )
+        assert resolve_name_to_code("贵州茅苔") is None
 
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_strict_resolution_does_not_guess_similar_company(self, mock_akshare):
-        mock_akshare.return_value = {"龙星科技": "002442"}
-
+    def test_strict_resolution_does_not_guess_similar_company(self, maintained_master):
+        maintained_master.return_value = (
+            {"龙星科技": "002442"},
+            {"002442": "龙星科技"},
+        )
         assert resolve_name_to_code("火星科技") is None
 
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_returns_none_when_no_match(self, mock_akshare):
-        mock_akshare.return_value = {}
-        result = resolve_name_to_code("不存在的股票名称xyz")
-        assert result is None
+    def test_returns_none_when_no_match(self):
+        assert resolve_name_to_code("不存在的股票名称xyz") is None
 
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_skips_akshare_for_non_cjk_garbage_input(self, mock_akshare):
-        result = resolve_name_to_code("aaaaaaa")
-        assert result is None
-        mock_akshare.assert_not_called()
+    def test_skips_service_for_non_cjk_garbage_input(self, maintained_master):
+        assert resolve_name_to_code("aaaaaaa") is None
+        maintained_master.assert_not_called()

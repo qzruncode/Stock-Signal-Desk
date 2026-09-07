@@ -70,7 +70,9 @@ def make_spec(**updates) -> QuantitativeScreenSpec:
 def test_calculate_atr_uses_caller_supplied_sma_periods_and_dynamic_line() -> None:
     bars = [
         {"date": f"2026-01-0{i}", "open": 10, "close": 10, "high": high, "low": low}
-        for i, (high, low) in enumerate([(11, 9), (11, 9), (12, 8), (13, 7), (14, 6), (15, 5)], 1)
+        for i, (high, low) in enumerate(
+            [(11, 9), (11, 9), (12, 8), (13, 7), (14, 6), (15, 5)], 1
+        )
     ]
 
     result = calculate_atr_screen_metrics(bars, make_rule())
@@ -86,7 +88,9 @@ def test_calculate_atr_uses_caller_supplied_sma_periods_and_dynamic_line() -> No
 def test_calculate_atr_uses_absolute_volatility_threshold_when_provided() -> None:
     bars = [
         {"date": f"2026-01-0{i}", "open": 100, "close": 100, "high": high, "low": low}
-        for i, (high, low) in enumerate([(101, 99), (101, 99), (102, 98), (103, 97), (104, 96), (105, 95)], 1)
+        for i, (high, low) in enumerate(
+            [(101, 99), (101, 99), (102, 98), (103, 97), (104, 96), (105, 95)], 1
+        )
     ]
 
     result = calculate_atr_screen_metrics(bars, make_rule(volatility_threshold_pct=8.5))
@@ -100,10 +104,18 @@ def test_calculate_atr_uses_absolute_volatility_threshold_when_provided() -> Non
 def test_calculate_atr_changes_when_user_changes_average_and_threshold() -> None:
     ranges = [1, 7, 2, 9, 3, 4, 11, 2]
     bars = [
-        {"date": f"2026-01-{i:02d}", "open": 20, "close": 20, "high": 20 + width, "low": 20 - width / 2}
+        {
+            "date": f"2026-01-{i:02d}",
+            "open": 20,
+            "close": 20,
+            "high": 20 + width,
+            "low": 20 - width / 2,
+        }
         for i, width in enumerate(ranges, 1)
     ]
-    sma = calculate_atr_screen_metrics(bars, make_rule(lookback_days=4, min_qualified_days=0))
+    sma = calculate_atr_screen_metrics(
+        bars, make_rule(lookback_days=4, min_qualified_days=0)
+    )
     ema = calculate_atr_screen_metrics(
         bars,
         make_rule(
@@ -130,7 +142,13 @@ def test_ema_result_is_not_changed_when_provider_returns_extra_history() -> None
     )
     required = rule.atr_period + rule.baseline_period + rule.lookback_days - 1
     tail = [
-        {"date": f"2026-01-{index:02d}", "open": 20, "close": 20, "high": 20 + width, "low": 20 - width / 2}
+        {
+            "date": f"2026-01-{index:02d}",
+            "open": 20,
+            "close": 20,
+            "high": 20 + width,
+            "low": 20 - width / 2,
+        }
         for index, width in enumerate([1, 7, 2, 9, 3, 4, 11, 2][-required:], 1)
     ]
     prefix = [
@@ -162,87 +180,97 @@ def test_screen_spec_rejects_incomplete_or_inconsistent_conditions() -> None:
     with pytest.raises(ValidationError, match="不能大于"):
         make_rule(lookback_days=5, min_qualified_days=6)
     with pytest.raises(ValidationError):
-        make_spec(technical_rule={"strategy": "atr_relative_frequency", "atr_period": 20})
+        make_spec(
+            technical_rule={"strategy": "atr_relative_frequency", "atr_period": 20}
+        )
 
 
-def test_build_ttm_financials_keeps_available_fields_independently(monkeypatch) -> None:
-    rows = {
-        "2026-03-31": {
-            "000001": {"TOTALOPERATEREVE": 20, "PARENTNETPROFIT": 18, "KCFJCXSYJLR": 4, "ZCFZL": 50},
-            "000002": {"TOTALOPERATEREVE": 30, "PARENTNETPROFIT": None, "KCFJCXSYJLR": None, "ZCFZL": 40},
-        },
+def test_build_ttm_financials_keeps_available_fields_independently():
+    from market_data_service.providers.financial_sync import _ttm_fields
+
+    periods = {
         "2025-12-31": {
-            "000001": {"TOTALOPERATEREVE": 100, "PARENTNETPROFIT": 90, "KCFJCXSYJLR": 10},
-            "000002": {"TOTALOPERATEREVE": 80, "PARENTNETPROFIT": None, "KCFJCXSYJLR": None},
+            "000001": {
+                "TOTALOPERATEREVE": 100,
+                "PARENTNETPROFIT": 90,
+                "KCFJCXSYJLR": 10,
+            }
         },
         "2025-03-31": {
-            "000001": {"TOTALOPERATEREVE": 15, "PARENTNETPROFIT": 12, "KCFJCXSYJLR": 3},
-            "000002": {"TOTALOPERATEREVE": 20, "KCFJCXSYJLR": None},
+            "000001": {"TOTALOPERATEREVE": 15, "PARENTNETPROFIT": 12, "KCFJCXSYJLR": 3}
         },
     }
-    monkeypatch.setattr(screener, "_fetch_financial_period", lambda period: rows[period])
+    result = _ttm_fields(
+        "000001",
+        "2026-03-31",
+        {"TOTALOPERATEREVE": 20, "PARENTNETPROFIT": 18, "KCFJCXSYJLR": 4},
+        periods,
+    )
+    assert result == {
+        "revenue_ttm": 105,
+        "parent_net_profit_ttm": 96,
+        "deducted_net_profit_ttm": 11,
+    }
+    result = _ttm_fields(
+        "000001",
+        "2026-03-31",
+        {"TOTALOPERATEREVE": 20, "PARENTNETPROFIT": None},
+        periods,
+    )
+    assert result == {"revenue_ttm": 105}
 
-    result, period = screener._build_ttm_financials(date(2026, 7, 18))
 
-    assert period == "2026-03-31"
-    assert result["000001"]["revenue_ttm"] == 105.0
-    assert result["000001"]["parent_net_profit_ttm"] == 96.0
-    assert result["000001"]["deducted_net_profit_ttm"] == 11.0
-    assert result["000002"]["revenue_ttm"] == 90.0
-    assert "deducted_net_profit_ttm" not in result["000002"]
-    assert result["000002"]["debt_ratio"] == 40.0
-
-
-def test_sina_fallback_builds_ttm_only_from_four_consecutive_quarters(monkeypatch) -> None:
-    import importlib
-
-    financial_fetcher = importlib.import_module("api.v1.endpoints.financials._fetch_financials")
+def test_financial_service_requires_four_consecutive_quarters(monkeypatch):
+    from market_data_service.providers.financial_sync import (
+        _fallback_update_from_financials,
+    )
 
     rows = [
-        {"report_date": "2025-03-31", "revenue": 10, "parent_net_profit": 6, "deducted_profit": 1, "debt_ratio": 41},
-        {"report_date": "2025-06-30", "revenue": 20, "parent_net_profit": 7, "deducted_profit": 2, "debt_ratio": 42},
-        {"report_date": "2025-09-30", "revenue": 30, "parent_net_profit": 8, "deducted_profit": 3, "debt_ratio": 43},
-        {"report_date": "2025-12-31", "revenue": 40, "parent_net_profit": 10, "deducted_profit": 4, "debt_ratio": 44},
+        {
+            "report_date": day,
+            "revenue": 10,
+            "parent_net_profit": 6,
+            "deducted_profit": 2,
+            "debt_ratio": 44,
+        }
+        for day in ["2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31"]
     ]
-    monkeypatch.setattr(financial_fetcher, "_fetch_from_sina", lambda _code, _periods: rows)
-
-    result = screener._fetch_sina_ttm_financial("000001")
-
-    assert result == {
-        "financial_report_period": "2025-12-31",
-        "financial_source": "新浪财经财务摘要补源",
-        "debt_ratio": 44.0,
-        "revenue_ttm": 100.0,
-        "parent_net_profit_ttm": 31.0,
-        "deducted_net_profit_ttm": 10.0,
-    }
-
-
-def test_secondary_financial_fallback_uses_sina_after_ths_failure(monkeypatch) -> None:
     monkeypatch.setattr(
-        screener,
-        "_fetch_ths_ttm_financial",
-        lambda _code: (_ for _ in ()).throw(ConnectionError("ths down")),
+        "market_data_service.providers.financials.get_financials",
+        lambda *a, **k: {"items": rows},
     )
-    monkeypatch.setattr(
-        screener,
-        "_fetch_sina_ttm_financial",
-        lambda _code: {
-            "revenue_ttm": 1,
-            "deducted_net_profit_ttm": 1,
-            "debt_ratio": 50,
-            "financial_report_period": "2025-12-31",
-            "financial_source": "新浪财经财务摘要补源",
-        },
+    assert _fallback_update_from_financials("000001")["revenue_ttm"] == 40
+    rows.pop(1)
+    assert "revenue_ttm" not in _fallback_update_from_financials("000001")
+
+
+def test_financial_service_does_not_mix_absent_quarter_fields(monkeypatch):
+    from market_data_service.providers.financial_sync import (
+        _fallback_update_from_financials,
     )
 
-    result = screener._fetch_secondary_ttm_financial("000001", {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"})
+    rows = [
+        {
+            "report_date": day,
+            "revenue": 10,
+            "parent_net_profit": 6,
+            "deducted_profit": 2,
+            "debt_ratio": 44,
+        }
+        for day in ["2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31"]
+    ]
+    rows[0]["deducted_profit"] = None
+    monkeypatch.setattr(
+        "market_data_service.providers.financials.get_financials",
+        lambda *a, **k: {"items": rows},
+    )
+    result = _fallback_update_from_financials("000001")
+    assert result["revenue_ttm"] == 40 and "deducted_net_profit_ttm" not in result
 
-    assert result is not None
-    assert result["financial_source"] == "新浪财经财务摘要补源"
 
-
-def test_export_headers_follow_caller_periods_and_requested_fields(tmp_path, monkeypatch) -> None:
+def test_export_headers_follow_caller_periods_and_requested_fields(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(screener, "EXPORT_DIR", tmp_path)
     spec = make_spec(
         technical_rule=make_rule(
@@ -302,11 +330,13 @@ def test_export_cell_value_preserves_six_digit_stock_codes(
     assert screener._export_cell_value(field, value) == expected
 
 
-def test_executor_rejects_missing_screen_spec_without_running_sources(monkeypatch) -> None:
+def test_executor_rejects_missing_screen_spec_without_running_sources(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         screener,
-        "_build_ttm_financials",
-        lambda: pytest.fail("invalid spec must fail before data access"),
+        "financial_rows",
+        lambda *args: pytest.fail("invalid spec must fail before data access"),
     )
     result = screener.run_atr_volatility_screen(
         screen_spec={"version": "1.0"},
@@ -317,78 +347,61 @@ def test_executor_rejects_missing_screen_spec_without_running_sources(monkeypatc
     assert result["items"] == []
 
 
-def _install_fake_market(monkeypatch, financials: dict[str, dict]) -> None:
-    class Result:
-        def mappings(self):
-            return self
+def _install_fake_market(monkeypatch, financials):
+    from types import SimpleNamespace
 
-        def all(self):
-            return [
-                {"code": "000001", "name": "样本一", "ipo_date": "2010-01-01"},
-                {"code": "000002", "name": "样本二", "ipo_date": "2010-01-01"},
-            ]
-
-    class Session:
-        def execute(self, *_args, **_kwargs):
-            return Result()
-
-    class DB:
-        @contextmanager
-        def session_scope(self):
-            yield Session()
-
-    bars = [
-        {"date": f"2026-01-{index:02d}", "open": 10, "close": 10, "high": high, "low": low}
-        for index, (high, low) in enumerate([(11, 9), (11, 9), (12, 8), (13, 7), (14, 6), (15, 5)], 1)
+    rows = [
+        {"code": code, "name": "样本" + code, "ipo_date": "2010-01-01"}
+        for code in ("000001", "000002")
     ]
-    monkeypatch.setattr(screener.DatabaseManager, "get_instance", classmethod(lambda _cls: DB()))
+    bars = [
+        {"date": f"2026-01-{i:02d}", "open": 10, "close": 10, "high": high, "low": low}
+        for i, (high, low) in enumerate(
+            [(11, 9), (11, 9), (12, 8), (13, 7), (14, 6), (15, 5)], 1
+        )
+    ]
+    monkeypatch.setattr(
+        screener,
+        "get_market_data_client",
+        lambda: SimpleNamespace(securities=lambda **k: {"items": rows}),
+    )
     monkeypatch.setattr(
         "src.services.data_maintenance.ensure_stock_universe",
-        lambda **_kwargs: {
-            "maintenance_status": "ready",
-            "refreshed": False,
-            "is_stale": False,
-        },
+        lambda **k: {"maintenance_status": "ready", "is_stale": False},
     )
-    monkeypatch.setattr(screener, "_expected_latest_kline_date", lambda: date(2026, 1, 5))
-    monkeypatch.setattr(screener, "_build_ttm_financials", lambda: (financials, "2025-12-31"))
-    monkeypatch.setattr(screener, "_persist_financials", lambda *_args: None)
-    monkeypatch.setattr(screener, "_fetch_tencent_bars", lambda *_args: [])
+    monkeypatch.setattr(
+        screener, "_expected_latest_kline_date", lambda: date(2026, 1, 6)
+    )
+    monkeypatch.setattr(
+        screener, "financial_rows", lambda codes: (financials, "2025-12-31")
+    )
     monkeypatch.setattr(
         screener,
-        "_fetch_adjusted_bars",
-        lambda code, _count, _allow: (code, bars, None, "测试行情源"),
+        "daily_rows",
+        lambda codes, count: (
+            {code: bars for code in codes},
+            {},
+            {"market-data-service": len(codes)},
+        ),
     )
 
 
-def test_kline_fetch_retries_transient_source_error(monkeypatch) -> None:
-    attempts = {"count": 0}
-    bars = [
-        {"date": "2026-07-17", "open": 10, "close": 10, "high": 11, "low": 9},
-    ]
+def test_daily_batch_preserves_failure_without_direct_source_retry(monkeypatch):
+    from src.services.stock_screening import data
+    from src.services.market_data_client import DataNotReady
+    from unittest.mock import Mock
 
-    def transient(_code, _count):
-        attempts["count"] += 1
-        if attempts["count"] < 3:
-            raise ConnectionError("temporary reset")
-        return bars
-
-    monkeypatch.setattr(screener, "_fetch_tencent_bars", transient)
-    monkeypatch.setattr(
-        screener,
-        "_fetch_sina_bars",
-        lambda *_args: pytest.fail("retry should recover first source"),
-    )
-    monkeypatch.setattr(screener.time, "sleep", lambda *_args: None)
-
-    code, result, error, source = screener._fetch_adjusted_bars("000001", 10, True)
-
-    assert code == "000001" and result == bars and error is None
-    assert source == "腾讯前复权日线"
-    assert attempts["count"] == 3
+    client = Mock()
+    client.snapshot.side_effect = DataNotReady({"not_ready": {"000001": ["kline"]}})
+    monkeypatch.setattr(data, "get_market_data_client", lambda: client)
+    bars, failures, sources = data.daily_rows(["000001"], 30)
+    assert not bars and "000001" in failures and not sources
+    client.snapshot.assert_called_once_with(["000001"], ["kline"], count=30, wait=1)
 
 
-def test_executor_applies_changed_financial_threshold_instead_of_example_default(monkeypatch) -> None:
+def test_executor_applies_changed_financial_threshold_instead_of_example_default(
+    monkeypatch,
+) -> None:
     financials = {
         "000001": {
             "revenue_ttm": 600_000_000,
@@ -421,54 +434,38 @@ def test_executor_applies_changed_financial_threshold_instead_of_example_default
     assert base_result["success"] is True and base_result["total"] == 2
     assert changed_result["success"] is True and changed_result["total"] == 1
     assert changed_result["items"][0]["code"] == "000002"
-    assert changed_result["screen_spec"]["financial_filters"][0]["value"] == 1_000_000_000
+    assert (
+        changed_result["screen_spec"]["financial_filters"][0]["value"] == 1_000_000_000
+    )
     assert "营业收入TTM>10亿元" in changed_result["applied_rules"]
     assert any("至少需要6根日线" in rule for rule in changed_result["applied_rules"])
     assert base_result["spec_fingerprint"] != changed_result["spec_fingerprint"]
 
 
-def test_executor_recovers_small_transient_kline_tail_on_second_pass(monkeypatch) -> None:
+def test_executor_fails_closed_until_the_data_service_recovers_kline(monkeypatch):
     financials = {
-        code: {
-            "revenue_ttm": 1_200_000_000,
-            "financial_report_period": "2025-12-31",
-            "financial_source": "测试源",
-        }
+        code: {"revenue_ttm": 1_200_000_000, "financial_report_period": "2025-12-31"}
         for code in ("000001", "000002")
     }
     _install_fake_market(monkeypatch, financials)
-    bars = [
-        {"date": f"2026-01-{index:02d}", "open": 10, "close": 10, "high": high, "low": low}
-        for index, (high, low) in enumerate([(11, 9), (11, 9), (12, 8), (13, 7), (14, 6), (15, 5)], 1)
-    ]
-    attempts: dict[str, int] = {}
-
-    def fetch(code, _count, _allow):
-        attempts[code] = attempts.get(code, 0) + 1
-        if code == "000001" and attempts[code] == 1:
-            return code, [], "新浪:SSLError", None
-        return code, bars, None, "测试行情源"
-
-    monkeypatch.setattr(screener, "_fetch_adjusted_bars", fetch)
-    monkeypatch.setattr(screener.time, "sleep", lambda *_args: None)
-
-    result = screener.run_atr_volatility_screen(
-        screen_spec=make_spec().model_dump(mode="json"),
-        refresh_if_stale=True,
+    monkeypatch.setattr(
+        screener, "daily_rows", lambda *a: ({}, {"000001": "待补采"}, {})
     )
-
-    assert result["success"] is True
-    assert result["coverage"]["kline_retry_recovered"] == 1
-    assert result["coverage"]["fresh_kline"] == 2
-    assert attempts["000001"] == 2
+    result = screener.run_atr_volatility_screen(
+        screen_spec=make_spec().model_dump(mode="json")
+    )
+    assert result["success"] is False and result["failure_stage"] == "kline_coverage"
+    assert result["items"] == [] and result["failed_symbols"]
 
 
 def test_executor_does_not_fetch_unused_financial_data(monkeypatch) -> None:
     _install_fake_market(monkeypatch, {})
     monkeypatch.setattr(
         screener,
-        "_build_ttm_financials",
-        lambda: pytest.fail("technical-only screen must not fetch financial data"),
+        "financial_rows",
+        lambda *args: pytest.fail(
+            "technical-only screen must not fetch financial data"
+        ),
     )
     spec = make_spec(
         financial_filters=[],
@@ -490,68 +487,33 @@ def test_executor_does_not_fetch_unused_financial_data(monkeypatch) -> None:
     assert "东方财富财务主指标" not in result["source"]
 
 
-def test_executor_switches_to_same_day_financial_snapshot_when_primary_fails(monkeypatch) -> None:
-    cached = {
-        "000001": {
-            "revenue_ttm": 600_000_000,
-            "financial_report_period": "2026-03-31",
-            "financial_source": "本地当日财务缓存",
-        },
-        "000002": {
-            "revenue_ttm": 1_200_000_000,
-            "financial_report_period": "2026-03-31",
-            "financial_source": "本地当日财务缓存",
-        },
-    }
+def test_executor_does_not_bypass_unavailable_financial_service(monkeypatch):
+    _install_fake_market(monkeypatch, {})
+
+    def unavailable(codes):
+        raise ConnectionError("data service unavailable")
+
+    monkeypatch.setattr(screener, "financial_rows", unavailable)
+    monkeypatch.setattr(
+        screener,
+        "daily_rows",
+        lambda *a: pytest.fail("no downstream work after failed readiness"),
+    )
+    result = screener.run_atr_volatility_screen(
+        screen_spec=make_spec().model_dump(mode="json")
+    )
+    assert not result["success"] and result["failure_stage"] == "data_readiness"
+
+
+def test_executor_fails_closed_when_financial_fields_lack_coverage(monkeypatch):
     _install_fake_market(monkeypatch, {})
     monkeypatch.setattr(
         screener,
-        "_build_ttm_financials",
-        lambda: (_ for _ in ()).throw(ConnectionError("primary reset")),
+        "daily_rows",
+        lambda *a: pytest.fail("incomplete financial universe cannot be screened"),
     )
-    monkeypatch.setattr(
-        screener,
-        "_load_fresh_cached_financials",
-        lambda _codes: (cached, "2026-03-31"),
-    )
-
     result = screener.run_atr_volatility_screen(
-        screen_spec=make_spec().model_dump(mode="json"),
-        refresh_if_stale=True,
+        screen_spec=make_spec().model_dump(mode="json")
     )
-
-    assert result["success"] is True
-    assert result["total"] == 2
-    assert result["coverage"]["financial_cache_count"] == 2
-    assert "本地当日财务快照" in result["source"]
-    assert "已自动切换" in result["warnings"][0]
-
-
-def test_executor_fails_closed_when_primary_and_same_day_snapshot_lack_coverage(monkeypatch) -> None:
-    _install_fake_market(monkeypatch, {})
-    monkeypatch.setattr(screener, "MAX_SECONDARY_FINANCIAL_FALLBACKS", 1)
-    monkeypatch.setattr(
-        screener,
-        "_build_ttm_financials",
-        lambda: (_ for _ in ()).throw(ConnectionError("primary reset")),
-    )
-    monkeypatch.setattr(
-        screener,
-        "_load_fresh_cached_financials",
-        lambda _codes: ({}, None),
-    )
-    monkeypatch.setattr(
-        screener,
-        "_fetch_secondary_ttm_financial",
-        lambda _code: pytest.fail("cold-cache bulk outage must not fan out per-company calls"),
-    )
-
-    result = screener.run_atr_volatility_screen(
-        screen_spec=make_spec().model_dump(mode="json"),
-        refresh_if_stale=True,
-    )
-
-    assert result["success"] is False
-    assert result["failure_stage"] == "financial_cache_coverage"
-    assert result["coverage"]["financial_covered"] == 0
-    assert result["items"] == []
+    assert not result["success"] and result["failure_stage"] == "financial_coverage"
+    assert result["coverage"]["financial_covered"] == 0 and result["items"] == []

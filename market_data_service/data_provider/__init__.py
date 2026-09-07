@@ -1,0 +1,1 @@
+"""Reused, independent upstream adapters."""

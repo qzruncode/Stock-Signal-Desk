@@ -11,7 +11,6 @@ from fastapi import APIRouter, Query
 
 from src.tools.get_realtime_quotes import (
     REALTIME_QUOTES_DESCRIPTION,
-    _get_fetcher,
     get_realtime_quotes as _get_realtime_quotes,
 )
 

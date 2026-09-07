@@ -10,9 +10,6 @@ import pandas as pd
 
 from src.tools._akshare import bare_symbol, json_value
 from src.tools._kline import (
-    _get_kline_from_stock_daily,
-    _kline_data_time,
-    _kline_is_stale,
     get_kline,
 )
 
@@ -42,38 +39,18 @@ def get_technical_indicators(
         # chain on its own.
         raw = dict(_raw_kline)
     else:
-        local_rows = _get_kline_from_stock_daily(code, safe_count) or []
-        # This branch remains only for legacy non-Agent callers. The Agent
-        # registry exposes source-specific indicator reads instead.
-        if len(local_rows) >= 30 and not _kline_is_stale(local_rows):
-            data_time = _kline_data_time(local_rows)
-            today = datetime.now().date().isoformat()
-            raw = {
-                "success": True,
-                "data": local_rows,
-                "source": "stock_daily",
-                "data_time": data_time,
-                "is_stale": _kline_is_stale(local_rows),
+        try:
+            raw = get_kline(code, count=safe_count, use_cache=True)
+        except Exception as exc:
+            return {
+                "symbol": code,
+                "indicators": {},
+                "errors": [str(exc)],
+                "source": "market-data-service",
+                "success": False,
+                "is_stale": None,
                 "fallback_used": False,
-                "_cached": True,
-                "bar_complete": not (
-                    str(data_time or "")[:10] == today
-                    and datetime.now().time() < datetime.strptime("15:00", "%H:%M").time()
-                ),
             }
-        else:
-            try:
-                raw = get_kline(code, count=safe_count, use_cache=True)
-            except Exception as exc:
-                return {
-                    "symbol": code,
-                    "indicators": {},
-                    "errors": [str(exc)],
-                    "source": "K线多源链",
-                    "success": False,
-                    "is_stale": None,
-                    "fallback_used": True,
-                }
     rows = raw.get("data") or []
     if len(rows) < 30:
         return {
@@ -81,12 +58,19 @@ def get_technical_indicators(
             "indicators": {},
             "errors": ["有效 K 线少于 30 条，无法稳定计算技术指标"],
             "success": False,
-            **{k: raw.get(k) for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")},
+            **{
+                k: raw.get(k)
+                for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")
+            },
         }
 
     frame = pd.DataFrame(rows)
     if "date" in frame.columns:
-        frame = frame.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+        frame = (
+            frame.sort_values("date")
+            .drop_duplicates("date", keep="last")
+            .reset_index(drop=True)
+        )
     for col in ("open", "high", "low", "close", "volume"):
         frame[col] = pd.to_numeric(frame.get(col), errors="coerce")
     frame = frame.dropna(subset=["high", "low", "close"])
@@ -96,7 +80,10 @@ def get_technical_indicators(
             "indicators": {},
             "errors": ["有效 OHLC K 线少于 30 条"],
             "success": False,
-            **{k: raw.get(k) for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")},
+            **{
+                k: raw.get(k)
+                for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")
+            },
         }
     close = frame["close"]
     high = frame["high"]
@@ -117,7 +104,9 @@ def get_technical_indicators(
     rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
     rsi = rsi.mask((loss == 0) & (gain == 0), 50.0)
     prev_close = close.shift(1)
-    true_range = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    true_range = pd.concat(
+        [(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
     atr = true_range.ewm(alpha=1 / 14, adjust=False).mean()
     mid = close.rolling(20).mean()
     std = close.rolling(20).std()
@@ -132,7 +121,9 @@ def get_technical_indicators(
     previous_five_volume = volume.tail(6).iloc[:-1].mean()
     volume_vs_prev5d = (
         volume.iloc[-1] / previous_five_volume
-        if previous_five_volume is not None and pd.notna(previous_five_volume) and previous_five_volume > 0
+        if previous_five_volume is not None
+        and pd.notna(previous_five_volume)
+        and previous_five_volume > 0
         else None
     )
     bar_complete = bool(raw.get("bar_complete", True))
@@ -169,8 +160,13 @@ def get_technical_indicators(
         from src.services.akshare_evidence import get_company_evidence
 
         structured = get_company_evidence(code, sections=("trading_evidence",), days=30)
-        trading_evidence = (structured.get("sections") or {}).get("trading_evidence") or {}
-        trading_errors = [f"trading_evidence: {error}" for error in trading_evidence.get("errors") or []]
+        trading_evidence = (structured.get("sections") or {}).get(
+            "trading_evidence"
+        ) or {}
+        trading_errors = [
+            f"trading_evidence: {error}"
+            for error in trading_evidence.get("errors") or []
+        ]
     except LookupError:
         pass
     except Exception as exc:
@@ -189,7 +185,17 @@ def get_technical_indicators(
         "bar_complete": bar_complete,
         "volume_unit": "股",
         "calculation_basis": "前复权日线；盘中当日 K 线未收盘时，最新指标会随行情变化",
-        **{key: raw.get(key) for key in ("source", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at")},
+        **{
+            key: raw.get(key)
+            for key in (
+                "source",
+                "data_time",
+                "is_stale",
+                "fallback_used",
+                "_cached",
+                "_fetched_at",
+            )
+        },
     }
 
 

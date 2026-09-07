@@ -70,7 +70,10 @@ def test_financial_news_successful_empty_feed_is_not_a_tool_failure():
 
 def test_all_47_infos_routes_have_an_explicit_business_capability_map():
     assert len(RSS_ROUTE_CAPABILITIES) == 47
-    assert all(path.startswith("/") and capabilities for path, capabilities in RSS_ROUTE_CAPABILITIES.items())
+    assert all(
+        path.startswith("/") and capabilities
+        for path, capabilities in RSS_ROUTE_CAPABILITIES.items()
+    )
 
 
 def test_regulatory_disclosure_specs_use_each_exchange_official_query_contract():
@@ -161,7 +164,10 @@ def test_szse_listing_page_parser_reads_the_actual_official_page_contract():
 
 def test_regulatory_successful_empty_official_feed_is_valid_zero_without_web_search():
     with (
-        patch("src.tools.get_regulatory_updates._resolve_subject", return_value=("300850", "新强联")),
+        patch(
+            "src.tools.get_regulatory_updates._resolve_subject",
+            return_value=("300850", "新强联"),
+        ),
         patch("api.v1.endpoints._rss_reader.read_feed", return_value=_feed()),
         patch("src.tools.websearch.websearch") as websearch,
     ):
@@ -199,8 +205,14 @@ def test_regulatory_web_fallback_only_keeps_official_exchange_domains():
         ],
     }
     with (
-        patch("src.tools.get_regulatory_updates._resolve_subject", return_value=("600519", "贵州茅台")),
-        patch("api.v1.endpoints._rss_reader.read_feed", return_value=_feed(errors=["upstream down"])),
+        patch(
+            "src.tools.get_regulatory_updates._resolve_subject",
+            return_value=("600519", "贵州茅台"),
+        ),
+        patch(
+            "api.v1.endpoints._rss_reader.read_feed",
+            return_value=_feed(errors=["upstream down"]),
+        ),
         patch("src.tools.websearch.websearch", return_value=search_result),
     ):
         result = get_regulatory_updates(
@@ -237,8 +249,13 @@ def test_regulatory_content_details_are_read_in_parallel():
         return {"content_text": f"{kwargs['title']}正文", "_fallback": False}
 
     with (
-        patch("src.tools.get_regulatory_updates._resolve_subject", return_value=(None, None)),
-        patch("api.v1.endpoints._rss_reader.read_feed", return_value=_feed(items=items)),
+        patch(
+            "src.tools.get_regulatory_updates._resolve_subject",
+            return_value=(None, None),
+        ),
+        patch(
+            "api.v1.endpoints._rss_reader.read_feed", return_value=_feed(items=items)
+        ),
         patch("api.v1.endpoints._rss_reader.read_item", side_effect=read_item),
     ):
         result = get_regulatory_updates(
@@ -252,7 +269,9 @@ def test_regulatory_content_details_are_read_in_parallel():
 
     assert result["success"] is True
     assert result["item_count"] == 2
-    assert all(item.get("content_text", "").endswith("正文") for item in result["items"])
+    assert all(
+        item.get("content_text", "").endswith("正文") for item in result["items"]
+    )
 
 
 def test_research_library_rejects_stock_category_in_favor_of_dedicated_workflow():
@@ -284,7 +303,16 @@ def test_research_library_returns_recent_candidates_without_semantic_filtering()
             },
         ]
     )
-    with patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed):
+    with (
+        patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed),
+        patch(
+            "api.v1.endpoints._rss_catalog.get_rss_catalog", return_value={"routes": []}
+        ),
+        patch(
+            "src.tools.search_research_library.resolve_rss_source_specs",
+            return_value=[("/test/reports", {}, "离线研报源")],
+        ),
+    ):
         result = search_research_library(
             "人形机器人 产业链 价值量 市场空间 竞争格局",
             category="industry",
@@ -327,7 +355,16 @@ def test_research_library_does_not_infer_topic_from_playbook_wording():
             },
         ]
     )
-    with patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed):
+    with (
+        patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed),
+        patch(
+            "api.v1.endpoints._rss_catalog.get_rss_catalog", return_value={"routes": []}
+        ),
+        patch(
+            "src.tools.search_research_library.resolve_rss_source_specs",
+            return_value=[("/test/reports", {}, "离线研报源")],
+        ),
+    ):
         result = search_research_library(
             "检索人形机器人 产业链 A股 标的 丝杠 减速器 伺服 电机 传感器 灵巧手 机器视觉",
             category="industry",
@@ -351,7 +388,11 @@ def test_research_library_does_not_infer_topic_from_playbook_wording():
 
 def test_pbc_operation_parser_does_not_read_calendar_month_as_term():
     operation = _operation_item(
-        {"title": "公开市场业务交易公告 [2026]第136号", "published": "2026-07-16", "link": "https://pbc.gov.cn/a"},
+        {
+            "title": "公开市场业务交易公告 [2026]第136号",
+            "published": "2026-07-16",
+            "link": "https://pbc.gov.cn/a",
+        },
         "2026年7月16日人民银行以固定利率、数量招标方式开展了6260亿元逆回购操作。"
         "期限 7天 1.40% 6260亿元 6260亿元，中标量全额满足。",
     )
@@ -381,8 +422,13 @@ def test_pbc_feed_reports_incomplete_window_instead_of_claiming_full_coverage():
         },
     ]
     with (
-        patch("src.tools.get_monetary_policy_operations._fetch_official_listing", return_value=([], [], False)),
-        patch("api.v1.endpoints._rss_reader.read_feed", return_value=_feed(items=items)),
+        patch(
+            "src.tools.get_monetary_policy_operations._fetch_official_listing",
+            return_value=([], [], False),
+        ),
+        patch(
+            "api.v1.endpoints._rss_reader.read_feed", return_value=_feed(items=items)
+        ),
     ):
         result = get_monetary_policy_operations(days=30, fallback_to_web=False)
 
@@ -394,8 +440,13 @@ def test_pbc_feed_reports_incomplete_window_instead_of_claiming_full_coverage():
 
 def test_pbc_complete_acquisition_failure_has_no_fake_rss_source():
     with (
-        patch("src.tools.get_monetary_policy_operations._fetch_official_listing", return_value=([], [], False)),
-        patch("api.v1.endpoints._rss_reader.read_feed", return_value=_feed(errors=["503"])),
+        patch(
+            "src.tools.get_monetary_policy_operations._fetch_official_listing",
+            return_value=([], [], False),
+        ),
+        patch(
+            "api.v1.endpoints._rss_reader.read_feed", return_value=_feed(errors=["503"])
+        ),
     ):
         result = get_monetary_policy_operations(fallback_to_web=False)
 
@@ -421,11 +472,19 @@ def test_pbc_content_details_are_read_in_parallel():
     def read_item(**kwargs):
         barrier.wait(timeout=2)
         amount = "100" if kwargs["item_id"] == "1" else "200"
-        return {"content_text": f"开展了{amount}亿元7天期逆回购操作，操作利率为1.40%", "errors": []}
+        return {
+            "content_text": f"开展了{amount}亿元7天期逆回购操作，操作利率为1.40%",
+            "errors": [],
+        }
 
     with (
-        patch("src.tools.get_monetary_policy_operations._fetch_official_listing", return_value=([], [], False)),
-        patch("api.v1.endpoints._rss_reader.read_feed", return_value=_feed(items=items)),
+        patch(
+            "src.tools.get_monetary_policy_operations._fetch_official_listing",
+            return_value=([], [], False),
+        ),
+        patch(
+            "api.v1.endpoints._rss_reader.read_feed", return_value=_feed(items=items)
+        ),
         patch("api.v1.endpoints._rss_reader.read_item", side_effect=read_item),
     ):
         result = get_monetary_policy_operations(
@@ -469,7 +528,9 @@ def test_pbc_official_directory_is_primary_and_complete():
         ),
         patch("api.v1.endpoints._rss_reader.read_feed") as feed_mock,
     ):
-        result = get_monetary_policy_operations(days=30, limit=20, include_content=True, fallback_to_web=False)
+        result = get_monetary_policy_operations(
+            days=30, limit=20, include_content=True, fallback_to_web=False
+        )
 
     assert result["success"] is True
     assert result["coverage_complete"] is True

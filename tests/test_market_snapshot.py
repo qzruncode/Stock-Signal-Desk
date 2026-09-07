@@ -4,7 +4,7 @@ from datetime import date, datetime
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from src.tools._market_snapshot import (
+from market_data_service.providers._market_snapshot import (
     _parse_legu_activity,
     expected_trade_day,
     fetch_market_snapshot,
@@ -40,8 +40,12 @@ def test_parse_legu_activity_keeps_stock_count_semantics() -> None:
 def test_expected_trade_day_uses_today_from_call_auction() -> None:
     calendar = [date(2026, 7, 15), date(2026, 7, 16)]
 
-    assert expected_trade_day(datetime(2026, 7, 16, 9, 14), calendar) == date(2026, 7, 15)
-    assert expected_trade_day(datetime(2026, 7, 16, 9, 15), calendar) == date(2026, 7, 16)
+    assert expected_trade_day(datetime(2026, 7, 16, 9, 14), calendar) == date(
+        2026, 7, 15
+    )
+    assert expected_trade_day(datetime(2026, 7, 16, 9, 15), calendar) == date(
+        2026, 7, 16
+    )
 
 
 def _legu_payload() -> dict:
@@ -85,7 +89,9 @@ def _index_payload() -> dict:
     }
 
 
-def test_snapshot_uses_correct_broken_board_denominator_and_no_fake_north_flow() -> None:
+def test_snapshot_uses_correct_broken_board_denominator_and_no_fake_north_flow() -> (
+    None
+):
     pool_counts = {
         "stock_zt_pool_em": 50,
         "stock_zt_pool_dtgc_em": 7,
@@ -97,17 +103,29 @@ def test_snapshot_uses_correct_broken_board_denominator_and_no_fake_north_flow()
         return {"count": pool_counts[name], "source": name}
 
     with (
-        patch("src.tools._market_snapshot._fetch_trade_dates", return_value=[date(2026, 7, 16)]),
-        patch("src.tools._market_snapshot._fetch_legu_activity", side_effect=_legu_payload),
-        patch("src.tools._market_snapshot._fetch_index_spot", side_effect=_index_payload),
         patch(
-            "src.tools._market_snapshot._fetch_index_daily",
+            "market_data_service.providers._market_snapshot._fetch_trade_dates",
+            return_value=[date(2026, 7, 16)],
+        ),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_legu_activity",
+            side_effect=_legu_payload,
+        ),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_index_spot",
+            side_effect=_index_payload,
+        ),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_index_daily",
             return_value=[
                 {"date": "2026-07-14", "close": 3900.0},
                 {"date": "2026-07-15", "close": 3950.0},
             ],
         ),
-        patch("src.tools._market_snapshot._fetch_pool", side_effect=fake_pool),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_pool",
+            side_effect=fake_pool,
+        ),
     ):
         snapshot = fetch_market_snapshot(datetime(2026, 7, 16, 13, 30, tzinfo=TZ))
 
@@ -146,10 +164,16 @@ def test_views_remove_unsupported_60_day_high_low_fields() -> None:
 
 def test_legu_failure_uses_full_stock_breadth_not_sector_counts() -> None:
     with (
-        patch("src.tools._market_snapshot._fetch_trade_dates", return_value=[date(2026, 7, 16)]),
-        patch("src.tools._market_snapshot._fetch_legu_activity", side_effect=RuntimeError("down")),
         patch(
-            "src.tools._market_snapshot._fetch_sina_a_breadth",
+            "market_data_service.providers._market_snapshot._fetch_trade_dates",
+            return_value=[date(2026, 7, 16)],
+        ),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_legu_activity",
+            side_effect=RuntimeError("down"),
+        ),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_sina_a_breadth",
             return_value={
                 "up_count": 3100,
                 "down_count": 2200,
@@ -160,9 +184,18 @@ def test_legu_failure_uses_full_stock_breadth_not_sector_counts() -> None:
                 "breadth_scope": "A股（含北交所）",
             },
         ),
-        patch("src.tools._market_snapshot._fetch_index_spot", side_effect=_index_payload),
-        patch("src.tools._market_snapshot._fetch_index_daily", return_value=[]),
-        patch("src.tools._market_snapshot._fetch_pool", return_value={"count": 0}),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_index_spot",
+            side_effect=_index_payload,
+        ),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_index_daily",
+            return_value=[],
+        ),
+        patch(
+            "market_data_service.providers._market_snapshot._fetch_pool",
+            return_value={"count": 0},
+        ),
     ):
         snapshot = fetch_market_snapshot(datetime(2026, 7, 16, 13, 30, tzinfo=TZ))
 

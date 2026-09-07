@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """Mixin imports — attach all mixin methods to DatabaseManager."""
 
-from src.storage.mixins.daily_data import DailyDataMixin
 from src.storage.mixins.news import NewsMixin
 from src.storage.mixins.quotes import QuoteKlineMixin
 from src.storage.mixins.macro import MacroMixin
@@ -20,7 +19,6 @@ from src.storage.mixins.financial_lifecycle import FinancialLifecycleMixin
 from src.storage.mixins.text_document import TextDocumentMixin
 
 __all__ = [
-    "DailyDataMixin",
     "NewsMixin",
     "QuoteKlineMixin",
     "MacroMixin",

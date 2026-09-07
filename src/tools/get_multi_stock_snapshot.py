@@ -16,37 +16,32 @@ from src.tools._trading_calendar import is_trading_time
 
 
 DESCRIPTION = (
-    "一次解析并查询多只 A 股的当前行情、估值快照、本地技术指标与最新报告期财务质量。"
+    "一次解析并查询多只 A 股的当前行情、估值快照、技术指标与最新报告期财务质量。"
     "适用于多公司比较和候选股基础筛选。快照不包含产业竞争力、催化、重大风险和完整八维买入分析，"
-    "不能单独用于‘现在能否买入’判断；返回经过 stock_meta 校验的公司名/代码映射。"
+    "不能单独用于‘现在能否买入’判断；公司名、代码和原始数据均由独立数据服务校验。"
 )
 
 
 def _financial_snapshots(codes: list[str]) -> dict[str, dict[str, Any]]:
-    """Read the latest synchronized fundamentals in one local query.
+    from src.services.market_data_client import get_market_data_client
 
-    A comparison tool must not fan out into one slow network request per
-    company.  ``stock_meta`` is the project's synchronized, report-period
-    keyed source for the compact fields needed by a preliminary decision.
-    """
-    from src.storage import DatabaseManager, StockMeta
-
-    db = DatabaseManager.get_instance()
-    with db.get_session() as session:
-        rows = session.query(StockMeta).filter(StockMeta.code.in_(codes)).all()
-        return {
-            row.code: {
-                "report_date": row.report_date,
-                "revenue": row.revenue_latest,
-                "net_profit": row.net_profit_latest,
-                "operating_cash_flow": row.operating_cf_latest,
-                "debt_ratio_pct": row.debt_ratio,
-                "fetched_at": (row.financial_fetched_at.isoformat() if row.financial_fetched_at else None),
+    response = get_market_data_client().snapshot(codes, ["financials"])
+    result = {}
+    for code, item in response["items"].items():
+        row = item["financials"]
+        if row:
+            result[code] = {
+                "report_date": row.get("report_date"),
+                "revenue": row.get("revenue_latest"),
+                "net_profit": row.get("net_profit_latest"),
+                "operating_cash_flow": row.get("operating_cf_latest"),
+                "debt_ratio_pct": row.get("debt_ratio"),
+                "fetched_at": row.get("financial_fetched_at"),
                 "flow_basis": "latest_report_period",
                 "amount_unit": "元",
+                "versions": item["versions"],
             }
-            for row in rows
-        }
+    return result
 
 
 def _technical_summary(result: dict[str, Any]) -> dict[str, Any]:
@@ -133,11 +128,17 @@ def get_multi_stock_snapshot(symbols: str) -> dict[str, Any]:
     successful_items = [
         item
         for item in items
-        if (item.get("quote") is not None or item["technical"].get("success") or item.get("financial") is not None)
+        if (
+            item.get("quote") is not None
+            or item["technical"].get("success")
+            or item.get("financial") is not None
+        )
     ]
     success = bool(successful_items)
     partial = success and (
-        bool(errors) or len(successful_items) < len(items) or any(item.get("quote") is None for item in items)
+        bool(errors)
+        or len(successful_items) < len(items)
+        or any(item.get("quote") is None for item in items)
     )
     return {
         "success": success,
@@ -148,15 +149,17 @@ def get_multi_stock_snapshot(symbols: str) -> dict[str, Any]:
         "total": len(items),
         "data_time": quote_result.get("data_time"),
         "quote_basis": (
-            "盘中实时快照（当日尚未收盘，不是收盘价）" if quote_is_intraday else "非交易时段的最近市场快照"
+            "盘中实时快照（当日尚未收盘，不是收盘价）"
+            if quote_is_intraday
+            else "非交易时段的最近市场快照"
         ),
         "quote_is_intraday": quote_is_intraday,
         "is_stale": quote_result.get("is_stale"),
         "fallback_used": bool(quote_result.get("fallback_used")),
         "source": {
             "quotes": quote_result.get("source") or [],
-            "technical": "stock_daily 优先，缺失时 K 线多源链",
-            "financial": "stock_meta 已同步最新报告期财务快照",
+            "technical": "独立数据服务已校验日线；业务侧确定性计算",
+            "financial": "独立数据服务同报告期财务快照与数据版本",
         },
         "errors": errors,
         "warnings": warnings,

@@ -14,14 +14,20 @@ import pytest
 import src.tools.search_financial_news as financial_news_module
 import src.tools.search_research_library as research_library_module
 
-from src.tools.get_consensus_estimates import get_consensus_estimates
-from src.tools.get_peer_comparison import get_peer_comparison
-from src.tools.get_sector_flow import (
+from market_data_service.providers.get_consensus_estimates import (
+    get_consensus_estimates,
+)
+from market_data_service.providers.get_peer_comparison import get_peer_comparison
+from market_data_service.providers.get_sector_flow import (
     _fetch_all as fetch_all_sector_flow,
     get_sector_flow,
     read_sector_flow_eastmoney,
 )
-from src.tools.get_stock_capital_flow import _is_stale, _market_for, get_stock_capital_flow
+from market_data_service.providers.get_stock_capital_flow import (
+    _is_stale,
+    _market_for,
+    get_stock_capital_flow,
+)
 from src.tools.get_monetary_policy_operations import _operation_item
 from src.tools.registry import ToolRegistry
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
@@ -48,8 +54,8 @@ from src.tools.websearch import (
 )
 
 
-
 """Focused test slice 1; shared fixtures remain local to this slice."""
+
 
 def _catalog_route(
     route_path: str,
@@ -66,6 +72,8 @@ def _catalog_route(
         "description": name,
         "params": params or [],
     }
+
+
 def test_legacy_search_helpers_have_no_intent_router_and_are_not_registered() -> None:
     financial_source = inspect.getsource(financial_news_module)
     research_source = inspect.getsource(research_library_module)
@@ -95,7 +103,10 @@ def test_legacy_search_helpers_have_no_intent_router_and_are_not_registered() ->
         "read_rss_feed",
     }.isdisjoint(registered)
 
-def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording() -> None:
+
+def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording() -> (
+    None
+):
     routes = [
         _catalog_route(
             "/eastmoney/report/:category",
@@ -128,16 +139,19 @@ def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording()
     assert first == second
     assert first[0][0] == "/eastmoney/report/:category"
 
+
 def test_industry_news_uses_only_caller_supplied_subjects():
     terms = _subject_terms(["人形机器人"])
 
     assert terms == ["人形机器人"]
+
 
 def test_all_47_infos_routes_have_an_explicit_business_capability() -> None:
     assert len(RSS_ROUTE_CAPABILITIES) == 47
     assert "research" in RSS_ROUTE_CAPABILITIES["/wkjyqh/research"]
     assert "regulatory" in RSS_ROUTE_CAPABILITIES["/sse/inquire"]
     assert "monetary_policy" in RSS_ROUTE_CAPABILITIES["/gov/pbc/tradeAnnouncement"]
+
 
 def test_research_selector_never_uses_exchange_inquiry_routes() -> None:
     routes = [
@@ -156,6 +170,7 @@ def test_research_selector_never_uses_exchange_inquiry_routes() -> None:
     selected = _select_specs(routes, "半导体研报", "research")
 
     assert [path for path, _, _ in selected] == ["/wkjyqh/research"]
+
 
 def test_szse_inquiry_fills_all_path_segments_before_keyword() -> None:
     route = _catalog_route(
@@ -185,6 +200,7 @@ def test_szse_inquiry_fills_all_path_segments_before_keyword() -> None:
         "keyword": "000001",
     }
 
+
 def test_monetary_operation_parser_extracts_amount_term_and_rate() -> None:
     parsed = _operation_item(
         {"title": "公开市场业务交易公告", "published": "2026-07-16"},
@@ -195,6 +211,7 @@ def test_monetary_operation_parser_extracts_amount_term_and_rate() -> None:
     assert parsed["term_days"] == 7
     assert parsed["amount_yi"] == 1000
     assert parsed["rate_pct"] == 1.40
+
 
 def test_monetary_parser_handles_spaced_html_numbers_and_central_bank_bill() -> None:
     parsed = _operation_item(
@@ -208,6 +225,7 @@ def test_monetary_parser_handles_spaced_html_numbers_and_central_bank_bill() -> 
     assert parsed["amount_yi"] == 400
     assert parsed["term_months"] == 6
     assert parsed["rate_pct"] == 1.34
+
 
 def test_semantic_rss_normalizes_web_fallback_into_items() -> None:
     catalog = {
@@ -229,8 +247,13 @@ def test_semantic_rss_normalizes_web_fallback_into_items() -> None:
     }
     with (
         patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog),
-        patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}),
-        patch("src.tools.websearch.websearch", return_value=fallback) as mocked_websearch,
+        patch(
+            "api.v1.endpoints._rss_reader.read_feed",
+            return_value={"items": [], "errors": []},
+        ),
+        patch(
+            "src.tools.websearch.websearch", return_value=fallback
+        ) as mocked_websearch,
     ):
         result = search_financial_news("贵州茅台最新公告", topic="announcement")
 
@@ -242,11 +265,15 @@ def test_semantic_rss_normalizes_web_fallback_into_items() -> None:
     assert result["items"][0]["source_type"] == "websearch"
     assert result["items"][0]["link"] == "https://example.com/a"
 
+
 def test_semantic_rss_rejects_missing_structured_topic() -> None:
     with pytest.raises(ValueError, match="topic"):
         search_financial_news("贵州茅台换一种说法也不能触发工具内猜测")
 
-def test_semantic_rss_macro_matching_recognizes_reverse_repo_inside_pbo_c_text() -> None:
+
+def test_semantic_rss_macro_matching_recognizes_reverse_repo_inside_pbo_c_text() -> (
+    None
+):
     catalog = {
         "count": 47,
         "routes": [_catalog_route("/gov/pbc/tradeAnnouncement", "公开市场交易公告")],
@@ -282,9 +309,12 @@ def test_semantic_rss_macro_matching_recognizes_reverse_repo_inside_pbo_c_text()
     assert result["topic"] == "macro"
     assert result["item_count"] == 2
     by_link = {item["link"]: item for item in result["items"]}
-    assert by_link["https://www.pbc.gov.cn/example"]["exact_subject_mentions"] == ["逆回购"]
+    assert by_link["https://www.pbc.gov.cn/example"]["exact_subject_mentions"] == [
+        "逆回购"
+    ]
     assert by_link["https://example.com/korea-etf"]["exact_subject_mentions"] == []
     assert all(item["semantic_status"] == "model_required" for item in result["items"])
+
 
 def test_semantic_rss_exact_query_route_beats_broad_topic_description() -> None:
     routes = [
@@ -302,6 +332,7 @@ def test_semantic_rss_exact_query_route_beats_broad_topic_description() -> None:
     selected = _select_specs(routes, "半导体景气", "industry", max_routes=2)
 
     assert selected[0][0] == "/eastmoney/search/:keyword"
+
 
 def test_semantic_rss_filters_expired_and_body_only_company_mentions() -> None:
     catalog = {
@@ -364,6 +395,7 @@ def test_semantic_rss_filters_expired_and_body_only_company_mentions() -> None:
     assert result["days"] == 30
     assert any("过滤 1 条过期" in warning for warning in result["warnings"])
 
+
 def test_semantic_rss_empty_success_is_distinct_from_failed_web_fallback() -> None:
     catalog = {
         "count": 47,
@@ -377,7 +409,10 @@ def test_semantic_rss_empty_success_is_distinct_from_failed_web_fallback() -> No
     }
     with (
         patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog),
-        patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}),
+        patch(
+            "api.v1.endpoints._rss_reader.read_feed",
+            return_value={"items": [], "errors": []},
+        ),
         patch("src.tools.websearch.websearch", return_value=fallback),
     ):
         result = search_financial_news("市场发生了什么", topic="market")
@@ -391,24 +426,40 @@ def test_semantic_rss_empty_success_is_distinct_from_failed_web_fallback() -> No
     assert result["fallback_used"] is False
     assert result["fallback_recommended"] is True
 
+
 def test_semantic_rss_rejects_empty_query_and_invalid_topic() -> None:
     with pytest.raises(ValueError, match="query"):
         search_financial_news("   ")
     with pytest.raises(ValueError, match="topic"):
         search_financial_news("贵州茅台", topic="other")
 
+
 def test_capital_flow_normalizes_units_and_window_observations() -> None:
     direct = pd.DataFrame(
         [
-            {"date": pd.Timestamp("2026-07-14").date(), "main_net_inflow": 10, "main_net_inflow_pct": 1.0},
-            {"date": pd.Timestamp("2026-07-15").date(), "main_net_inflow": -3, "main_net_inflow_pct": -0.5},
+            {
+                "date": pd.Timestamp("2026-07-14").date(),
+                "main_net_inflow": 10,
+                "main_net_inflow_pct": 1.0,
+            },
+            {
+                "date": pd.Timestamp("2026-07-15").date(),
+                "main_net_inflow": -3,
+                "main_net_inflow_pct": -0.5,
+            },
         ]
     )
     direct.attrs["history_transport"] = "curl_cffi"
 
     with (
-        patch("src.tools.get_stock_capital_flow.cached_call", return_value=(direct, False)),
-        patch("src.tools.get_stock_capital_flow._is_stale", return_value=(False, None)),
+        patch(
+            "market_data_service.providers.get_stock_capital_flow.cached_call",
+            return_value=(direct, False),
+        ),
+        patch(
+            "market_data_service.providers.get_stock_capital_flow._is_stale",
+            return_value=(False, None),
+        ),
     ):
         result = get_stock_capital_flow("600519", days=20)
 
@@ -420,6 +471,7 @@ def test_capital_flow_normalizes_units_and_window_observations() -> None:
     assert result["summary"]["windows"]["5d"]["complete_window"] is False
     assert result["amount_unit"] == "元"
     assert result["ratio_unit"] == "%"
+
 
 def test_capital_flow_recognizes_bse_920_codes() -> None:
     assert _market_for("920000") == "bj"
@@ -438,6 +490,7 @@ def test_capital_flow_history_uses_latest_completed_trade_day_intraday() -> None
 
     assert stale is True
     assert "2026-09-03" in (warning or "")
+
 
 def test_sector_flow_paginates_and_preserves_true_money_flow_fields() -> None:
     page_one = [
@@ -472,7 +525,10 @@ def test_sector_flow_paginates_and_preserves_true_money_flow_fields() -> None:
     def fake_page(params, page):
         return (page_one, 101) if page == 1 else (page_two, 101)
 
-    with patch("src.tools.get_sector_flow._request_page", side_effect=fake_page):
+    with patch(
+        "market_data_service.providers.get_sector_flow._request_page",
+        side_effect=fake_page,
+    ):
         records = fetch_all_sector_flow("industry", "today")
 
     assert len(records) == 2
@@ -481,8 +537,12 @@ def test_sector_flow_paginates_and_preserves_true_money_flow_fields() -> None:
     assert records[1]["main_net_inflow"] == -90
     assert records[1]["main_flow_rank"] == 2
 
+
 def test_sector_flow_never_substitutes_price_performance_for_money_flow() -> None:
-    with patch("src.tools.get_sector_flow.cached_call", side_effect=RuntimeError("upstream down")):
+    with patch(
+        "market_data_service.providers.get_sector_flow.cached_call",
+        side_effect=RuntimeError("upstream down"),
+    ):
         result = get_sector_flow(type="industry", period="today", top_n=5)
 
     assert result["success"] is False
@@ -491,7 +551,9 @@ def test_sector_flow_never_substitutes_price_performance_for_money_flow() -> Non
     assert result["fallback_used"] is False
 
 
-def test_agent_sector_flow_read_preserves_source_order_without_rank_or_top_lists() -> None:
+def test_agent_sector_flow_read_preserves_source_order_without_rank_or_top_lists() -> (
+    None
+):
     source_rows = [
         {
             "f12": "BK2",
@@ -520,11 +582,22 @@ def test_agent_sector_flow_read_preserves_source_order_without_rank_or_top_lists
     ]
 
     with (
-        patch("src.tools.get_sector_flow.cached_call", side_effect=lambda _key, call, **_kwargs: (call(), False)),
-        patch("src.tools.get_sector_flow._request_page", return_value=(source_rows, len(source_rows))),
-        patch("src.tools.get_sector_flow._freshness", return_value=(False, None)),
+        patch(
+            "market_data_service.providers.get_sector_flow.cached_call",
+            side_effect=lambda _key, call, **_kwargs: (call(), False),
+        ),
+        patch(
+            "market_data_service.providers.get_sector_flow._request_page",
+            return_value=(source_rows, len(source_rows)),
+        ),
+        patch(
+            "market_data_service.providers.get_sector_flow._freshness",
+            return_value=(False, None),
+        ),
     ):
-        result = read_sector_flow_eastmoney(type="industry", period="today", max_items=2)
+        result = read_sector_flow_eastmoney(
+            type="industry", period="today", max_items=2
+        )
 
     assert result["success"] is True
     assert result["source_scope"] == "sector_flow_source_records"
@@ -532,10 +605,17 @@ def test_agent_sector_flow_read_preserves_source_order_without_rank_or_top_lists
     assert all("main_flow_rank" not in item for item in result["items"])
     assert "inflow_top" not in result and "outflow_top" not in result
 
+
 def test_consensus_total_failure_has_unknown_freshness_without_data_time() -> None:
     with (
-        patch("src.tools.get_consensus_estimates._forecast", side_effect=RuntimeError("upstream down")),
-        patch("src.tools.get_consensus_estimates._detail", side_effect=RuntimeError("upstream down")),
+        patch(
+            "market_data_service.providers.get_consensus_estimates._forecast",
+            side_effect=RuntimeError("upstream down"),
+        ),
+        patch(
+            "market_data_service.providers.get_consensus_estimates._detail",
+            side_effect=RuntimeError("upstream down"),
+        ),
     ):
         result = get_consensus_estimates("600519")
 

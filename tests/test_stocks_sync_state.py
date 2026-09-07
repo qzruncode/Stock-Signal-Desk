@@ -1,50 +1,27 @@
-import unittest
-from unittest.mock import patch
+"""No API process memory is authoritative for synchronization."""
 
-from fastapi import HTTPException
-
-from api.v1.endpoints.stocks import sync as stocks
+from unittest.mock import Mock, patch
+from api.v1.endpoints.stocks import sync
 
 
-class StocksSyncStateTest(unittest.TestCase):
-    def setUp(self):
-        stocks._set_list_state(
-            status="idle",
-            progress=0,
-            total=0,
-            kline_progress=0,
-            kline_total=0,
-            started_at=None,
-            finished_at=None,
-            message="",
-            error=None,
+def test_status_observes_new_service_state_on_each_request():
+    client = Mock()
+    client.get.side_effect = [
+        {"items": [{"id": "same", "status": "running"}]},
+        {"items": [{"id": "same", "status": "cancelled"}]},
+    ]
+    with patch.object(sync, "get_market_data_client", return_value=client):
+        assert sync.get_stock_list_sync_status()["status"] == "running"
+        assert sync.get_stock_list_sync_status()["status"] == "cancelled"
+
+
+def test_all_sync_state_belongs_to_data_service():
+    assert not any(
+        hasattr(sync, name)
+        for name in (
+            "_list_sync_state",
+            "_kline_sync_state",
+            "_financial_sync_state",
+            "_launch_worker",
         )
-
-    def test_list_sync_is_marked_running_before_background_thread_runs(self):
-        with (
-            patch.object(stocks, "_latest_stock_universe_status", return_value=None),
-            patch.object(stocks, "_claim_persisted_sync_job", return_value=("list-job-1", True)),
-            patch.object(stocks, "_launch_detached_worker") as launch_worker,
-        ):
-            result = stocks.sync_stock_list(service=None)
-
-            self.assertTrue(result["success"])
-            launch_worker.assert_called_once_with("src.services.stock_list_sync_worker", "list-job-1")
-            self.assertEqual(stocks._get_list_state_copy()["status"], "running")
-
-            with self.assertRaises(HTTPException) as ctx:
-                stocks.sync_stock_list(service=None)
-            self.assertEqual(ctx.exception.status_code, 409)
-            launch_worker.assert_called_once_with("src.services.stock_list_sync_worker", "list-job-1")
-
-    def test_list_sync_status_returns_a_snapshot(self):
-        stocks._set_list_state(status="running", total=1)
-
-        snapshot = stocks.get_stock_list_sync_status()
-        snapshot["status"] = "mutated"
-
-        self.assertEqual(stocks._get_list_state_copy()["status"], "running")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    )

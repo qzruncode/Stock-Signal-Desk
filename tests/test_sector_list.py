@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from api.v1.endpoints import sectors
+from market_data_service.providers import sectors
 
 
 def test_industry_uses_sina_when_eastmoney_is_empty() -> None:
@@ -38,14 +38,14 @@ def test_industry_uses_sina_when_eastmoney_is_empty() -> None:
     assert result[0]["data_source"] == "新浪"
 
 
-def test_today_cache_hit_does_not_start_another_provider_refresh() -> None:
-    cached = [{"name": "金融行业", "data_source": "东方财富"}]
-    with (
-        patch.object(sectors, "_cache_get", return_value=(cached, "2026-08-12T09:30:00", False)),
-        patch.object(sectors, "_fetch_industry") as fetch,
-    ):
-        result = sectors.get_sector_list("industry")
+def test_sector_page_reads_service_without_local_refresh_threads():
+    from api.v1.endpoints import sectors as endpoint
 
-    fetch.assert_not_called()
-    assert result["_cached"] is True
-    assert result["is_stale"] is False
+    payload = {
+        "items": [{"name": "金融行业"}],
+        "data_service": {"version": "checked-version"},
+    }
+    with patch.object(endpoint, "read_source", return_value=payload) as read:
+        result = endpoint.get_sector_list("industry")
+    read.assert_called_once_with("market.sectors", {"type": "industry", "force": False})
+    assert result == payload

@@ -22,7 +22,6 @@ from src.storage.migrations import (
     ensure_compatible_schema,
 )
 from src.storage.mixins import (
-    DailyDataMixin,
     NewsMixin,
     QuoteKlineMixin,
     MacroMixin,
@@ -47,7 +46,6 @@ T = TypeVar("T")
 
 class DatabaseManager(
     AgentUsageMixin,
-    DailyDataMixin,
     NewsMixin,
     QuoteKlineMixin,
     MacroMixin,
@@ -258,20 +256,31 @@ class DatabaseManager(
                     100,
                 )
                 engine_kwargs["connect_args"] = {
-                    "options": (f"-c statement_timeout={statement_timeout_ms} " f"-c lock_timeout={lock_timeout_ms}"),
+                    "options": (
+                        f"-c statement_timeout={statement_timeout_ms} "
+                        f"-c lock_timeout={lock_timeout_ms}"
+                    ),
                 }
 
         self._engine = create_engine(db_url, **engine_kwargs)
         self._is_sqlite_engine = self._engine.url.get_backend_name() == "sqlite"
-        self._sqlite_file_db = self._is_sqlite_engine and self._is_file_sqlite_database()
+        self._sqlite_file_db = (
+            self._is_sqlite_engine and self._is_file_sqlite_database()
+        )
         self._install_sqlite_pragma_handler()
 
-        environment = str(os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
+        environment = (
+            str(os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
+        )
         production = environment in {"prod", "production"} or str(
             os.getenv("DSA_PRODUCTION") or ""
         ).strip().lower() in {"1", "true", "yes", "on"}
         auto_migrate_raw = str(os.getenv("DATABASE_AUTO_MIGRATE") or "").strip().lower()
-        auto_migrate = auto_migrate_raw in {"1", "true", "yes", "on"} if auto_migrate_raw else not production
+        auto_migrate = (
+            auto_migrate_raw in {"1", "true", "yes", "on"}
+            if auto_migrate_raw
+            else not production
+        )
         if auto_migrate:
             ensure_compatible_schema(self._engine, self._is_sqlite_engine)
         else:
@@ -285,7 +294,9 @@ class DatabaseManager(
         atexit.register(self._cleanup_engine, self._engine)
         logger.info(
             "DatabaseManager 初始化成功（%s）",
-            "SQLite 文件数据库" if (self._is_sqlite_engine and self._sqlite_file_db) else db_url,
+            "SQLite 文件数据库"
+            if (self._is_sqlite_engine and self._sqlite_file_db)
+            else db_url,
         )
 
     @classmethod
@@ -352,7 +363,11 @@ class DatabaseManager(
                 return result
             except OperationalError as exc:
                 session.rollback()
-                if self._is_sqlite_engine and self._is_sqlite_locked_error(exc) and attempt < max_retries:
+                if (
+                    self._is_sqlite_engine
+                    and self._is_sqlite_locked_error(exc)
+                    and attempt < max_retries
+                ):
                     delay = self._sqlite_write_retry_base_delay * (2**attempt)
                     logger.warning(
                         "SQLite 写入锁冲突，准备重试: %s (%s/%s, %.2fs)",
@@ -372,8 +387,13 @@ class DatabaseManager(
                 session.close()
 
     def get_session(self) -> Session:
-        if not getattr(self, "_initialized", False) or not hasattr(self, "_SessionLocal"):
-            raise RuntimeError("DatabaseManager 未正确初始化。" "请确保通过 DatabaseManager.get_instance() 获取实例。")
+        if not getattr(self, "_initialized", False) or not hasattr(
+            self, "_SessionLocal"
+        ):
+            raise RuntimeError(
+                "DatabaseManager 未正确初始化。"
+                "请确保通过 DatabaseManager.get_instance() 获取实例。"
+            )
         session = self._SessionLocal()
         try:
             return session

@@ -156,7 +156,9 @@ async def app_lifespan(app: FastAPI):
         )
     maintenance_task = None
     try:
-        from api.v1.endpoints.batches.helpers import resume_incomplete_batches_on_startup
+        from api.v1.endpoints.batches.helpers import (
+            resume_incomplete_batches_on_startup,
+        )
 
         resume_incomplete_batches_on_startup()
     except Exception:
@@ -188,7 +190,10 @@ async def app_lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to initialize durable Agent runtime recovery")
     from src.services.research_alerts import run_research_monitor
-    research_task = asyncio.create_task(run_research_monitor(database), name="research-monitor")
+
+    research_task = asyncio.create_task(
+        run_research_monitor(database), name="research-monitor"
+    )
     try:
         yield
     finally:
@@ -244,6 +249,19 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         lifespan=app_lifespan,
     )
     app.state.static_dir = static_dir
+    from src.services.market_data_client import MarketDataError
+
+    @app.exception_handler(MarketDataError)
+    async def market_data_error(_request, exc):
+        return JSONResponse(
+            status_code=exc.status,
+            content={
+                "detail": str(exc),
+                "code": "market_data_unavailable",
+                "data_status": exc.detail,
+            },
+            headers={"Retry-After": "3"} if exc.status == 503 else {},
+        )
 
     # ============================================================
     # CORS 配置
@@ -267,7 +285,9 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # 从环境变量添加额外的允许来源
     extra_origins = os.environ.get("CORS_ORIGINS", "")
     if extra_origins:
-        allowed_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
+        allowed_origins.extend(
+            [o.strip() for o in extra_origins.split(",") if o.strip()]
+        )
 
     # 允许所有来源（开发/演示用）
     allow_all_origins = os.environ.get("CORS_ALLOW_ALL", "").lower() == "true"
@@ -383,7 +403,9 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
                 )
             if file_path.is_file():
                 relative_path = file_path.relative_to(assets_root).as_posix()
-                return await assets_static_files.get_response(relative_path, request.scope)
+                return await assets_static_files.get_response(
+                    relative_path, request.scope
+                )
             return Response(
                 content="asset not found",
                 status_code=404,
@@ -396,7 +418,11 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             """SPA 路由回退 - 非 API 路由返回 index.html"""
             if full_path == "api" or full_path.startswith("api/"):
                 return JSONResponse(
-                    status_code=404, content={"error": "not_found", "message": f"API endpoint /{full_path} not found"}
+                    status_code=404,
+                    content={
+                        "error": "not_found",
+                        "message": f"API endpoint /{full_path} not found",
+                    },
                 )
 
             # Reuse the same containment check as /assets/* so that requests
@@ -404,7 +430,9 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             # the SPA fallback. Starlette's :path converter does not collapse
             # `..` segments, so static_dir / full_path can resolve outside
             # the bundle root if served unchecked.
-            file_path = _resolve_asset_path(static_dir, full_path) if full_path else None
+            file_path = (
+                _resolve_asset_path(static_dir, full_path) if full_path else None
+            )
             if file_path is not None and file_path.is_file():
                 if file_path == (static_dir / "index.html").resolve():
                     return _frontend_index_response(static_dir)

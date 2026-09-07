@@ -1,4 +1,5 @@
-# -*- coding: utf-8 -*-
+from src.services.market_data_client import read_source
+
 """
 ===================================
 RSS 订阅源端点
@@ -7,7 +8,6 @@ RSS 订阅源端点
 通过 RSSHub 聚合财经资讯，作为 search_news 的补充数据源。
 不修改原有数据获取逻辑，独立提供 RSS 能力。
 """
-
 import logging
 import re
 from hashlib import sha256
@@ -15,32 +15,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlencode
-
 from dotenv import dotenv_values
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
-
 from api.v1.schemas.common import ErrorResponse
 from api.deps import get_database_manager
 from src.config import Config
 from src.storage import DatabaseManager
-from api.v1.endpoints._rss_fetch import (
-    _build_feed_url_generic,
-    _fetch_rss_feed,
-    _fetch_rss_feed_json,
-)
-from api.v1.endpoints._rss_cache import (
-    _rss_cache_key_generic,
-    _cache_get,
-    _cache_put,
-)
 from api.v1.endpoints._rss_namespace import (
     get_namespaces_flat,
     get_namespace_detail,
     get_categories,
 )
 from api.v1.endpoints._rss_catalog import get_rss_catalog as _get_rss_catalog
-from api.v1.endpoints._gelonghui_subjects import get_subjects as get_gelonghui_subjects_list
+from api.v1.endpoints._gelonghui_subjects import (
+    get_subjects as get_gelonghui_subjects_list,
+)
 from api.v1.endpoints._nanhua_tree import get_nanhua_tree
 from api.v1.endpoints._cih_index_categories import get_cih_index_categories
 from api.v1.endpoints._cls_subjects import get_cls_subjects as get_cls_subjects_list
@@ -50,17 +40,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── 路由发现（namespace discovery）───────────────────────────────────────
-
-
-
 class FeedSpecRequest(BaseModel):
-    route_path: str = Field(..., description="RSSHub 路由模板，如 /wallstreetcn/news/:category?")
+    route_path: str = Field(
+        ..., description="RSSHub 路由模板，如 /wallstreetcn/news/:category?"
+    )
     params: Dict[str, Any] = Field(default_factory=dict, description="路径参数值")
-    options: Dict[str, Any] = Field(default_factory=dict, description="RSSHub 通用选项 (limit/filter/mode/format/...)")
+    options: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="RSSHub 通用选项 (limit/filter/mode/format/...)",
+    )
     namespace: Optional[str] = Field(None, description="命名空间（用于参数格式化器）")
     limit: int = Field(30, ge=1, le=100, description="返回条数")
     force: bool = Field(False, description="强制刷新（跳过缓存）")
+
 
 class FeedItemDetailRequest(BaseModel):
     route_path: str
@@ -71,17 +63,9 @@ class FeedItemDetailRequest(BaseModel):
     title: str = ""
     link: str = ""
     force: bool = Field(False, description="强制刷新（跳过缓存，重新 fulltext 抓取）")
-    # The list-mode item's already-rendered body, sent by the frontend so the
-    # detail endpoint can fall back to it when the fulltext re-fetch produces a
-    # poorer body (e.g. cih-index reports are image-only SPAs — fulltext returns
-    # an empty `.page_main` shell, stripping the <img> pages the list already had),
-    # or when the re-fetch comes back empty (see the fallback below).
     content_html: str = ""
     summary: str = ""
     image: str = ""
-    # Metadata the list item already carries, forwarded so a synthesized
-    # fallback (when the re-fetch comes back empty) keeps the published time /
-    # author / tags / attachments the detail view renders.
     published: str = ""
     author: str = ""
     tags: List[str] = Field(default_factory=list)
@@ -93,9 +77,10 @@ class FeedItemPreviewRequest(FeedItemDetailRequest):
         ...,
         min_length=8,
         max_length=100,
-        pattern=r"^[A-Za-z0-9_-]+$",
+        pattern="^[A-Za-z0-9_-]+$",
         description="设置页生命周期内稳定的文档预览会话标识",
     )
+
 
 _MEDIA_TYPES = {
     "rss": "application/rss+xml; charset=utf-8",
@@ -103,6 +88,7 @@ _MEDIA_TYPES = {
     "json": "application/feed+json; charset=utf-8",
     "rss3": "application/json; charset=utf-8",
 }
+
 
 class RawFeedRequest(BaseModel):
     route_path: str
@@ -112,6 +98,7 @@ class RawFeedRequest(BaseModel):
     format: str = Field("rss", description="输出格式: rss/atom/json/rss3")
     limit: int = Field(30, ge=1, le=100)
     text_only: bool = Field(True, description="移除图片、音频和视频资源")
+
 
 class HtmlTransformRequest(BaseModel):
     url: str = Field(..., description="目标网页 URL")
@@ -128,7 +115,10 @@ class HtmlTransformRequest(BaseModel):
     item_content: Optional[str] = Field(None, description="二次抓取完整正文的选择器")
     encoding: Optional[str] = Field(None, description="页面编码（默认 utf-8）")
     limit: int = Field(30, ge=1, le=100)
-    options: Dict[str, Any] = Field(default_factory=dict, description="额外 RSSHub 通用选项")
+    options: Dict[str, Any] = Field(
+        default_factory=dict, description="额外 RSSHub 通用选项"
+    )
+
 
 _HTML_PARAM_KEYS = {
     "url",
@@ -147,30 +137,510 @@ _HTML_PARAM_KEYS = {
 }
 
 
-from . import _rss_functions1 as _rss_functions1
-from . import _rss_functions2 as _rss_functions2
+@router.get(
+    "/namespaces",
+    summary="获取 RSSHub 全量路由（扁平化）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_rss_namespaces(
+    force: bool = Query(False, description="强制刷新缓存"),
+    finance_only: bool = Query(
+        True, description="仅返回股市相关路由(财经分类,排除纯加密)"
+    ),
+    include_hidden: bool = Query(False, description="包含降级、英文和非默认推荐路由"),
+):
+    """代理 RSSHub /api/namespace，返回扁平化路由列表供前端浏览/搜索/订阅。
+
+    默认 finance_only=true：只返回影响股市的路由(A股/港美股/外汇/大宗/宏观/央行)，
+    排除纯加密货币。传 finance_only=false 可看全量。
+    """
+    try:
+        return get_namespaces_flat(
+            force=force, finance_only=finance_only, include_hidden=include_hidden
+        )
+    except Exception as exc:
+        logger.error("Failed to fetch RSS namespaces: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取 RSSHub 路由失败"},
+        )
 
 
-def _bind_extracted_function(_member):
-    import functools
-    import types
+@router.get(
+    "/namespaces/{namespace}",
+    summary="获取单个命名空间详情",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_rss_namespace(namespace: str, force: bool = Query(False)):
+    """代理 RSSHub /api/namespace/{ns}，返回单个命名空间的路由详情。"""
+    try:
+        return get_namespace_detail(namespace, force=force)
+    except Exception as exc:
+        logger.error("Failed to fetch namespace detail: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取命名空间详情失败"},
+        )
 
-    _bound = types.FunctionType(_member.__code__, globals(), _member.__name__, _member.__defaults__, _member.__closure__)
-    _bound.__kwdefaults__ = _member.__kwdefaults__
-    functools.update_wrapper(_bound, _member)
-    return _bound
+
+@router.get(
+    "/categories", summary="获取全部路由分类", responses={500: {"model": ErrorResponse}}
+)
+def get_rss_categories(
+    force: bool = Query(False),
+    finance_only: bool = Query(True, description="仅股市相关路由的分类"),
+):
+    """返回路由分类（供前端筛选 chip）。默认仅股市相关。"""
+    try:
+        return {"categories": get_categories(force=force, finance_only=finance_only)}
+    except Exception as exc:
+        logger.error("Failed to fetch RSS categories: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取分类失败"},
+        )
 
 
-for _function_module in (_rss_functions1, _rss_functions2):
-    for _function_name in _function_module.__all__:
-        globals()[_function_name] = _bind_extracted_function(getattr(_function_module, _function_name))
+@router.get(
+    "/catalog",
+    summary="获取 AI 助手友好的 RSS 源目录（精筛财经路由 + 参数提示）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_rss_catalog_endpoint(force: bool = Query(False, description="强制刷新缓存")):
+    """返回 agent 友好的 RSS 源目录：基于已过滤的 ~47 条财经路由，每条带
+    中文用途描述 + 参数提示（名称/必填/hint/默认/选项）。供 AI 助手的
+    Infos 页面和语义财经资讯工具共用，6h 缓存。
+    """
+    try:
+        return _get_rss_catalog(force=force)
+    except Exception as exc:
+        logger.error("Failed to build RSS catalog: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取 RSS 目录失败"},
+        )
+
+
+@router.get(
+    "/gelonghui/subjects",
+    summary="格隆汇主题列表（供 /gelonghui/subject/:id 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_gelonghui_subjects(
+    force: bool = Query(False, description="强制刷新缓存"),
+    keyword: Optional[str] = Query(None, description="按主题名/简介过滤"),
+):
+    """代理格隆汇主题列表 API，返回 ``{subjectId, name, followCount, summary, link}``。
+
+    供 ``/gelonghui/subject/:id`` 路由的参数选择器使用：用户搜主题名、看到关注数与
+    简介、点选后填入 ``subjectId``。6h 缓存，抓取失败回退 stale 缓存。
+    """
+    try:
+        return get_gelonghui_subjects_list(force=force, keyword=keyword)
+    except Exception as exc:
+        logger.error("Failed to fetch gelonghui subjects: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取格隆汇主题失败"},
+        )
+
+
+@router.get(
+    "/nanhua/report-types",
+    summary="南华期货研报分类树（供 /nanhua/report/:type1/:type2 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_nanhua_report_types(force: bool = Query(False, description="强制刷新缓存")):
+    """代理南华官网分类树接口，返回 ``{types: [{type, name, children: [{type, name}]}]}``。
+
+    供 ``/nanhua/report/:type1/:type2`` 路由的级联选择器使用：选了 type1 后联动出该
+    分类下的合法 type2，避免填出 ``HOT/WEEK_black`` 这类非法组合（上游返回空、RSSHub
+    抛 503 ``this route is empty``）。6h 缓存，抓取失败回退 stale 缓存。
+    """
+    try:
+        return get_nanhua_tree(force=force)
+    except Exception as exc:
+        logger.error("Failed to fetch nanhua report types: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取南华分类树失败"},
+        )
+
+
+@router.get(
+    "/cih-index/report-categories",
+    summary="中指指数报告一级分类（供 /cih-index/report/list/:report? 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_cih_index_report_categories(
+    force: bool = Query(False, description="强制刷新缓存"),
+):
+    """代理中指指数报告列表页，返回 ``{categories: [{classId, className}]}``。
+
+    供 ``/cih-index/report/list/:report?`` 路由的分类选择器使用。该路由的 ``report``
+    参数是复合路径段（``f<classId>-p1-oaddtime-ddesc`` 形式，前缀表见
+    ``_cih_index_categories``），上游元数据只给散文无可选列表，但报告列表页
+    ``__INITIAL_STATE__.indNavLists`` 内嵌了 8 个一级分类。前端选分类后拼出合法
+    路径段，避免盲填。6h 缓存，抓取失败回退 stale 缓存。
+    """
+    try:
+        return get_cih_index_categories(force=force)
+    except Exception as exc:
+        logger.error("Failed to fetch cih-index categories: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取中指指数分类失败"},
+        )
+
+
+@router.get(
+    "/cls/subjects",
+    summary="财联社话题列表（供 /cls/subject/:id? 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_cls_subjects(
+    force: bool = Query(False, description="强制刷新缓存"),
+    keyword: Optional[str] = Query(None, description="按话题名过滤"),
+):
+    """代理财联社话题列表，返回 ``{subjects: [{subjectId, name, attention_num, link}]}``。
+
+    供 ``/cls/subject/:id?`` 路由的参数选择器使用。财联社没有公开话题索引接口，
+    这里以默认话题（``1103`` 盘面直播、``1151`` 有声早报）为种子分页抓取其文章 API，
+    从文章附带的 ``subjects`` 字段收割话题去重、按关注度降序输出，让前端按话题名
+    点选后填入 ``subjectId``。``id`` 可选，留空走 RSSHub 默认（盘面直播）。6h 缓存，
+    抓取失败回退 stale 缓存。
+    """
+    try:
+        return get_cls_subjects_list(force=force, keyword=keyword)
+    except Exception as exc:
+        logger.error("Failed to fetch cls subjects: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取财联社话题失败"},
+        )
+
+
+@router.get(
+    "/futunn/topics",
+    summary="富途牛牛话题列表（供 /futunn/topic/:id 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_futunn_topics_route(
+    force: bool = Query(False, description="强制刷新缓存"),
+    keyword: Optional[str] = Query(None, description="按话题名/简介过滤"),
+):
+    """代理富途牛牛话题列表，返回 ``{topics: [{topicId, title, detail, subscribed, timestamp, link}]}``。
+
+    供 ``/futunn/topic/:id`` 路由的参数选择器使用。上游元数据只写
+    "Topic ID, can be found in URL"，无可选列表，但富途公开话题列表接口
+    ``news-site-api/main/get-topics-list``（分页，无需签名/cookie）返回每个话题的
+    ``idx``/``title``/``detail``/``subscribed``。这里翻页累积全量、按订阅数降序输出，
+    让前端按话题名点选后填入 ``idx``。``id`` 必填（路由无默认）。6h 缓存，抓取失败回退
+    stale 缓存。
+    """
+    try:
+        return get_futunn_topics(force=force, keyword=keyword)
+    except Exception as exc:
+        logger.error("Failed to fetch futunn topics: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取富途话题失败"},
+        )
+
+
+@router.post(
+    "/feeds",
+    summary="按通用 FeedSpec 获取 RSS 内容",
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
+def get_rss_feeds_by_spec(body: FeedSpecRequest):
+    return read_source("rss.ui.get_rss_feeds_by_spec", {"body": body.model_dump()})
+
+
+def _build_detail_fallback(body: "FeedItemDetailRequest") -> Optional[Dict[str, Any]]:
+    """Synthesize a detail item from the list-mode item when the fulltext
+    re-fetch comes back empty.
+
+    Returns ``None`` when the list item carried no content at all (no body, no
+    summary, no image, no attachments) — in that case there is genuinely nothing
+    to show and the caller should 404. Otherwise returns an item dict carrying
+    the list item's title/link/body/metadata so the detail view renders the
+    already-available content instead of a dead-end error.
+    """
+    has_body = any(
+        [
+            (body.content_html or "").strip(),
+            (body.summary or "").strip(),
+            (body.image or "").strip(),
+            bool(body.attachments),
+        ]
+    )
+    if not has_body:
+        return None
+    return {
+        "id": body.item_id,
+        "title": body.title,
+        "link": body.link,
+        "summary": body.summary,
+        "published": body.published or None,
+        "author": body.author,
+        "tags": list(body.tags or []),
+        "image": body.image,
+        "content_html": body.content_html,
+        "attachments": list(body.attachments or []),
+        "_content_origin": "list_item_fallback",
+    }
+
+
+def _fulltext_lost_content(list_html: str, new_html: str) -> bool:
+    """True when the fulltext re-fetch clearly failed to capture the article
+    body — its text barely overlaps the list item's summary, meaning the
+    re-fetch grabbed page chrome (nav/promo/footer) or an anti-crawl payload
+    instead of real content. The list item's body is then the better source.
+
+    The length-only fallback below can't catch this: a promo shell or a WAF
+    noise page is often *longer* than the list summary, so it wins on size
+    despite carrying zero article content. Concrete cases observed:
+    /eastmoney/search — fulltext returns the SPA page shell (title echo +
+    "东方财富APP …" promo block, 649 chars) while the list summary has the
+    real 75-char excerpt; /xueqiu/timeline — fulltext returns a 34k-char WAF
+    anti-crawl token blob. Both beat the list summary on length yet share no
+    article text with it.
+    """
+    from api.v1.endpoints._rss_fetch import _html_to_text
+
+    list_txt = _html_to_text(list_html)
+    new_txt = _html_to_text(new_html)
+    if not list_txt or not new_txt:
+        return False
+    if len(list_txt) < 16:
+        return list_txt not in new_txt
+    n = 8
+    grams = [list_txt[i : i + n] for i in range(0, len(list_txt) - n + 1, n)]
+    if not grams:
+        return list_txt not in new_txt
+    hit = sum((1 for g in grams if g in new_txt))
+    return hit / len(grams) < 0.3
+
+
+@router.post(
+    "/feeds/item",
+    summary="获取单条 RSS 消息全文",
+    responses={404: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+)
+def get_rss_feed_item_detail(body: FeedItemDetailRequest):
+    return read_source("rss.ui.get_rss_feed_item_detail", {"body": body.model_dump()})
+
+
+@router.post(
+    "/feeds/raw",
+    summary="透传 RSSHub 原始 feed 字节（多格式下载）",
+    responses={400: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+)
+def get_rss_feeds_raw(body: RawFeedRequest):
+    import base64
+
+    result = read_source("rss.ui.get_rss_feeds_raw", {"body": body.model_dump()})
+    return Response(
+        content=base64.b64decode(result["body_base64"]), media_type=result["media_type"]
+    )
+
+
+def _build_html_transform_url(body: "HtmlTransformRequest") -> str:
+    """构建 RSSHub /rsshub/transform/html/:url/:routeParams URL。"""
+    base_url = Config.get_instance().rsshub_base_url.rstrip("/")
+    encoded_url = quote(body.url.strip(), safe="")
+    route_params: Dict[str, str] = {}
+    field_map = {
+        "title": body.title,
+        "item": body.item,
+        "itemTitle": body.item_title,
+        "itemTitleAttr": body.item_title_attr,
+        "itemLink": body.item_link,
+        "itemLinkAttr": body.item_link_attr,
+        "itemDesc": body.item_desc,
+        "itemDescAttr": body.item_desc_attr,
+        "itemPubDate": body.item_pubdate,
+        "itemPubDateAttr": body.item_pubdate_attr,
+        "itemContent": body.item_content,
+        "encoding": body.encoding,
+    }
+    for k, v in field_map.items():
+        if v is not None and str(v).strip():
+            route_params[k] = str(v).strip()
+    for k, v in (body.options or {}).items():
+        if v is None:
+            continue
+        if isinstance(v, str) and (not v.strip()):
+            continue
+        route_params[str(k)] = str(v)
+    encoded_params = quote(urlencode(route_params), safe="")
+    return f"{base_url}/rsshub/transform/html/{encoded_url}/{encoded_params}"
+
+
+def _build_html_transform_url_from_params(
+    params: Dict[str, Any], options: Dict[str, Any], limit: int
+) -> str:
+    """从持久化的 params（url + 选择器，camelCase）构建 HTML 转换器 URL。
+
+    供订阅了 HTML 转换器路由的 feed 取数复用。
+    """
+    params = params or {}
+    url = str(params.get("url") or "").strip()
+    if not url:
+        raise ValueError("HTML 转换器缺少 url 参数")
+    route_params: Dict[str, str] = {}
+    for k in _HTML_PARAM_KEYS:
+        if k == "url":
+            continue
+        v = params.get(k)
+        if v is not None and str(v).strip():
+            route_params[k] = str(v).strip()
+    for k, v in (options or {}).items():
+        if k == "format":
+            continue
+        if v is None:
+            continue
+        if isinstance(v, str) and (not v.strip()):
+            continue
+        route_params[str(k)] = str(v)
+    route_params.setdefault("limit", str(limit))
+    base_url = Config.get_instance().rsshub_base_url.rstrip("/")
+    encoded_url = quote(url, safe="")
+    encoded_params = quote(urlencode(route_params), safe="")
+    return f"{base_url}/rsshub/transform/html/{encoded_url}/{encoded_params}"
+
+
+@router.post(
+    "/transform/html",
+    summary="HTML→RSS 万能转换器（代理 RSSHub /rsshub/transform/html）",
+    responses={400: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+)
+def transform_html(body: HtmlTransformRequest):
+    return read_source("rss.ui.transform_html", {"body": body.model_dump()})
+
+
+def _rsshub_env_path() -> Path:
+    """RSSHub 实例 .env 路径（项目根/services/rsshub/app/.env）。"""
+    return (
+        Path(__file__).resolve().parent.parent.parent.parent
+        / "services"
+        / "rsshub"
+        / "app"
+        / ".env"
+    )
+
+
+def _xueqiu_cookies_configured() -> bool:
+    """实例 .env 是否配置了非空的 XUEQIU_COOKIES。"""
+    env_path = _rsshub_env_path()
+    if not env_path.exists():
+        return False
+    try:
+        values = dotenv_values(env_path)
+    except Exception:
+        return False
+    return bool((values.get("XUEQIU_COOKIES") or "").strip())
+
+
+@router.post(
+    "/instance/cookies/test",
+    summary="测试 RSSHub 实例配置的雪球 Cookie 是否生效",
+    responses={500: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+)
+def test_xueqiu_cookie():
+    """实际请求一次 xueqiu/timeline，判断实例当前 XUEQIU_COOKIES 是否生效。
+
+    不写 .env、不重启实例——只读当前状态并做一次真实取数验证。供前端"测试
+    Cookie 是否生效"按钮调用。管理员配好 .env 并重启实例后，用户点此即可确认。
+    """
+    configured = _xueqiu_cookies_configured()
+    if not configured:
+        return {
+            "configured": False,
+            "verified": False,
+            "item_count": 0,
+            "message": "实例未配置 XUEQIU_COOKIES，请联系管理员在 services/rsshub/app/.env 配置（需含 xq_a_token）并重启 RSSHub 实例。",
+        }
+    result = read_source(
+        "rss.ui.get_rss_feeds_by_spec",
+        {
+            "body": {
+                "route_path": "/xueqiu/timeline/:usergroup_id?",
+                "params": {},
+                "options": {},
+                "limit": 3,
+                "force": True,
+            }
+        },
+    )
+    errors = result.get("errors") or []
+    items = result.get("items") or []
+    if items:
+        return {
+            "configured": True,
+            "verified": True,
+            "item_count": len(items),
+            "message": f"Cookie 已生效，timeline 成功返回 {len(items)} 条内容。",
+        }
+    detail = errors[0] if errors else "timeline 未返回内容"
+    return {
+        "configured": True,
+        "verified": False,
+        "item_count": 0,
+        "message": f"Cookie 已配置但未生效（{detail}）。可能是 xq_a_token 缺失或已过期，请联系管理员更新。",
+    }
+
+
+@router.get(
+    "/pdf/proxy",
+    summary="代理下载 PDF 文件（供前端 PDF.js 同源渲染）",
+    responses={400: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+)
+def proxy_pdf(url: str = Query(..., description="PDF 原始 URL（须在白名单 host 内）")):
+    """代理外部 PDF 字节，返回同源 ``Content-Disposition: inline`` 响应。
+
+    解决两类问题：(1) 上游（如 ``mall.nanhua.net``）跨域无 CORS 头，前端 PDF.js
+    直接 fetch 会失败；(2) 上游带 ``Content-Disposition: attachment`` 触发下载而非
+    内联渲染。代理改写为 ``inline``，前端 PDF.js 用 canvas 渲染。
+
+    SSRF 防护见 ``_pdf_proxy.py``：host 白名单 + 内网 IP 拦截 + 重定向二次校验 +
+    ``%PDF-`` magic 校验。
+    """
+    from api.v1.endpoints._pdf_proxy import fetch_pdf, is_safe_pdf_url
+
+    if not is_safe_pdf_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_error", "message": "不被允许的 PDF 来源"},
+        )
+    try:
+        result = fetch_pdf(url)
+    except Exception as exc:
+        logger.warning("[RSS] PDF proxy fetch failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "upstream_error", "message": f"PDF 下载失败: {exc}"},
+        )
+    if result is None:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "upstream_error",
+                "message": "PDF 校验失败（非有效 PDF 或被重定向到非法地址）",
+            },
+        )
+    content, _content_type = result
+    headers = {
+        "Content-Disposition": "inline",
+        "Cache-Control": "private, max-age=3600",
+        "X-Content-Type-Options": "nosniff",
+    }
+    return Response(content=content, media_type="application/pdf", headers=headers)
 
 
 def _rss_preview_conversation_id(
-    *,
-    tenant_id: str,
-    owner_id: str,
-    preview_session_id: str,
+    *, tenant_id: str, owner_id: str, preview_session_id: str
 ) -> str:
     digest = sha256(
         f"{tenant_id}:{owner_id}:{preview_session_id}".encode("utf-8")
@@ -179,16 +649,10 @@ def _rss_preview_conversation_id(
 
 
 def _ensure_rss_preview_conversation(
-    db: DatabaseManager,
-    *,
-    conversation_id: str,
-    tenant_id: str,
-    owner_id: str,
+    db: DatabaseManager, *, conversation_id: str, tenant_id: str, owner_id: str
 ) -> None:
     existing = db.get_chat_conversation(
-        conversation_id,
-        tenant_id=tenant_id,
-        owner_id=owner_id,
+        conversation_id, tenant_id=tenant_id, owner_id=owner_id
     )
     if existing is not None:
         return
@@ -201,13 +665,12 @@ def _ensure_rss_preview_conversation(
             owner_id=owner_id,
         )
     except Exception:
-        # Two detail requests from the same page may race to create the one
-        # deterministic preview session. Only suppress the uniqueness race.
-        if db.get_chat_conversation(
-            conversation_id,
-            tenant_id=tenant_id,
-            owner_id=owner_id,
-        ) is None:
+        if (
+            db.get_chat_conversation(
+                conversation_id, tenant_id=tenant_id, owner_id=owner_id
+            )
+            is None
+        ):
             raise
 
 
@@ -246,18 +709,13 @@ def preview_rss_feed_item(
         preview_session_id=body.preview_session_id,
     )
     _ensure_rss_preview_conversation(
-        db,
-        conversation_id=conversation_id,
-        tenant_id=tenant_id,
-        owner_id=owner_id,
+        db, conversation_id=conversation_id, tenant_id=tenant_id, owner_id=owner_id
     )
     resources, document_errors = materialize_text_documents(
         db=db,
         conversation_id=conversation_id,
-        run_id=(
-            "rss_preview_"
-            + sha256(body.preview_session_id.encode("utf-8")).hexdigest()[:32]
-        ),
+        run_id="rss_preview_"
+        + sha256(body.preview_session_id.encode("utf-8")).hexdigest()[:32],
         attachments=[
             value
             for value in detail.get("attachments") or []
@@ -272,19 +730,16 @@ def preview_rss_feed_item(
 
 
 @router.delete(
-    "/preview-sessions/{preview_session_id}",
-    summary="释放设置页 RSS 文档预览资源",
+    "/preview-sessions/{preview_session_id}", summary="释放设置页 RSS 文档预览资源"
 )
 def delete_rss_preview_session(
     preview_session_id: str,
     request: Request,
     db: DatabaseManager = Depends(get_database_manager),
 ):
-    from src.services.text_document_service import (
-        delete_conversation_document_blobs,
-    )
+    from src.services.text_document_service import delete_conversation_document_blobs
 
-    if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", preview_session_id):
+    if not re.fullmatch("[A-Za-z0-9_-]{8,100}", preview_session_id):
         raise HTTPException(status_code=400, detail="预览会话标识无效")
     conversation_id = _rss_preview_conversation_id(
         tenant_id=str(getattr(request.state, "tenant_id", "local")),

@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import patch
 
-from src.tools.get_social_sentiment import _post_time, get_social_sentiment
+from market_data_service.providers.get_social_sentiment import (
+    _post_time,
+    get_social_sentiment,
+)
 
 
 def test_post_time_rolls_december_back_when_current_date_is_january() -> None:
@@ -46,19 +49,19 @@ def test_social_tool_preserves_discussion_and_syndicated_provenance() -> None:
     ]
     with (
         patch(
-            "src.tools.get_social_sentiment._fetch_guba_sample",
+            "market_data_service.providers.get_social_sentiment._fetch_guba_sample",
             return_value=(posts, True, [], False, True),
         ),
         patch(
-            "src.tools.get_social_sentiment._fetch_xueqiu_mentions",
+            "market_data_service.providers.get_social_sentiment._fetch_xueqiu_mentions",
             return_value=([], []),
         ),
         patch(
-            "src.tools.get_social_sentiment._fetch_stock_news_fallback",
+            "market_data_service.providers.get_social_sentiment._fetch_stock_news_fallback",
             return_value=(fallback, False),
         ),
         patch(
-            "src.tools.get_social_sentiment._fetch_diagnose_score",
+            "market_data_service.providers.get_social_sentiment._fetch_diagnose_score",
             return_value=(
                 [{"date": "2026-07-15", "score": 70.0, "close": 10.0}],
                 70.0,
@@ -79,15 +82,15 @@ def test_social_tool_preserves_discussion_and_syndicated_provenance() -> None:
 def test_empty_successful_sample_is_not_converted_to_neutral_score() -> None:
     with (
         patch(
-            "src.tools.get_social_sentiment._fetch_guba_sample",
+            "market_data_service.providers.get_social_sentiment._fetch_guba_sample",
             return_value=([], True, [], False, True),
         ),
         patch(
-            "src.tools.get_social_sentiment._fetch_xueqiu_mentions",
+            "market_data_service.providers.get_social_sentiment._fetch_xueqiu_mentions",
             return_value=([], []),
         ),
         patch(
-            "src.tools.get_social_sentiment._fetch_diagnose_score",
+            "market_data_service.providers.get_social_sentiment._fetch_diagnose_score",
             return_value=([], None, []),
         ),
     ):
@@ -117,19 +120,19 @@ def test_company_news_fallback_is_not_counted_as_social_discussion() -> None:
     ]
     with (
         patch(
-            "src.tools.get_social_sentiment._fetch_guba_sample",
+            "market_data_service.providers.get_social_sentiment._fetch_guba_sample",
             return_value=([], False, ["股吧 unavailable"], False, False),
         ),
         patch(
-            "src.tools.get_social_sentiment._fetch_stock_news_fallback",
+            "market_data_service.providers.get_social_sentiment._fetch_stock_news_fallback",
             return_value=(fallback, False),
         ),
         patch(
-            "src.tools.get_social_sentiment._fetch_xueqiu_mentions",
+            "market_data_service.providers.get_social_sentiment._fetch_xueqiu_mentions",
             return_value=([], []),
         ),
         patch(
-            "src.tools.get_social_sentiment._fetch_diagnose_score",
+            "market_data_service.providers.get_social_sentiment._fetch_diagnose_score",
             return_value=([], None, []),
         ),
     ):

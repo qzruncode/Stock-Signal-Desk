@@ -12,7 +12,7 @@ import pytest
 @pytest.fixture
 def fin_sync():
     """Reload the module so each test starts with a clean injected state."""
-    import api.v1.endpoints.stocks._financials_sync as mod
+    import market_data_service.providers.financial_sync as mod
 
     importlib.reload(mod)
     return mod
@@ -87,7 +87,9 @@ def test_row_to_update_keeps_one_report_period_and_computes_ttm(fin_sync):
     assert result["deducted_net_profit_ttm"] == 72.0
 
 
-def test_collect_period_rows_uses_latest_available_period_per_active_code(fin_sync, monkeypatch):
+def test_collect_period_rows_uses_latest_available_period_per_active_code(
+    fin_sync, monkeypatch
+):
     rows = {
         "2026-06-30": {
             "000001": {"SECURITY_CODE": "000001", "TOTALOPERATEREVE": 1.0},
@@ -113,7 +115,7 @@ def test_collect_period_rows_uses_latest_available_period_per_active_code(fin_sy
 
 def test_fallback_update_uses_latest_available_aggregated_report(fin_sync, monkeypatch):
     monkeypatch.setattr(
-        "src.tools.get_financials.get_financials",
+        "market_data_service.providers.financials.get_financials",
         lambda code, periods, use_cache: {
             "items": [
                 {
@@ -139,74 +141,3 @@ def test_fallback_update_uses_latest_available_aggregated_report(fin_sync, monke
     assert result["revenue_latest"] == 12.0
     assert result["net_profit_latest"] == 3.0
     assert result["debt_ratio"] == 44.0
-
-
-def test_run_financial_sync_uses_active_stock_count_as_total(fin_sync, monkeypatch):
-    state: dict = {}
-    fin_sync.attach_state(
-        state=state,
-        lock=threading.Lock(),
-        set_state=lambda **updates: state.update(updates),
-        initial_state=lambda: {},
-        utc_now_iso=lambda: "2026-08-10T00:00:00+00:00",
-    )
-
-    current = {
-        "SECURITY_CODE": "000001",
-        "REPORT_DATE": "2026-06-30",
-        "TOTALOPERATEREVE": 120.0,
-        "PARENTNETPROFIT": 24.0,
-        "KCFJCXSYJLR": 20.0,
-        "ZCFZL": 40.0,
-    }
-    annual = {
-        "SECURITY_CODE": "000001",
-        "REPORT_DATE": "2025-12-31",
-        "TOTALOPERATEREVE": 400.0,
-        "PARENTNETPROFIT": 80.0,
-        "KCFJCXSYJLR": 70.0,
-    }
-    prior = {
-        "SECURITY_CODE": "000001",
-        "REPORT_DATE": "2025-06-30",
-        "TOTALOPERATEREVE": 100.0,
-        "PARENTNETPROFIT": 20.0,
-        "KCFJCXSYJLR": 18.0,
-    }
-
-    def fetch(period: str):
-        return {
-            "2026-06-30": {"000001": current},
-            "2025-12-31": {"000001": annual},
-            "2025-06-30": {"000001": prior},
-        }.get(period, {})
-
-    monkeypatch.setattr(fin_sync, "_fetch_period_snapshot", fetch)
-    monkeypatch.setattr(
-        fin_sync,
-        "_fallback_update_from_financials",
-        lambda code: {
-            "report_date": "2025-12-31",
-            "revenue_latest": 50.0,
-            "net_profit_latest": 5.0,
-            "debt_ratio": 30.0,
-            "revenue_ttm": 50.0,
-            "parent_net_profit_ttm": 5.0,
-            "deducted_net_profit_ttm": 4.0,
-            "financial_fetched_at": __import__("datetime").datetime.now(),
-        },
-    )
-    monkeypatch.setattr(
-        fin_sync,
-        "_persist_updates",
-        lambda updates, *, progress_offset=0: (len(updates), 0, 0),
-    )
-    monkeypatch.setattr(fin_sync, "_record_terminal_job", lambda **kwargs: None)
-
-    fin_sync.run_financial_sync("20260630", ["000001", "000002"])
-
-    assert state["total"] == 2
-    assert state["progress"] == 2
-    assert state["updated_count"] == 2
-    assert state["no_data_count"] == 0
-    assert state["status"] == "success"

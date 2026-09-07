@@ -5,9 +5,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from sqlalchemy import or_
-
-from src.storage import DatabaseManager, StockMeta
 from src.tools.base import ToolSpec, object_schema
 
 
@@ -49,7 +46,11 @@ def _markets_for_scope(
     accepted.intersection_update(_BOARD_MARKETS[normalized_board])
     if normalized_market != "all":
         accepted.intersection_update({normalized_market})
-    return tuple(market_code for market_code in _EXCHANGE_MARKETS["all"] if market_code in accepted)
+    return tuple(
+        market_code
+        for market_code in _EXCHANGE_MARKETS["all"]
+        if market_code in accepted
+    )
 
 
 def _security_codes_in_query(query: str) -> tuple[str, ...]:
@@ -65,73 +66,57 @@ def search_stocks(
     sector: str = "",
     limit: int = 20,
 ) -> dict[str, Any]:
-    bounded_limit = max(1, min(int(limit or 20), 200))
-    db = DatabaseManager.get_instance()
-    with db.get_session() as session:
-        statement = session.query(StockMeta).filter(StockMeta.status == "active")
-        normalized_query = str(query or "").strip()
-        normalized_sector = str(sector or "").strip()
-        if normalized_query:
-            code_hints = _security_codes_in_query(normalized_query)
-            if code_hints:
-                # A six-digit A-share code is an explicit identifier. Treat it
-                # as authoritative even when the user or planner also includes
-                # the company name, punctuation, or explanatory words.
-                statement = statement.filter(StockMeta.code.in_(code_hints))
-            else:
-                pattern = f"%{normalized_query}%"
-                statement = statement.filter(or_(StockMeta.code.like(pattern), StockMeta.name.like(pattern)))
-        market_codes = _markets_for_scope(
-            market=market,
-            exchange=exchange,
-            board=board,
-        )
-        if not market_codes:
-            items = []
-        else:
-            statement = statement.filter(StockMeta.market.in_(market_codes))
-            if normalized_sector:
-                statement = statement.filter(StockMeta.sector.like(f"%{normalized_sector}%"))
-            items = statement.order_by(StockMeta.code).limit(bounded_limit + 1).all()
-    has_more = len(items) > bounded_limit
-    returned = [item.to_dict() for item in items[:bounded_limit]]
-    warnings: list[str] = []
-    if has_more:
-        warnings.append("结果超过当前返回上限，请缩小搜索条件")
+    from src.services.market_data_client import get_market_data_client
+
+    markets = _markets_for_scope(market=market, exchange=exchange, board=board)
+    hints = _security_codes_in_query(query)
+    limit = max(1, min(int(limit), 200))
+    result = get_market_data_client().securities(
+        search="" if hints else query.strip(),
+        codes=",".join(hints),
+        market=",".join(markets) if markets else "none",
+        sector=sector.strip(),
+        page_size=limit,
+    )
+    items = result["items"]
+    has_more = result["total"] > len(items)
     return {
         "success": True,
         "partial": has_more,
-        "query": normalized_query,
-        "code_hints": list(_security_codes_in_query(normalized_query)),
-        "market": str(market or "all").strip().lower(),
-        "exchange": str(exchange or "all").strip().lower(),
-        "board": str(board or "all").strip().lower(),
-        "sector": normalized_sector or None,
-        "items": returned,
-        "returned_count": len(returned),
+        "query": query.strip(),
+        "code_hints": list(hints),
+        "market": market,
+        "exchange": exchange,
+        "board": board,
+        "sector": sector or None,
+        "items": items,
+        "returned_count": len(items),
         "has_more": has_more,
-        "data_source": "local_stock_meta",
-        "source_scope": "local_security_master_identity_lookup",
+        "data_source": "market-data-service",
+        "source_scope": "security_master_identity_lookup",
         "data_time": None,
         "data_time_applicable": False,
         "data_time_provenance": "unavailable",
-        "data_time_note": "本工具只读取本地证券主数据，不把本地同步时间当作上游证券信息时间。",
-        "is_stale": None,
-        "freshness_unknown": True,
+        "data_time_note": "证券身份信息由独立服务自动维护，检查时间不冒充上游发布时间。",
+        "is_stale": False,
+        "freshness_unknown": False,
         "errors": [],
-        "warnings": warnings,
+        "warnings": ["结果超过返回上限，请缩小搜索条件"] if has_more else [],
     }
 
 
 TOOL = ToolSpec(
     name="search_stocks",
     description=(
-        "只读搜索本地A股证券主数据，可按代码、名称、市场和行业查询。"
-        "仅用于实体定位；不会联网、不会刷新证券库，也不产生任何写入。"
+        "通过独立数据服务搜索A股证券主数据，可按代码、名称、市场和行业查询。"
+        "仅用于实体定位；证券信息由数据服务自动维护，业务库不采集或写入市场数据。"
     ),
     parameters=object_schema(
         {
-            "query": {"type": "string", "description": "股票代码、名称或两者组合；显式六位代码优先用于身份定位。"},
+            "query": {
+                "type": "string",
+                "description": "股票代码、名称或两者组合；显式六位代码优先用于身份定位。",
+            },
             "market": {
                 "type": "string",
                 "enum": ["all", "sh", "sz", "cyb", "kcb", "bj"],

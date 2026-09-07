@@ -15,10 +15,18 @@ import src.tools.search_financial_news as financial_news_module
 import src.tools.search_research_library as research_library_module
 import src.tools.source_operations as source_operations
 
-from src.tools.get_consensus_estimates import get_consensus_estimates
-from src.tools.get_peer_comparison import get_peer_comparison
-from src.tools.get_sector_flow import _fetch_all as fetch_all_sector_flow, get_sector_flow
-from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
+from market_data_service.providers.get_consensus_estimates import (
+    get_consensus_estimates,
+)
+from market_data_service.providers.get_peer_comparison import get_peer_comparison
+from market_data_service.providers.get_sector_flow import (
+    _fetch_all as fetch_all_sector_flow,
+    get_sector_flow,
+)
+from market_data_service.providers.get_stock_capital_flow import (
+    _market_for,
+    get_stock_capital_flow,
+)
 from src.tools.get_monetary_policy_operations import _operation_item
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
 from src.tools.search_financial_news import (
@@ -45,8 +53,8 @@ from src.tools.websearch import (
 )
 
 
-
 """Focused test slice 2; shared fixtures remain local to this slice."""
+
 
 def _catalog_route(
     route_path: str,
@@ -63,6 +71,8 @@ def _catalog_route(
         "description": name,
         "params": params or [],
     }
+
+
 def test_peer_result_is_bounded_but_preserves_total_count() -> None:
     rows = [
         {
@@ -90,8 +100,14 @@ def test_peer_result_is_bounded_but_preserves_total_count() -> None:
         }
     )
     with (
-        patch("src.tools.get_peer_comparison._request_rows", return_value=rows),
-        patch("src.tools.get_peer_comparison.cached_call", side_effect=lambda _, fn, **__: (fn(), False)),
+        patch(
+            "market_data_service.providers.get_peer_comparison._request_rows",
+            return_value=rows,
+        ),
+        patch(
+            "market_data_service.providers.get_peer_comparison.cached_call",
+            side_effect=lambda _, fn, **__: (fn(), False),
+        ),
     ):
         result = get_peer_comparison("600519", dimension="valuation")
 
@@ -100,6 +116,7 @@ def test_peer_result_is_bounded_but_preserves_total_count() -> None:
     assert bucket["sample_size"] == 30
     assert bucket["target_rank"] == 20
     assert len(bucket["top_peers"]) == 10
+
 
 def test_websearch_is_generic_and_preserves_the_original_query() -> None:
     query = "how to repair a mechanical keyboard stabilizer"
@@ -116,7 +133,9 @@ def test_search_web_source_auto_reuses_the_existing_fallback_chain() -> None:
         "attempts": [{"provider": "firecrawl_searxng", "success": False}],
         "results": [{"title": "结果", "url": "https://example.com/result"}],
     }
-    with patch.object(source_operations, "websearch", return_value=expected) as fallback:
+    with patch.object(
+        source_operations, "websearch", return_value=expected
+    ) as fallback:
         result = source_operations.search_web_source(
             source_id="auto",
             query="最新产业进展",
@@ -166,6 +185,7 @@ def test_websearch_does_not_spend_remote_fallback_when_local_search_succeeds() -
     exa.assert_not_called()
     parallel.assert_not_called()
 
+
 def test_websearch_uses_exa_only_after_local_search_returns_no_results() -> None:
     local_failed = {
         "provider": "firecrawl_searxng",
@@ -180,7 +200,14 @@ def test_websearch_uses_exa_only_after_local_search_returns_no_results() -> None
         "skipped": False,
         "error": None,
         "output": "Title: Two\nURL: https://two.example",
-        "results": [{"title": "Two", "url": "https://two.example", "snippet": "", "search_provider": "exa"}],
+        "results": [
+            {
+                "title": "Two",
+                "url": "https://two.example",
+                "snippet": "",
+                "search_provider": "exa",
+            }
+        ],
     }
     with (
         patch("src.tools.websearch._firecrawl_search", return_value=local_failed),
@@ -192,9 +219,13 @@ def test_websearch_uses_exa_only_after_local_search_returns_no_results() -> None
     assert result["success"] is True
     assert result["provider"] == "exa"
     assert result["fallback_used"] is True
-    assert [attempt["provider"] for attempt in result["attempts"]] == ["firecrawl_searxng", "exa"]
+    assert [attempt["provider"] for attempt in result["attempts"]] == [
+        "firecrawl_searxng",
+        "exa",
+    ]
     assert result["output"].startswith("Title: Two")
     parallel.assert_not_called()
+
 
 def test_websearch_uses_parallel_only_after_local_and_exa_fail() -> None:
     local_failed = {
@@ -236,12 +267,17 @@ def test_websearch_uses_parallel_only_after_local_and_exa_fail() -> None:
         "parallel",
     ]
 
+
 def test_firecrawl_search_passes_original_query_to_local_v2_search() -> None:
     response = Mock()
     response.raise_for_status.return_value = None
     response.json.return_value = {
         "success": True,
-        "data": {"web": [{"title": "Result", "url": "https://example.com", "description": "Body"}]},
+        "data": {
+            "web": [
+                {"title": "Result", "url": "https://example.com", "description": "Body"}
+            ]
+        },
     }
     query = "明天啥天气？！ exact phrase"
 
@@ -252,6 +288,7 @@ def test_firecrawl_search_passes_original_query_to_local_v2_search() -> None:
     assert post.call_args.kwargs["json"]["query"] == query
     assert post.call_args.kwargs["json"]["limit"] == 7
     assert post.call_args.args[0].endswith("/v2/search")
+
 
 def test_firecrawl_search_can_crawl_result_content_in_same_request() -> None:
     response = Mock()
@@ -278,6 +315,7 @@ def test_firecrawl_search_can_crawl_result_content_in_same_request() -> None:
     assert payload["scrapeOptions"]["formats"] == ["markdown"]
     assert result["results"][0]["content_text"].startswith("2025-03-05")
     assert result["results"][0]["published_date"].startswith("2025-03-05")
+
 
 def test_websearch_include_content_survives_context_compaction() -> None:
     local = {
@@ -307,6 +345,7 @@ def test_websearch_include_content_survives_context_compaction() -> None:
     assert result["content_result_count"] == 1
     assert result["results"][0]["content_text"] == "company evidence"
 
+
 def test_websearch_normalizes_mixed_published_timezones() -> None:
     local = {
         "provider": "firecrawl_searxng",
@@ -334,6 +373,7 @@ def test_websearch_normalizes_mixed_published_timezones() -> None:
     assert result["success"] is True
     assert result["latest_published_date"].startswith("2025-03-21")
 
+
 def test_opencode_mcp_parser_supports_json_and_sse() -> None:
     payload = '{"result":{"content":[{"type":"text","text":"found"}]}}'
 
@@ -341,13 +381,17 @@ def test_opencode_mcp_parser_supports_json_and_sse() -> None:
     assert _mcp_text(f"event: message\ndata: {payload}\n\n") == "found"
 
 
-def test_remote_search_errors_redact_credentials_from_provider_urls(monkeypatch) -> None:
+def test_remote_search_errors_redact_credentials_from_provider_urls(
+    monkeypatch,
+) -> None:
     secret = "exa-secret-1234"
     monkeypatch.setenv("EXA_API_KEY", secret)
 
     with patch(
         "src.tools.websearch._mcp_call",
-        side_effect=RuntimeError(f"request failed: https://mcp.exa.ai/mcp?exaApiKey={secret}"),
+        side_effect=RuntimeError(
+            f"request failed: https://mcp.exa.ai/mcp?exaApiKey={secret}"
+        ),
     ):
         result = _exa_search(
             "query",
@@ -360,12 +404,18 @@ def test_remote_search_errors_redact_credentials_from_provider_urls(monkeypatch)
     assert result["success"] is False
     assert secret not in result["error"]
     assert "exaApiKey=[REDACTED]" in result["error"]
-    assert secret not in _redact_secret_text(f"Authorization: Bearer {secret}", (secret,))
+    assert secret not in _redact_secret_text(
+        f"Authorization: Bearer {secret}", (secret,)
+    )
+
 
 def test_exa_uses_its_own_key_and_opencode_arguments() -> None:
     with (
         patch.dict(os.environ, {"EXA_API_KEY": "key +/?"}, clear=True),
-        patch("src.tools.websearch._mcp_call", return_value="Title: X\nURL: https://example.com") as call,
+        patch(
+            "src.tools.websearch._mcp_call",
+            return_value="Title: X\nURL: https://example.com",
+        ) as call,
     ):
         result = _exa_search(
             "universal query",
@@ -380,6 +430,7 @@ def test_exa_uses_its_own_key_and_opencode_arguments() -> None:
     assert call.call_args.args[1] == "web_search_exa"
     assert call.call_args.args[2]["query"] == "universal query"
     assert call.call_args.args[2]["numResults"] == 5
+
 
 def test_webfetch_uses_open_http_path_before_any_fallback() -> None:
     direct = {
@@ -408,8 +459,14 @@ def test_webfetch_uses_open_http_path_before_any_fallback() -> None:
     scrapling.assert_not_called()
     firecrawl.assert_not_called()
 
+
 def test_webfetch_falls_back_in_transport_order() -> None:
-    failed = {"provider": "http", "success": False, "skipped": False, "error": "blocked"}
+    failed = {
+        "provider": "http",
+        "success": False,
+        "skipped": False,
+        "error": "blocked",
+    }
     static = {
         "provider": "scrapling",
         "success": True,
@@ -437,6 +494,7 @@ def test_webfetch_falls_back_in_transport_order() -> None:
     assert scrapling.call_args.kwargs["browser"] is False
     firecrawl.assert_not_called()
 
+
 def test_webfetch_waf_challenge_goes_directly_to_real_browser() -> None:
     challenge = {
         "provider": "http",
@@ -460,7 +518,9 @@ def test_webfetch_waf_challenge_goes_directly_to_real_browser() -> None:
     with (
         patch("src.tools.webfetch._validate_public_url"),
         patch("src.tools.webfetch._http_fetch", return_value=challenge),
-        patch("src.tools.webfetch._scrapling_fetch", return_value=rendered) as scrapling,
+        patch(
+            "src.tools.webfetch._scrapling_fetch", return_value=rendered
+        ) as scrapling,
         patch("src.tools.webfetch._firecrawl_fetch") as firecrawl,
     ):
         result = fetch_url("https://example.com/a")
@@ -470,6 +530,7 @@ def test_webfetch_waf_challenge_goes_directly_to_real_browser() -> None:
     assert [item["provider"] for item in result["attempts"]] == ["http", "patchright"]
     assert scrapling.call_args.kwargs["browser"] is True
     firecrawl.assert_not_called()
+
 
 def test_webfetch_keeps_complete_rendered_dashboard_despite_link_density() -> None:
     challenge = {
@@ -504,17 +565,26 @@ def test_webfetch_keeps_complete_rendered_dashboard_despite_link_density() -> No
     assert "实时行情和成交数据" in result["content"]
     firecrawl.assert_not_called()
 
+
 def test_webfetch_rejects_encrypted_waf_payload_even_when_http_is_200() -> None:
     payload = '{"\\_waf\\_bd8ce2ce37":"' + ("Aa09_-" * 1000) + '"}'
 
-    assert _challenge_reason(payload, "application/json") == "页面返回了 WAF 加密挑战而非正文"
+    assert (
+        _challenge_reason(payload, "application/json")
+        == "页面返回了 WAF 加密挑战而非正文"
+    )
+
 
 def test_webfetch_rejects_unrendered_javascript_placeholder_page() -> None:
     placeholders = "\n".join(["-" for _ in range(20)])
     shell = "页面框架已经返回但业务数据仍未完成加载。" * 8
     html = f"<html><body><h1>行情</h1><div>加载中</div><div>数据加载中...</div>{shell}{placeholders}</body></html>"
 
-    assert _challenge_reason(html, "text/html") == "页面返回了尚未加载完成的 JavaScript 动态占位内容"
+    assert (
+        _challenge_reason(html, "text/html")
+        == "页面返回了尚未加载完成的 JavaScript 动态占位内容"
+    )
+
 
 def test_webfetch_semantic_article_beats_long_comment_container() -> None:
     html = (
@@ -535,8 +605,11 @@ def test_webfetch_semantic_article_beats_long_comment_container() -> None:
     assert "很长的评论" not in content
     assert metadata["title"] == "公司公告正文"
 
+
 def test_webfetch_keeps_visible_dashboard_when_article_extractor_is_too_lossy() -> None:
-    rows = "".join(f"<tr><td>指标{i}的详细说明文字</td><td>{i * 10}</td></tr>" for i in range(300))
+    rows = "".join(
+        f"<tr><td>指标{i}的详细说明文字</td><td>{i * 10}</td></tr>" for i in range(300)
+    )
     html = f"""
     <html><head><title>数据看板</title></head><body>
     <nav>首页 产品 设置</nav><table>{rows}</table><footer>版权信息</footer>
@@ -548,6 +621,7 @@ def test_webfetch_keeps_visible_dashboard_when_article_extractor_is_too_lossy() 
 
     assert method == "full_page_fallback"
     assert "指标79" in content
+
 
 def test_webfetch_blocks_private_ip() -> None:
     with pytest.raises(ValueError, match="SSRF"):

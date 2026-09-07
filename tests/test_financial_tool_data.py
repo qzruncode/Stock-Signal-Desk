@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.tools import _financial_data as data
+from market_data_service.providers import financial_data as data
 from src.tools.get_balance_sheet import get_balance_sheet
 from src.tools.get_cashflow import get_cashflow
 from src.tools.get_income_statement import get_income_statement
@@ -32,7 +32,9 @@ def test_balance_sheet_keeps_bank_fields_distinct_and_uses_period_end_basis() ->
     assert item["current_ratio"] is None
 
 
-def test_balance_sheet_keeps_zero_numerators_instead_of_treating_them_as_missing() -> None:
+def test_balance_sheet_keeps_zero_numerators_instead_of_treating_them_as_missing() -> (
+    None
+):
     item = data._normalize_balance(
         {
             "REPORT_DATE": "2026-03-31",
@@ -128,7 +130,9 @@ def test_section_result_has_explicit_units_freshness_and_source(monkeypatch) -> 
         ),
     )
 
-    result = data.get_financial_section("600519", "income_statement", 4, use_cache=False)
+    result = data.get_financial_section(
+        "600519", "income_statement", 4, use_cache=False
+    )
 
     assert result["success"] is True
     assert result["periods"] == 1
@@ -139,7 +143,9 @@ def test_section_result_has_explicit_units_freshness_and_source(monkeypatch) -> 
     assert result["data_time"] == "2026-03-31"
 
 
-def test_financial_bundle_treats_one_available_statement_as_partial_success(monkeypatch) -> None:
+def test_financial_bundle_treats_one_available_statement_as_partial_success(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(data, "_company_type", lambda _: "4")
     monkeypatch.setattr(
         data,

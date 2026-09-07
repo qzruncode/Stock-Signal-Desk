@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 
-from api.v1.endpoints import financials
+from market_data_service.providers import financials
 
 
 def test_fetch_financials_enriches_summary_with_statement_fields(monkeypatch):
     monkeypatch.setattr(
         financials,
-        "_fetch_from_ths",
-        lambda symbol, periods: [
+        "fetch_core_indicators",
+        lambda symbol, periods, **kwargs: [
             {
                 "report_date": "2025-12-31",
                 "revenue": 100.0,
@@ -32,12 +32,10 @@ def test_fetch_financials_enriches_summary_with_statement_fields(monkeypatch):
             },
         ],
     )
-    monkeypatch.setattr(financials, "_fetch_from_sina", lambda symbol, periods: [])
-    monkeypatch.setattr(financials, "_fins_cache_get", lambda symbol, periods: None)
     monkeypatch.setattr(
         financials,
-        "_fetch_financial_statements",
-        lambda symbol, periods: {
+        "get_financial_bundle",
+        lambda symbol, periods, **kwargs: {
             "symbol": symbol,
             "periods": periods,
             "balance_sheet": [
@@ -73,16 +71,16 @@ def test_fetch_financials_enriches_summary_with_statement_fields(monkeypatch):
                 },
             ],
             "cashflow": [
-                {"report_date": "2025-12-31", "operating_cf": 26.0},
-                {"report_date": "2026-03-31", "operating_cf": 28.0},
+                {"report_date": "2025-12-31", "operating_cash_flow": 26.0},
+                {"report_date": "2026-03-31", "operating_cash_flow": 28.0},
             ],
             "source": "fake",
         },
     )
 
-    result = financials._fetch_financials("600519", periods=2)
+    result = financials._build("600519", periods=2)
 
-    assert result["source"] == "同花顺"
+    assert "同花顺" in result["source"]
     assert len(result["items"]) == 2
 
     first = result["items"][0]
@@ -101,21 +99,25 @@ def test_fetch_financials_enriches_summary_with_statement_fields(monkeypatch):
     assert second["asset_impairment_loss"] == 3.0
 
 
-def test_fetch_financials_keeps_summary_data_when_statement_enrichment_fails(monkeypatch):
+def test_fetch_financials_keeps_summary_data_when_statement_enrichment_fails(
+    monkeypatch,
+):
     monkeypatch.setattr(
         financials,
-        "_fetch_from_ths",
-        lambda symbol, periods: [{"report_date": "2026-03-31", "revenue": 120.0}],
+        "fetch_core_indicators",
+        lambda symbol, periods, **kwargs: [
+            {"report_date": "2026-03-31", "revenue": 120.0}
+        ],
     )
-    monkeypatch.setattr(financials, "_fetch_from_sina", lambda symbol, periods: [])
-    monkeypatch.setattr(financials, "_fins_cache_get", lambda symbol, periods: None)
     monkeypatch.setattr(
         financials,
-        "_fetch_financial_statements",
-        lambda symbol, periods: (_ for _ in ()).throw(RuntimeError("detail unavailable")),
+        "get_financial_bundle",
+        lambda symbol, periods, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("detail unavailable")
+        ),
     )
 
-    result = financials._fetch_financials("600519", periods=1)
+    result = financials._build("600519", periods=1)
 
-    assert result["items"] == [{"report_date": "2026-03-31", "revenue": 120.0}]
-    assert "财报明细补充: detail unavailable" in result["_errors"]
+    assert result["items"][0]["revenue"] == 120.0 and result["partial"]
+    assert "东方财富财报: detail unavailable" in result["errors"]

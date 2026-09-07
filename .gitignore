@@ -44,6 +44,9 @@ venv/
 ENV/
 env/
 .venv/
+.venv-data/
+/.market-data/
+!.env.market-data.example
 
 # IDE
 .idea/

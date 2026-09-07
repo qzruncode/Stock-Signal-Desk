@@ -1,0 +1,8 @@
+# Send only the independent package to this image build. Never include business
+# databases, .env credentials, Python environments or the frontend node_modules.
+**
+!market_data_service/
+!market_data_service/**
+market_data_service/**/__pycache__/
+market_data_service/**/*.pyc
+market_data_service/**/*.pyo

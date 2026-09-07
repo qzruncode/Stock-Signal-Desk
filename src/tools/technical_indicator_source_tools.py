@@ -47,59 +47,19 @@ def _resolve_a_share_symbol(symbol: str) -> str:
 
 
 def _read_source_rows(
-    code: str,
-    *,
-    source_key: str,
-    count: int,
-    allow_fallback: bool = True,
+    code: str, *, source_key: str, count: int, allow_fallback: bool = True
 ) -> dict[str, Any]:
-    source_label, fetcher = _SOURCES[source_key]
-    now = datetime.now().astimezone()
-    if allow_fallback:
-        return read_reliable_kline(
-            code,
-            preferred_source=source_key,
-            count=count,
-            sources=_SOURCES,
-            allow_fallback=True,
-        )
-    lookback_days = max(160, int(count * 1.7) + 45)
-    end_date = latest_completed_trade_day(now).strftime("%Y%m%d")
-    try:
-        frame = fetcher(
-            code,
-            (now - timedelta(days=lookback_days)).strftime("%Y%m%d"),
-            end_date,
-        )
-        records = _normalize_kline_df(frame, code, source_key)
-    except Exception as exc:
-        records = []
-        error = f"{type(exc).__name__}: {exc}"
-    else:
-        error = ""
-    if len(records) > count:
-        records = records[-count:]
-    data_time = _kline_data_time(records)
-    return {
-        "success": bool(records),
-        "partial": False,
-        "data": records,
-        "source": source_label,
-        "data_time": data_time,
-        "data_time_provenance": "source" if data_time else "unavailable",
-        "data_time_note": (
-            None
-            if data_time
-            else f"{source_label}未返回有效日线日期；_fetched_at 仅表示本服务获取时间。"
-        ),
-        "is_stale": _kline_is_stale(records) if records else None,
-        "freshness_unknown": data_time is None,
-        "fallback_used": False,
-        "_cached": False,
-        "_fetched_at": now.isoformat(),
-        "errors": [] if records else [error or f"{source_label}未返回 K 线数据"],
-        "warnings": [],
-    }
+    from src.services.market_data_client import read_source
+
+    return read_source(
+        "kline",
+        {
+            "symbol": code,
+            "source_id": source_key,
+            "count": count,
+            "allow_fallback": allow_fallback,
+        },
+    )
 
 
 def _normalized_frame(raw: dict[str, Any]) -> pd.DataFrame:
@@ -107,7 +67,11 @@ def _normalized_frame(raw: dict[str, Any]) -> pd.DataFrame:
     if frame.empty:
         return frame
     if "date" in frame.columns:
-        frame = frame.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+        frame = (
+            frame.sort_values("date")
+            .drop_duplicates("date", keep="last")
+            .reset_index(drop=True)
+        )
     for column in ("high", "low", "close"):
         if column not in frame.columns:
             frame[column] = None
@@ -243,7 +207,9 @@ def _read_and_calculate(
     )
 
 
-def _require_window(frame: pd.DataFrame, window: int, *, label: str, extra_rows: int = 0) -> None:
+def _require_window(
+    frame: pd.DataFrame, window: int, *, label: str, extra_rows: int = 0
+) -> None:
     if not 2 <= int(window) <= _MAX_COUNT:
         raise ValueError(f"{label} 必须在 2 到 {_MAX_COUNT} 之间")
     required = int(window) + int(extra_rows)
@@ -251,7 +217,9 @@ def _require_window(frame: pd.DataFrame, window: int, *, label: str, extra_rows:
         raise ValueError(f"有效 OHLC 日线少于 {required} 条，无法计算 {label}={window}")
 
 
-def _moving_average_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
+def _moving_average_executor(
+    source_key: str,
+) -> Callable[[str, int, int], dict[str, Any]]:
     def execute(
         symbol: str,
         count: int = 120,
@@ -266,7 +234,12 @@ def _moving_average_executor(source_key: str) -> Callable[[str, int, int], dict[
             indicator="moving_average",
             calculate=lambda frame: (
                 _require_window(frame, window, label="window")
-                or {"window": int(window), "value": _round(frame["close"].rolling(int(window)).mean().iloc[-1])}
+                or {
+                    "window": int(window),
+                    "value": _round(
+                        frame["close"].rolling(int(window)).mean().iloc[-1]
+                    ),
+                }
             ),
         )
 
@@ -274,7 +247,9 @@ def _moving_average_executor(source_key: str) -> Callable[[str, int, int], dict[
     return execute
 
 
-def _exponential_moving_average_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
+def _exponential_moving_average_executor(
+    source_key: str,
+) -> Callable[[str, int, int], dict[str, Any]]:
     def execute(
         symbol: str,
         count: int = 120,
@@ -291,7 +266,12 @@ def _exponential_moving_average_executor(source_key: str) -> Callable[[str, int,
                 _require_window(frame, window, label="window")
                 or {
                     "window": int(window),
-                    "value": _round(frame["close"].ewm(span=int(window), adjust=False).mean().iloc[-1]),
+                    "value": _round(
+                        frame["close"]
+                        .ewm(span=int(window), adjust=False)
+                        .mean()
+                        .iloc[-1]
+                    ),
                 }
             ),
         )
@@ -300,7 +280,9 @@ def _exponential_moving_average_executor(source_key: str) -> Callable[[str, int,
     return execute
 
 
-def _macd_executor(source_key: str) -> Callable[[str, int, int, int, int], dict[str, Any]]:
+def _macd_executor(
+    source_key: str,
+) -> Callable[[str, int, int, int, int], dict[str, Any]]:
     def execute(
         symbol: str,
         count: int = 120,
@@ -311,12 +293,17 @@ def _macd_executor(source_key: str) -> Callable[[str, int, int, int, int], dict[
     ) -> dict[str, Any]:
         def calculate(frame: pd.DataFrame) -> dict[str, Any]:
             if not 2 <= int(fast_period) < int(slow_period) <= _MAX_COUNT:
-                raise ValueError("fast_period 必须小于 slow_period，且二者均在 2 到 250 之间")
-            _require_window(frame, int(slow_period) + int(signal_period), label="slow_period")
+                raise ValueError(
+                    "fast_period 必须小于 slow_period，且二者均在 2 到 250 之间"
+                )
+            _require_window(
+                frame, int(slow_period) + int(signal_period), label="slow_period"
+            )
             close = frame["close"]
-            dif = close.ewm(span=int(fast_period), adjust=False).mean() - close.ewm(
-                span=int(slow_period), adjust=False
-            ).mean()
+            dif = (
+                close.ewm(span=int(fast_period), adjust=False).mean()
+                - close.ewm(span=int(slow_period), adjust=False).mean()
+            )
             dea = dif.ewm(span=int(signal_period), adjust=False).mean()
             return {
                 "fast_period": int(fast_period),
@@ -351,7 +338,9 @@ def _rsi_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
             _require_window(frame, period, label="period", extra_rows=1)
             delta = frame["close"].diff()
             gain = delta.clip(lower=0).ewm(alpha=1 / int(period), adjust=False).mean()
-            loss = (-delta.clip(upper=0)).ewm(alpha=1 / int(period), adjust=False).mean()
+            loss = (
+                (-delta.clip(upper=0)).ewm(alpha=1 / int(period), adjust=False).mean()
+            )
             relative_strength = gain / loss.where(loss != 0)
             rsi = 100 - 100 / (1 + relative_strength)
             rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
@@ -394,7 +383,9 @@ def _atr_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
             return {
                 "period": int(period),
                 "value": _round(atr),
-                "percent_of_close": _round(float(atr) / close * 100, 2) if close else None,
+                "percent_of_close": _round(float(atr) / close * 100, 2)
+                if close
+                else None,
             }
 
         return _read_and_calculate(
@@ -410,7 +401,9 @@ def _atr_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
     return execute
 
 
-def _bollinger_executor(source_key: str) -> Callable[[str, int, int, float], dict[str, Any]]:
+def _bollinger_executor(
+    source_key: str,
+) -> Callable[[str, int, int, float], dict[str, Any]]:
     def execute(
         symbol: str,
         count: int = 120,
@@ -446,7 +439,9 @@ def _bollinger_executor(source_key: str) -> Callable[[str, int, int, float], dic
     return execute
 
 
-def _period_return_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
+def _period_return_executor(
+    source_key: str,
+) -> Callable[[str, int, int], dict[str, Any]]:
     def execute(
         symbol: str,
         count: int = 120,
@@ -459,7 +454,10 @@ def _period_return_executor(source_key: str) -> Callable[[str, int, int], dict[s
             baseline = float(frame["close"].iloc[-int(period) - 1])
             if baseline == 0:
                 raise ValueError("基期收盘价为 0，无法计算阶段收益")
-            return {"period": int(period), "percent": _round((latest / baseline - 1) * 100, 2)}
+            return {
+                "period": int(period),
+                "percent": _round((latest / baseline - 1) * 100, 2),
+            }
 
         return _read_and_calculate(
             symbol=symbol,
@@ -474,7 +472,9 @@ def _period_return_executor(source_key: str) -> Callable[[str, int, int], dict[s
     return execute
 
 
-_INDICATOR_EXECUTOR_FACTORIES: dict[str, Callable[[str], Callable[..., dict[str, Any]]]] = {
+_INDICATOR_EXECUTOR_FACTORIES: dict[
+    str, Callable[[str], Callable[..., dict[str, Any]]]
+] = {
     "moving_average": _moving_average_executor,
     "exponential_moving_average": _exponential_moving_average_executor,
     "macd": _macd_executor,
@@ -528,7 +528,9 @@ def calculate_indicator(
         arguments.update(
             {
                 "period": 20 if period is None else int(period),
-                "standard_deviations": 2.0 if standard_deviations is None else float(standard_deviations),
+                "standard_deviations": 2.0
+                if standard_deviations is None
+                else float(standard_deviations),
             }
         )
     arguments["allow_fallback"] = bool(allow_fallback)

@@ -1,0 +1,93 @@
+name: dsa-market-data
+
+x-service: &service
+  build:
+    context: ..
+    dockerfile: market_data_service/Dockerfile
+  environment: &environment
+    MARKET_DATA_DATABASE_URL: postgresql+psycopg://market_data:${MARKET_DATA_DB_PASSWORD:?Set a URL-safe database password}@postgres:5432/market_data
+    MARKET_DATA_BROKER_URL: redis://redis:6379/0
+    MARKET_DATA_API_TOKEN: ${MARKET_DATA_API_TOKEN:?Set a token of at least 32 characters}
+    MARKET_DATA_ENVIRONMENT: production
+    MARKET_DATA_PROVIDER: live
+    MARKET_DATA_RSSHUB_URL: ${MARKET_DATA_RSSHUB_URL:-http://host.docker.internal:1200}
+    TZ: Asia/Shanghai
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: market_data
+      POSTGRES_DB: market_data
+      POSTGRES_PASSWORD: ${MARKET_DATA_DB_PASSWORD:?Set a URL-safe database password}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U market_data -d market_data']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7.4
+    command: [redis-server, --appendonly, 'yes', --maxmemory-policy, noeviction]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    <<: *service
+    command: [python, -m, market_data_service.cli, init]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: 'no'
+  api:
+    <<: *service
+    ports: ['127.0.0.1:8010:8010']
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -m, market_data_service.cli, health]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+  sources:
+    <<: *service
+    command: [celery, -A, 'market_data_service.worker:celery_app', worker, -n, 'sources@%h', -Q, market-data, --concurrency=4, --loglevel=INFO]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    stop_grace_period: 190s
+    stop_signal: SIGQUIT
+  events:
+    <<: *service
+    command: [python, -m, market_data_service.event_relay]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    stop_grace_period: 40s
+  sync:
+    <<: *service
+    command: [celery, -A, 'market_data_service.worker:celery_app', worker, -n, 'sync@%h', -Q, market-data-sync, --concurrency=2, --loglevel=INFO]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    stop_grace_period: 190s
+    stop_signal: SIGQUIT
+  scheduler:
+    <<: *service
+    command: [celery, -A, 'market_data_service.worker:celery_app', beat, --schedule, /home/marketdata/celerybeat, --loglevel=INFO]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    # Exactly one beat; durable due-time claims also fence duplicate delivery.
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -1,11 +1,22 @@
-"""Shared, source-preserving AKShare evidence products.
+from __future__ import annotations
+from typing import Any, Iterable
 
-The chat Agent consumes these semantic products instead of knowing individual
-AKShare endpoint names.  Retrieval remains separate from model judgment: this
-package normalizes provenance, coverage and freshness, but does not turn raw
-rows into buy/sell conclusions.
-"""
 
-from .company import get_company_evidence
+def get_company_evidence(
+    symbol: str,
+    *,
+    sections: Iterable[str] | None = None,
+    days: int = 730,
+    report_period_count: int = 4,
+) -> dict[str, Any]:
+    from src.services.market_data_client import read_source
 
-__all__ = ["get_company_evidence"]
+    arguments = {
+        "symbol": symbol,
+        "sections": sections,
+        "days": days,
+        "report_period_count": report_period_count,
+    }
+    if "sections" in arguments and arguments["sections"] is not None:
+        arguments["sections"] = list(arguments["sections"])
+    return read_source("company.evidence", arguments)

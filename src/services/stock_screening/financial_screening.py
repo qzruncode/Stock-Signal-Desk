@@ -9,7 +9,6 @@ requires one makes the result look more precise than the requested rule.
 
 from __future__ import annotations
 
-import concurrent.futures
 import csv
 import hashlib
 import json
@@ -19,25 +18,16 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import text
 from pydantic import ValidationError
 
 from src.services.data_maintenance import ensure_stock_universe
-from src.storage import DatabaseManager
 
 from .atr_volatility_screener import (
     EXPORT_DIR,
-    FINANCIAL_FETCH_WORKERS,
-    MAX_SECONDARY_FINANCIAL_FALLBACKS,
-    _build_ttm_financials,
-    _fetch_secondary_ttm_financial,
     _is_st_name,
-    _load_fresh_cached_financials,
     _market_for_code,
     _matches_financial_filters,
-    _persist_financials,
     _safe_date,
-    _safe_float,
 )
 from .screen_spec import FinancialScreenSpec
 
@@ -63,7 +53,9 @@ _OPERATOR_LABELS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "="}
 
 
 def _spec_fingerprint(spec: FinancialScreenSpec) -> str:
-    canonical = json.dumps(spec.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    canonical = json.dumps(
+        spec.model_dump(mode="json"), ensure_ascii=False, sort_keys=True
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
@@ -130,7 +122,10 @@ def _write_export(
         writer.writerow([column["label"] for column in columns] + ["筛选规格指纹"])
         for item in items:
             writer.writerow(
-                [_export_cell_value(column["field"], item.get(column["field"])) for column in columns]
+                [
+                    _export_cell_value(column["field"], item.get(column["field"]))
+                    for column in columns
+                ]
                 + [fingerprint]
             )
     return file_id, f"/api/v1/agent/exports/{file_id}"
@@ -163,109 +158,40 @@ def _applied_rules(spec: FinancialScreenSpec) -> list[str]:
     return rules
 
 
-def _load_required_financials(
-    eligible_codes: list[str],
-    required_fields: set[str],
-) -> tuple[dict[str, dict[str, Any]], str | None, dict[str, Any], list[str], list[str]]:
-    """Load a coherent report-period snapshot and fill only a bounded tail."""
+def _load_required_financials(eligible_codes, required_fields):
+    from src.services.stock_screening.data import financial_rows
+
     if not required_fields:
         return {}, None, {}, [], []
-
-    warnings: list[str] = []
-    fallback_sources: set[str] = set()
-    cached_count = 0
-    fallback_count = 0
-    primary_available = True
     try:
-        financials, report_period = _build_ttm_financials()
-        _persist_financials(financials, report_period)
+        financials, period = financial_rows(eligible_codes)
     except Exception as exc:
-        primary_available = False
-        warnings.append(
-            "财务主源本轮不可用；已切换到本日成功刷新并落库的财务快照。"
-            f"主源错误：{type(exc).__name__}"
+        return (
+            {},
+            None,
+            {"financial_required_fields": sorted(required_fields)},
+            [str(exc)],
+            ["data_readiness"],
         )
-        try:
-            financials, report_period = _load_fresh_cached_financials(set(eligible_codes))
-        except Exception as cache_exc:
-            return (
-                {},
-                None,
-                {"financial_required_fields": sorted(required_fields)},
-                [f"财务缓存读取失败: {type(cache_exc).__name__}"],
-                ["financial_cache"],
-            )
-        cached_count = sum(required_fields.issubset(values) for values in financials.values())
-        primary_error = f"{type(exc).__name__}: {exc}"
-
     missing = [
-        code for code in eligible_codes if not required_fields.issubset(financials.get(code, {}))
+        code
+        for code in eligible_codes
+        if not required_fields.issubset(financials.get(code, {}))
     ]
-    if len(missing) > MAX_SECONDARY_FINANCIAL_FALLBACKS:
-        stage = "financial_cache_coverage" if not primary_available else "financial_coverage"
-        return (
-            financials,
-            report_period,
-            {
-                "financial_required_fields": sorted(required_fields),
-                "financial_covered": sum(
-                    required_fields.issubset(financials.get(code, {})) for code in eligible_codes
-                ),
-                "financial_cache_count": cached_count,
-                "financial_fallback_limit": MAX_SECONDARY_FINANCIAL_FALLBACKS,
-            },
-            [f"{code}:缺少必需财务字段" for code in missing[:20]],
-            [stage],
-        )
-
-    fallback_errors: list[str] = []
-    if missing:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(FINANCIAL_FETCH_WORKERS, len(missing))) as pool:
-            future_codes = {
-                pool.submit(_fetch_secondary_ttm_financial, code, required_fields): code for code in missing
-            }
-            for future in concurrent.futures.as_completed(future_codes):
-                code = future_codes[future]
-                try:
-                    values = future.result()
-                except Exception as exc:
-                    fallback_errors.append(f"{code}:{type(exc).__name__}")
-                    continue
-                if values and required_fields.issubset(values):
-                    financials[code] = values
-                    fallback_count += 1
-                    if values.get("financial_source"):
-                        fallback_sources.add(str(values["financial_source"]))
-                else:
-                    missing_fields = sorted(required_fields.difference(values or {}))
-                    fallback_errors.append(f"{code}:缺少{','.join(missing_fields)}")
-
-    if fallback_errors:
-        return (
-            financials,
-            report_period,
-            {
-                "financial_required_fields": sorted(required_fields),
-                "financial_covered": sum(
-                    required_fields.issubset(financials.get(code, {})) for code in eligible_codes
-                ),
-                "financial_cache_count": cached_count,
-                "financial_fallback_count": fallback_count,
-            },
-            fallback_errors[:20],
-            ["financial_coverage"],
-        )
-
     coverage = {
         "financial_required_fields": sorted(required_fields),
-        "financial_covered": sum(
-            required_fields.issubset(financials.get(code, {})) for code in eligible_codes
-        ),
-        "financial_cache_count": cached_count,
-        "financial_fallback_count": fallback_count,
-        "financial_fallback_sources": sorted(fallback_sources),
+        "financial_covered": len(eligible_codes) - len(missing),
+        "financial_cache_count": 0,
+        "financial_fallback_count": 0,
+        "financial_fallback_sources": [],
     }
-    return financials, report_period, coverage, [], warnings
+    return (
+        financials,
+        period,
+        coverage,
+        missing[:20],
+        ["financial_coverage"] if missing else [],
+    )
 
 
 def run_financial_screen(
@@ -292,15 +218,9 @@ def run_financial_screen(
             spec=spec,
         )
 
-    db = DatabaseManager.get_instance()
-    with db.session_scope() as session:
-        rows = (
-            session.execute(
-                text("SELECT code, name, ipo_date FROM stock_meta WHERE status='active' ORDER BY code")
-            )
-            .mappings()
-            .all()
-        )
+    from src.services.market_data_client import get_market_data_client
+
+    rows = get_market_data_client().securities(page_size=10000)["items"]
     scoped_codes = set(spec.universe.codes) if spec.universe.codes is not None else None
     active = {
         str(row["code"]): row
@@ -320,12 +240,15 @@ def run_financial_screen(
         code
         for code, row in active.items()
         if _safe_date(row.get("ipo_date")) is None
-        or (date.today() - _safe_date(row.get("ipo_date"))).days + 1 >= spec.universe.min_listing_trading_days
+        or (date.today() - _safe_date(row.get("ipo_date"))).days + 1
+        >= spec.universe.min_listing_trading_days
     ]
     required_fields = spec.required_financial_fields()
-    financials, report_period, financial_coverage, failed_symbols, failure_stages = _load_required_financials(
-        eligible,
-        required_fields,
+    financials, report_period, financial_coverage, failed_symbols, failure_stages = (
+        _load_required_financials(
+            eligible,
+            required_fields,
+        )
     )
     if failure_stages:
         return _failure(
@@ -348,7 +271,10 @@ def run_financial_screen(
     ]
     items.sort(key=lambda item: str(item["code"]))
     if spec.sort.field != "code":
-        items.sort(key=lambda item: item.get(spec.sort.field), reverse=spec.sort.order == "desc")
+        items.sort(
+            key=lambda item: item.get(spec.sort.field),
+            reverse=spec.sort.order == "desc",
+        )
     elif spec.sort.order == "desc":
         items.reverse()
 
@@ -382,7 +308,9 @@ def run_financial_screen(
         "screen_spec": spec.model_dump(mode="json"),
         "spec_fingerprint": fingerprint,
         "applied_rules": _applied_rules(spec),
-        "formula": {"financial_basis": "按最新可用报告期构造滚动十二个月TTM；缺少必需字段则整轮停止"},
+        "formula": {
+            "financial_basis": "按最新可用报告期构造滚动十二个月TTM；缺少必需字段则整轮停止"
+        },
         "columns": columns,
         "items": result_items,
         "matched_codes": [str(item["code"]) for item in items],

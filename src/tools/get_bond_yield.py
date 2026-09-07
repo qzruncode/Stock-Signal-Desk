@@ -1,290 +1,47 @@
-"""Chinese and US sovereign-yield history with same-date curve spread."""
+"""Business tool contracts over the independent data service."""
 
 from __future__ import annotations
-
-from datetime import datetime, timedelta
 from typing import Any
-
-import pandas as pd
-import requests
-
-from src.tools._akshare import cached_call
-from src.tools._macro_common import get_db, latest_date, number, ordered
+from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
+
+
+def read_bond_yield_eastmoney(
+    country: str = "cn", term: str = "10y", days: int = 30, *, use_cache: bool = True
+) -> dict[str, Any]:
+    return read_source("get_bond_yield.read_bond_yield_eastmoney", locals())
+
+
+def get_bond_yield(
+    country: str = "cn", term: str = "10y", days: int = 30
+) -> dict[str, Any]:
+    return read_source("get_bond_yield.get_bond_yield", locals())
 
 
 COUNTRIES = {"cn": "中国", "us": "美国"}
 TERMS = {"2y": "2年", "5y": "5年", "10y": "10年", "30y": "30年"}
-_COLUMNS = {
-    "cn": {term: f"中国国债收益率{label}" for term, label in TERMS.items()},
-    "us": {term: f"美国国债收益率{label}" for term, label in TERMS.items()},
-}
-
-_EASTMONEY_COLUMNS = {
-    "SOLAR_DATE": "日期",
-    "EMM00588704": "中国国债收益率2年",
-    "EMM00166462": "中国国债收益率5年",
-    "EMM00166466": "中国国债收益率10年",
-    "EMM00166469": "中国国债收益率30年",
-    "EMG00001306": "美国国债收益率2年",
-    "EMG00001308": "美国国债收益率5年",
-    "EMG00001310": "美国国债收益率10年",
-    "EMG00001312": "美国国债收益率30年",
-}
-
-
-def _fetch_frame():
-    """Fetch one recent page instead of AKShare's 19-page historical crawl.
-
-    The tool accepts at most 250 observations. Eastmoney returns newest rows
-    first and one page contains 500 observations, so requesting the remaining
-    archive only increases latency and makes the assistant hit its hard timeout.
-    """
-    response = requests.get(
-        "https://datacenter.eastmoney.com/api/data/get",
-        params={
-            "type": "RPTA_WEB_TREASURYYIELD",
-            "sty": "ALL",
-            "st": "SOLAR_DATE",
-            "sr": "-1",
-            "token": "894050c76af8597a853f5b408b759f5d",
-            "p": "1",
-            "ps": "500",
-            "pageNo": "1",
-            "pageNum": "1",
-        },
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=(4, 10),
-    )
-    response.raise_for_status()
-    payload = response.json()
-    records = (payload.get("result") or {}).get("data") or []
-    frame = pd.DataFrame(records)
-    if frame.empty:
-        return frame
-    frame.rename(columns=_EASTMONEY_COLUMNS, inplace=True)
-    required = ["日期", *[column for columns in _COLUMNS.values() for column in columns.values()]]
-    if any(column not in frame.columns for column in required):
-        missing = [column for column in required if column not in frame.columns]
-        raise ValueError(f"债券收益率响应缺少字段: {', '.join(missing)}")
-    frame = frame[required].copy()
-    frame["日期"] = pd.to_datetime(frame["日期"], errors="coerce").dt.date
-    for column in required[1:]:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame.dropna(subset=["日期"], inplace=True)
-    frame.sort_values("日期", inplace=True)
-    frame.reset_index(drop=True, inplace=True)
-    return frame
-
-
-def _series_from_frame(frame: Any, country: str, term: str, limit: int) -> list[dict[str, Any]]:
-    column = _COLUMNS[country][term]
-    if frame is None or frame.empty or "日期" not in frame.columns or column not in frame.columns:
-        return []
-    rows: list[dict[str, Any]] = []
-    for _, row in frame.iterrows():
-        value = number(row.get(column))
-        if value is not None:
-            rows.append({"date": str(row.get("日期") or "")[:10], "value": value})
-    return ordered(rows, "date")[-limit:]
-
-
-def _same_date_spread(frame: Any, country: str) -> tuple[float | None, str | None]:
-    if frame is None or frame.empty:
-        return None, None
-    col10, col2 = _COLUMNS[country]["10y"], _COLUMNS[country]["2y"]
-    if any(column not in frame.columns for column in ("日期", col10, col2)):
-        return None, None
-    rows = []
-    for _, row in frame.iterrows():
-        y10, y2 = number(row.get(col10)), number(row.get(col2))
-        if y10 is not None and y2 is not None:
-            rows.append((str(row.get("日期") or "")[:10], y10 - y2))
-    if not rows:
-        return None, None
-    rows.sort(key=lambda item: item[0])
-    return round(rows[-1][1], 4), rows[-1][0]
-
-
-def _cached_spread(country: str) -> tuple[float | None, str | None]:
-    db = get_db()
-    tens = {row["date"]: row.get("value") for row in db.get_bond_yield_daily(country, "10y", limit=60) or []}
-    twos = {row["date"]: row.get("value") for row in db.get_bond_yield_daily(country, "2y", limit=60) or []}
-    dates = sorted(set(tens) & set(twos))
-    if not dates:
-        return None, None
-    date_key = dates[-1]
-    y10, y2 = number(tens[date_key]), number(twos[date_key])
-    return (round(y10 - y2, 4), date_key) if y10 is not None and y2 is not None else (None, None)
-
-
-def read_bond_yield_eastmoney(
-    country: str = "cn",
-    term: str = "10y",
-    days: int = 30,
-    *,
-    use_cache: bool = True,
-) -> dict[str, Any]:
-    """Read one Eastmoney yield series without curve calculations or DB fallback."""
-    country = str(country or "").strip().lower()
-    term = str(term or "").strip().lower()
-    days = int(days)
-    if country not in COUNTRIES:
-        raise ValueError(f"不支持的国家: {country}")
-    if term not in TERMS:
-        raise ValueError(f"不支持的期限: {term}")
-    if not 5 <= days <= 250:
-        raise ValueError("days 必须在 5 到 250 之间")
-
-    now = datetime.now().astimezone()
-    errors: list[str] = []
-    try:
-        frame, cached = (
-            cached_call(
-                "bond-yield:eastmoney:source:v1",
-                _fetch_frame,
-                ttl_seconds=6 * 3600,
-                attempts=1,
-            )
-            if use_cache
-            else (_fetch_frame(), False)
-        )
-    except Exception as exc:
-        frame, cached = None, False
-        errors.append(f"中美国债收益率: {exc}")
-
-    history = _series_from_frame(frame, country, term, days)
-    data_date = latest_date(history, "date")
-    if not history and not errors:
-        errors.append("东方财富没有返回可用国债收益率记录")
-    return {
-        "country": country,
-        "country_name": COUNTRIES[country],
-        "term": term,
-        "term_label": TERMS[term],
-        "history": history,
-        "history_count": len(history),
-        "latest": history[-1] if history else None,
-        "units": {"yield": "%"},
-        "source": "东方财富中美国债收益率",
-        "source_scope": "single_sovereign_yield_series",
-        "success": bool(history),
-        "partial": False,
-        "errors": errors,
-        "warnings": [],
-        "data_time": data_date.isoformat() if data_date else None,
-        "is_stale": data_date < now.date() - timedelta(days=7) if data_date else None,
-        "freshness_unknown": data_date is None,
-        "fallback_used": False,
-        "_cached": cached,
-        "_fetched_at": now.isoformat(),
-    }
-
-
-def get_bond_yield(country: str = "cn", term: str = "10y", days: int = 30) -> dict[str, Any]:
-    country = str(country or "").strip().lower()
-    term = str(term or "").strip().lower()
-    days = int(days)
-    if country not in COUNTRIES:
-        raise ValueError(f"不支持的国家: {country}")
-    if term not in TERMS:
-        raise ValueError(f"不支持的期限: {term}")
-    if not 5 <= days <= 250:
-        raise ValueError("days 必须在 5 到 250 之间")
-
-    errors: list[str] = []
-    warnings: list[str] = []
-    frame = None
-    cached = False
-    try:
-        frame, cached = cached_call(
-            "bond-zh-us-rate",
-            _fetch_frame,
-            ttl_seconds=6 * 3600,
-            attempts=1,
-        )
-    except Exception as exc:
-        errors.append(f"中美国债收益率: {exc}")
-
-    history = _series_from_frame(frame, country, term, days)
-    spread, spread_date = _same_date_spread(frame, country)
-    fallback_used = False
-    if history:
-        try:
-            db = get_db()
-            for curve_term in TERMS:
-                curve = _series_from_frame(frame, country, curve_term, max(days, 60))
-                if curve:
-                    db.save_bond_yield_daily(country, curve_term, curve)
-        except Exception as exc:
-            warnings.append(f"债券本地缓存写入失败: {exc}")
-    else:
-        fallback_used = True
-        try:
-            history = ordered(get_db().get_bond_yield_daily(country, term, limit=days) or [], "date")[-days:]
-            spread, spread_date = _cached_spread(country)
-        except Exception as exc:
-            errors.append(f"债券本地缓存: {exc}")
-            history = []
-
-    data_date = latest_date(history, "date")
-    success = bool(history)
-    stale = data_date < datetime.now().date() - timedelta(days=7) if data_date else None
-    latest = history[-1] if history else {}
-    retrieved_at = datetime.now().astimezone().isoformat()
-    return {
-        "country": country,
-        "country_name": COUNTRIES[country],
-        "term": term,
-        "term_label": TERMS[term],
-        "latest": latest,
-        "latest_yield": latest.get("value"),
-        "history": history,
-        "history_count": len(history),
-        "spread_10y_minus_2y": spread,
-        "spread": spread,
-        "spread_date": spread_date,
-        "units": {"yield": "%", "spread": "percentage_point"},
-        "source": "AKShare/东方财富中美国债收益率" if not fallback_used else "本地债券历史缓存",
-        "success": success,
-        "partial": success and bool(errors or warnings),
-        "data_time": data_date.isoformat() if data_date else None,
-        "retrieved_at": retrieved_at,
-        "is_stale": stale,
-        "freshness_unknown": data_date is None,
-        "fallback_used": fallback_used,
-        "fallback_recommended": not success or stale is True,
-        "errors": errors[:10],
-        "warnings": warnings[:10],
-        "_cached": cached if not fallback_used else True,
-        "_fetched_at": retrieved_at,
-    }
-
-
 TOOLS = (
     ToolSpec(
         name="read_bond_yield_eastmoney",
-        description=(
-            "从东方财富读取中国或美国某一期限的国债收益率历史记录。"
-            "只返回该期限的来源序列，不计算期限利差、不写本地库、也不在来源失败时读取本地缓存。"
-        ),
+        description="从东方财富读取中国或美国某一期限的国债收益率历史记录。只返回该期限的来源序列，不计算期限利差、不写本地库、也不在来源失败时读取本地缓存。",
         parameters=object_schema(
             {
                 "country": {"type": "string", "enum": list(COUNTRIES), "default": "cn"},
                 "term": {"type": "string", "enum": list(TERMS), "default": "10y"},
-                "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 30},
+                "days": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 250,
+                    "default": 30,
+                },
             }
         ),
         executor=read_bond_yield_eastmoney,
         category="macro",
     ),
 )
-
-
 __all__ = [
     "TOOLS",
-    "_fetch_frame",
-    "_same_date_spread",
     "get_bond_yield",
     "read_bond_yield_eastmoney",
 ]

@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-import src.storage.mixins.financial_lifecycle as _base
-
-for _name, _value in vars(_base).items():
-    if not _name.startswith("__"):
-        globals()[_name] = _value
+from collections import defaultdict
+from datetime import datetime
+import hashlib
+from typing import Any, Mapping, Sequence
+from sqlalchemy import select
+from src.storage.models import AgentFinancialConclusion, AgentFinancialOutcome
+from src.storage.mixins.financial_lifecycle import (
+    DEFAULT_OUTCOME_HORIZONS,
+    OUTCOME_ENGINE_VERSION,
+    _conclusion_dict,
+    _iso,
+    _json,
+)
 
 
 class _FinancialLifecycleMethods1:
@@ -24,9 +32,7 @@ class _FinancialLifecycleMethods1:
         for raw in conclusions:
             task_id = str(raw.get("task_id") or "").strip()
             symbol = str(raw.get("symbol") or "").strip()
-            conclusion_type = str(
-                raw.get("conclusion_type") or ""
-            ).strip()
+            conclusion_type = str(raw.get("conclusion_type") or "").strip()
             verdict = str(raw.get("verdict") or "").strip()
             if (
                 not task_id
@@ -35,41 +41,19 @@ class _FinancialLifecycleMethods1:
                 or verdict not in {"buy", "not_buy", "watch", "avoid"}
             ):
                 continue
-            identity = (
-                f"{run_id}:{task_id}:{conclusion_type}:{symbol}"
-            )
-            conclusion_id = hashlib.sha256(
-                identity.encode("utf-8")
-            ).hexdigest()
+            identity = f"{run_id}:{task_id}:{conclusion_type}:{symbol}"
+            conclusion_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
             if session.get(AgentFinancialConclusion, conclusion_id):
                 continue
             raw_as_of = raw.get("as_of_at")
-            as_of_at = (
-                raw_as_of
-                if isinstance(raw_as_of, datetime)
-                else datetime.now()
+            as_of_at = raw_as_of if isinstance(raw_as_of, datetime) else datetime.now()
+            from src.services.market_data_history import (
+                baseline as baseline_price,
             )
-            baseline = (
-                session.execute(
-                    select(StockDaily)
-                    .where(
-                        StockDaily.code == symbol,
-                        StockDaily.date < as_of_at.date(),
-                        StockDaily.close.is_not(None),
-                        StockDaily.close > 0,
-                    )
-                    .order_by(StockDaily.date.desc())
-                    .limit(1)
-                )
-                .scalars()
-                .first()
-            )
+
+            baseline = baseline_price(symbol, as_of_at.date())
             evidence = raw.get("evidence")
-            evidence = (
-                dict(evidence)
-                if isinstance(evidence, Mapping)
-                else {}
-            )
+            evidence = dict(evidence) if isinstance(evidence, Mapping) else {}
             record = AgentFinancialConclusion(
                 id=conclusion_id,
                 tenant_id=tenant_id,
@@ -79,33 +63,24 @@ class _FinancialLifecycleMethods1:
                 task_id=task_id,
                 conclusion_type=conclusion_type,
                 symbol=symbol,
-                name=(
-                    str(raw.get("name") or "").strip() or None
-                ),
+                name=(str(raw.get("name") or "").strip() or None),
                 verdict=verdict,
                 contract_version=(
-                    str(raw.get("contract_version") or "").strip()
-                    or None
+                    str(raw.get("contract_version") or "").strip() or None
                 ),
                 as_of_at=as_of_at,
-                baseline_trade_date=(
-                    baseline.date if baseline else None
-                ),
+                baseline_trade_date=(baseline.date if baseline else None),
                 baseline_price=(
                     float(baseline.close)
                     if baseline and baseline.close is not None
                     else None
                 ),
                 baseline_source=(
-                    str(baseline.data_source or "stock_daily")
-                    if baseline
-                    else None
+                    str(baseline.data_source or "stock_daily") if baseline else None
                 ),
                 thesis_json=_json(raw.get("thesis") or {}),
                 evidence_json=_json(evidence),
-                evidence_fingerprint=str(
-                    raw.get("evidence_fingerprint") or ""
-                ),
+                evidence_fingerprint=str(raw.get("evidence_fingerprint") or ""),
                 lifecycle_status="pending",
             )
             session.add(record)
@@ -139,19 +114,16 @@ class _FinancialLifecycleMethods1:
                 AgentFinancialConclusion.owner_id == owner_id,
             )
             if symbol:
-                statement = statement.where(
-                    AgentFinancialConclusion.symbol == symbol
-                )
+                statement = statement.where(AgentFinancialConclusion.symbol == symbol)
             if lifecycle_status:
                 statement = statement.where(
-                    AgentFinancialConclusion.lifecycle_status
-                    == lifecycle_status
+                    AgentFinancialConclusion.lifecycle_status == lifecycle_status
                 )
             records = (
                 session.execute(
-                    statement.order_by(
-                        AgentFinancialConclusion.as_of_at.desc()
-                    ).limit(max(1, min(limit, 1000)))
+                    statement.order_by(AgentFinancialConclusion.as_of_at.desc()).limit(
+                        max(1, min(limit, 1000))
+                    )
                 )
                 .scalars()
                 .all()
@@ -201,12 +173,9 @@ class _FinancialLifecycleMethods1:
                 session.execute(
                     select(AgentFinancialConclusion)
                     .where(
-                        AgentFinancialConclusion.tenant_id
-                        == tenant_id,
-                        AgentFinancialConclusion.owner_id
-                        == owner_id,
-                        AgentFinancialConclusion.lifecycle_status
-                        != "completed",
+                        AgentFinancialConclusion.tenant_id == tenant_id,
+                        AgentFinancialConclusion.owner_id == owner_id,
+                        AgentFinancialConclusion.lifecycle_status != "completed",
                     )
                     .order_by(
                         AgentFinancialConclusion.updated_at.asc(),
@@ -224,21 +193,13 @@ class _FinancialLifecycleMethods1:
                     conclusion.baseline_trade_date is None
                     or conclusion.baseline_price is None
                 ):
-                    baseline = (
-                        session.execute(
-                            select(StockDaily)
-                            .where(
-                                StockDaily.code == conclusion.symbol,
-                                StockDaily.date
-                                < conclusion.as_of_at.date(),
-                                StockDaily.close.is_not(None),
-                                StockDaily.close > 0,
-                            )
-                            .order_by(StockDaily.date.desc())
-                            .limit(1)
-                        )
-                        .scalars()
-                        .first()
+                    from src.services.market_data_history import (
+                        baseline as baseline_price,
+                        outcome_bars,
+                    )
+
+                    baseline = baseline_price(
+                        conclusion.symbol, conclusion.as_of_at.date()
                     )
                     if baseline is None:
                         counters["baselines_missing"] += 1
@@ -248,28 +209,21 @@ class _FinancialLifecycleMethods1:
                     conclusion.baseline_source = str(
                         baseline.data_source or "stock_daily"
                     )
-                rows = (
-                    session.execute(
-                        select(StockDaily)
-                        .where(
-                            StockDaily.code == conclusion.symbol,
-                            StockDaily.date
-                            > conclusion.baseline_trade_date,
-                            StockDaily.close.is_not(None),
-                            StockDaily.close > 0,
-                            StockDaily.date < now.date(),
-                        )
-                        .order_by(StockDaily.date.asc())
-                        .limit(max(DEFAULT_OUTCOME_HORIZONS))
-                    )
-                    .scalars()
-                    .all()
+                from src.services.market_data_history import (
+                    baseline as baseline_price,
+                    outcome_bars,
+                )
+
+                rows = outcome_bars(
+                    conclusion.symbol,
+                    conclusion.baseline_trade_date,
+                    now.date(),
+                    max(DEFAULT_OUTCOME_HORIZONS),
                 )
                 outcomes = (
                     session.execute(
                         select(AgentFinancialOutcome).where(
-                            AgentFinancialOutcome.conclusion_id
-                            == conclusion.id
+                            AgentFinancialOutcome.conclusion_id == conclusion.id
                         )
                     )
                     .scalars()
@@ -289,27 +243,13 @@ class _FinancialLifecycleMethods1:
                         )
                         continue
                     window = rows[:horizon]
-                    baseline_price = float(
-                        conclusion.baseline_price
-                    )
+                    baseline_price = float(conclusion.baseline_price)
                     end_price = float(window[-1].close)
-                    highs = [
-                        float(row.high or row.close)
-                        for row in window
-                    ]
-                    lows = [
-                        float(row.low or row.close)
-                        for row in window
-                    ]
-                    return_pct = (
-                        (end_price / baseline_price) - 1.0
-                    ) * 100
-                    favorable = (
-                        (max(highs) / baseline_price) - 1.0
-                    ) * 100
-                    adverse = (
-                        (min(lows) / baseline_price) - 1.0
-                    ) * 100
+                    highs = [float(row.high or row.close) for row in window]
+                    lows = [float(row.low or row.close) for row in window]
+                    return_pct = ((end_price / baseline_price) - 1.0) * 100
+                    favorable = ((max(highs) / baseline_price) - 1.0) * 100
+                    adverse = ((min(lows) / baseline_price) - 1.0) * 100
                     if conclusion.verdict == "buy":
                         label = (
                             "favorable"
@@ -352,14 +292,14 @@ class _FinancialLifecycleMethods1:
                     outcome.engine_version = OUTCOME_ENGINE_VERSION
                     outcome.diagnostics_json = _json(
                         {
-                            "baseline_trade_date": _iso(
-                                conclusion.baseline_trade_date
-                            ),
+                            "baseline_trade_date": _iso(conclusion.baseline_trade_date),
                             "observations": horizon,
                             "semantics": (
                                 "directional_validation"
                                 if conclusion.verdict == "buy"
-                                else "opportunity_cost_only" if conclusion.verdict == "not_buy" else "observation_only"
+                                else "opportunity_cost_only"
+                                if conclusion.verdict == "not_buy"
+                                else "observation_only"
                             ),
                         }
                     )
@@ -369,15 +309,11 @@ class _FinancialLifecycleMethods1:
                 conclusion.lifecycle_status = (
                     "completed"
                     if outcomes
-                    and all(
-                        outcome.status == "completed"
-                        for outcome in outcomes
-                    )
+                    and all(outcome.status == "completed" for outcome in outcomes)
                     else "pending"
                 )
                 conclusion.updated_at = now
         return counters
-
 
 
 __all__ = ["_FinancialLifecycleMethods1"]

@@ -14,6 +14,7 @@ A 股 / 港股 / 美股自选股 AI 分析工作台。项目由 FastAPI 后端�
 - **模型配置**：在设置页维护模型 API Key、主模型和相关参数，保存后自动重载配置
 - **可选推送**：分析时可开启企业微信推送；跑批完成后也会尝试发送通知
 - **可选认证**：支持运行时开启管理员认证，未登录时跳转登录页
+- **独立数据服务**：独立 PostgreSQL、自动采集与持久任务；业务/工具通过 API 读取，数据维护中心支持策略、时效、覆盖明细、取消及失败重试
 
 ## WebUI 页面
 
@@ -66,6 +67,8 @@ ANTHROPIC_MODEL=claude-sonnet-4-6
 
 如使用中转服务，再配置 `ANTHROPIC_BASE_URL`。完整配置示例见 `.env.example`。
 
+证券、行情、财务与资讯数据由独立数据服务维护。运行业务前，按 [数据服务部署与迁移说明](market_data_service/OPERATIONS.md) 准备独立 PostgreSQL/Redis 并启动服务；业务 `.env` 配置 `MARKET_DATA_SERVICE_URL` 与 `MARKET_DATA_SERVICE_TOKEN`。服务离线或数据未达标时会明确提示，不回退到旧业务库。
+
 ## 运行
 
 ### 推荐：后端托管 WebUI
@@ -107,7 +110,7 @@ npm run dev
 
 ```bash
 ./dev.sh start     # 启动前后端
-./dev.sh stop      # 停止服务
+./dev.sh stop      # 停止业务，数据服务及 RSSHub 继续维护数据
 ./dev.sh restart   # 重启服务
 ./dev.sh status    # 查看运行状态
 ```
@@ -116,6 +119,8 @@ npm run dev
 
 - 后端: `http://localhost:8000`
 - 前端: `http://localhost:5173`
+
+`dev.sh start` 默认复用或启动已配置的数据服务（8010）；使用外部部署时设置 `DEV_MARKET_DATA=0`。数据服务单独停止/重启使用 `bash market_data_service/manage.sh stop|restart`，不会删除数据库。完整部署命令和首次旧库只读导入见 [运维说明](market_data_service/OPERATIONS.md)。
 
 ## 常用命令
 
@@ -150,7 +155,8 @@ cd apps/dsa-web && npm run lint
 │       ├── api/             # 前端 API client
 │       ├── hooks/           # 任务流、仪表盘状态、自动补全等 hooks
 │       └── stores/          # 批量分析、自选股等状态管理
-├── data_provider/           # 行情和基本面数据源适配器
+├── market_data_service/     # 独立数据服务、采集适配器、迁移与部署
+├── data_provider/           # 旧兼容模块与纯代码规范化工具；业务采集已迁出
 ├── src/                     # 分析、配置、LLM、搜索、通知、存储等核心逻辑
 ├── tests/                   # Python 测试
 ├── .env.example             # 环境变量模板

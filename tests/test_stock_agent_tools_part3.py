@@ -14,10 +14,18 @@ import pytest
 import src.tools.search_financial_news as financial_news_module
 import src.tools.search_research_library as research_library_module
 
-from src.tools.get_consensus_estimates import get_consensus_estimates
-from src.tools.get_peer_comparison import get_peer_comparison
-from src.tools.get_sector_flow import _fetch_all as fetch_all_sector_flow, get_sector_flow
-from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
+from market_data_service.providers.get_consensus_estimates import (
+    get_consensus_estimates,
+)
+from market_data_service.providers.get_peer_comparison import get_peer_comparison
+from market_data_service.providers.get_sector_flow import (
+    _fetch_all as fetch_all_sector_flow,
+    get_sector_flow,
+)
+from market_data_service.providers.get_stock_capital_flow import (
+    _market_for,
+    get_stock_capital_flow,
+)
 from src.tools.get_monetary_policy_operations import _operation_item
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
 from src.tools.search_financial_news import (
@@ -43,8 +51,8 @@ from src.tools.websearch import (
 )
 
 
-
 """Focused test slice 3; shared fixtures remain local to this slice."""
+
 
 def _catalog_route(
     route_path: str,
@@ -61,12 +69,20 @@ def _catalog_route(
         "description": name,
         "params": params or [],
     }
-def test_webfetch_open_http_contract_retries_cloudflare_with_honest_user_agent() -> None:
+
+
+def test_webfetch_open_http_contract_retries_cloudflare_with_honest_user_agent() -> (
+    None
+):
     challenge = Mock(status_code=403, headers={"cf-mitigated": "challenge"})
     success = Mock(
         status_code=200,
         headers={"content-type": "text/html; charset=utf-8"},
-        content=("<html><title>Page</title><body>" + "useful content " * 20 + "</body></html>").encode(),
+        content=(
+            "<html><title>Page</title><body>"
+            + "useful content " * 20
+            + "</body></html>"
+        ).encode(),
         encoding="utf-8",
         url="https://example.com/page",
     )
@@ -87,6 +103,7 @@ def test_webfetch_open_http_contract_retries_cloudflare_with_honest_user_agent()
     assert client.get.call_args_list[1].kwargs["headers"]["User-Agent"] == "opencode"
     assert "text/markdown;q=1.0" in _accept_header_for("markdown")
 
+
 def test_webfetch_open_http_contract_supports_images_and_five_mb_cap() -> None:
     image_response = Mock(
         status_code=200,
@@ -98,7 +115,10 @@ def test_webfetch_open_http_contract_supports_images_and_five_mb_cap() -> None:
     image_response.raise_for_status.return_value = None
     oversized_response = Mock(
         status_code=200,
-        headers={"content-type": "text/plain", "content-length": str(MAX_RESPONSE_SIZE + 1)},
+        headers={
+            "content-type": "text/plain",
+            "content-length": str(MAX_RESPONSE_SIZE + 1),
+        },
         content=b"small",
         encoding="utf-8",
         url="https://example.com/large.txt",
@@ -123,6 +143,7 @@ def test_webfetch_open_http_contract_supports_images_and_five_mb_cap() -> None:
     assert oversized_result["success"] is False
     assert "5MB" in oversized_result["error"]
 
+
 def test_webfetch_open_http_contract_parses_pdf_instead_of_decoding_binary() -> None:
     pdf_response = Mock(
         status_code=200,
@@ -141,7 +162,10 @@ def test_webfetch_open_http_contract_parses_pdf_instead_of_decoding_binary() -> 
     with (
         patch("src.tools.webfetch._validate_public_url"),
         patch("src.tools.webfetch.httpx.Client", return_value=context),
-        patch("src.tools.webfetch._convert_document", return_value=("# 年报\n\n正文", "markitdown")),
+        patch(
+            "src.tools.webfetch._convert_document",
+            return_value=("# 年报\n\n正文", "markitdown"),
+        ),
     ):
         result = _http_fetch("https://example.com/report.pdf", "markdown", 30)
 
@@ -190,7 +214,10 @@ def test_webfetch_detects_pdf_downloads_without_a_pdf_url_suffix(
     with (
         patch("src.tools.webfetch._validate_public_url"),
         patch("src.tools.webfetch.httpx.Client", return_value=context),
-        patch("src.tools.webfetch._convert_document", return_value=("# 研报正文", "markitdown")) as convert,
+        patch(
+            "src.tools.webfetch._convert_document",
+            return_value=("# 研报正文", "markitdown"),
+        ) as convert,
     ):
         result = _http_fetch(url, "markdown", 30)
 

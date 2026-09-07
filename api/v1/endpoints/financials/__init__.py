@@ -1,52 +1,10 @@
-# -*- coding: utf-8 -*-
-"""Financials package — router + endpoint thin shells.
-
-All heavy lifting lives in sibling sub-modules.  This file only wires
-FastAPI routes, handles caching, and re-exports private helpers that
-external callers (``stocks.py``, tests) access via the package namespace.
-"""
-from __future__ import annotations
-
-import logging
-import threading
-from typing import Any, Optional
+"""Typed business endpoints; all market-source reads cross the data-service API."""
 
 from fastapi import APIRouter, Query
+from ._symbol import _normalize_symbol
+from ._signal import _build_price_overdraft_signal
 
-from ._helpers import _normalize_symbol
-from ._cache import (
-    CACHE_KEY,
-    VALUATION_CACHE_KEY,
-    FINS_STATEMENTS_CACHE_KEY,
-    NEWS_CACHE_KEY,
-    ANNOUNCEMENTS_CACHE_KEY,
-    RISK_EVENTS_CACHE_KEY,
-    SENTIMENT_CACHE_KEY,
-    RESEARCH_CACHE_KEY,
-    SOCIAL_SENTIMENT_CACHE_KEY,
-    _cache_get,
-    _cache_put,
-    _daily_cache_get,
-    _daily_cache_put,
-    _fins_cache_get,
-    _fins_cache_put,
-)
-
-from ._fetch_financials import _fetch_financials, _fetch_from_ths, _fetch_from_sina
-from ._fetch_valuation import _fetch_valuation_ratios, _build_price_overdraft_signal
-from ._fetch_statements_fallback import _fetch_financial_statements
-from ._fetch_sentiment import _fetch_sentiment
-
-logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Background-refresh locks (lazily initialised, same pattern as original)
-_lock = threading.Lock()
-_fins_lock = threading.Lock()
-
-# ---------------------------------------------------------------------------
-# /financials
-# ---------------------------------------------------------------------------
 
 
 @router.get("/financials", summary="获取核心财务指标")
@@ -66,12 +24,9 @@ def get_financials(
 
     force_value = force if isinstance(force, bool) else False
     period_value = periods if isinstance(periods, int) else 6
-    return tool_get_financials(_normalize_symbol(symbol), periods=period_value, use_cache=not force_value)
-
-
-# ---------------------------------------------------------------------------
-# /valuation-ratios
-# ---------------------------------------------------------------------------
+    return tool_get_financials(
+        _normalize_symbol(symbol), periods=period_value, use_cache=not force_value
+    )
 
 
 @router.get("/valuation-ratios", summary="获取估值指标")
@@ -81,20 +36,15 @@ def get_valuation_ratios(
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """获取当前、历史及行业相对估值，口径与 Agent 工具一致。"""
-    from src.tools.get_valuation_ratios import get_valuation_ratios as tool_get_valuation_ratios
+    from src.tools.get_valuation_ratios import (
+        get_valuation_ratios as tool_get_valuation_ratios,
+    )
 
     history_value = with_history if isinstance(with_history, bool) else True
     force_value = force if isinstance(force, bool) else False
     return tool_get_valuation_ratios(
-        _normalize_symbol(symbol),
-        with_history=history_value,
-        use_cache=not force_value,
+        _normalize_symbol(symbol), with_history=history_value, use_cache=not force_value
     )
-
-
-# ---------------------------------------------------------------------------
-# /price-overdraft-signal
-# ---------------------------------------------------------------------------
 
 
 @router.get("/price-overdraft-signal", summary="获取股价透支判定信号")
@@ -107,17 +57,13 @@ def get_price_overdraft_signal(
     return {
         "symbol": valuation.get("symbol"),
         "trade_date": valuation.get("trade_date"),
-        "price_overdraft_signal": valuation.get("price_overdraft_signal") or _build_price_overdraft_signal(valuation),
+        "price_overdraft_signal": valuation.get("price_overdraft_signal")
+        or _build_price_overdraft_signal(valuation),
         "source_chain": valuation.get("source_chain", []),
         "errors": valuation.get("errors", []),
         "_fetched_at": valuation.get("_fetched_at"),
         "_cached": valuation.get("_cached", False),
     }
-
-
-# ---------------------------------------------------------------------------
-# /shareholder-structure
-# ---------------------------------------------------------------------------
 
 
 @router.get("/shareholder-structure", summary="获取股东结构")
@@ -126,15 +72,12 @@ def get_shareholder_structure(
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """获取报告期明确且与 Agent 工具同口径的股东结构。"""
-    from src.tools.get_shareholder_structure import get_shareholder_structure as tool_get_shareholders
+    from src.tools.get_shareholder_structure import (
+        get_shareholder_structure as tool_get_shareholders,
+    )
 
     force_value = force if isinstance(force, bool) else False
     return tool_get_shareholders(_normalize_symbol(symbol), use_cache=not force_value)
-
-
-# ---------------------------------------------------------------------------
-# /financials/statements
-# ---------------------------------------------------------------------------
 
 
 @router.get("/financials/statements", summary="获取三大财务报表")
@@ -155,20 +98,15 @@ def get_financial_statements(
 
     数据源：东方财富财务分析公开接口，缓存 6 小时。
     """
-    from src.tools._financial_statements import get_financial_statements as tool_get_financial_statements
+    from src.tools._financial_statements import (
+        get_financial_statements as tool_get_financial_statements,
+    )
 
     force_value = force if isinstance(force, bool) else False
     period_value = periods if isinstance(periods, int) else 6
     return tool_get_financial_statements(
-        _normalize_symbol(symbol),
-        periods=period_value,
-        use_cache=not force_value,
+        _normalize_symbol(symbol), periods=period_value, use_cache=not force_value
     )
-
-
-# ---------------------------------------------------------------------------
-# /news
-# ---------------------------------------------------------------------------
 
 
 @router.get("/news", summary="搜索相关新闻")
@@ -190,14 +128,13 @@ def search_news(
     """
     symbol = _normalize_symbol(symbol)
     if source == "research":
-        from src.tools.get_research_report import get_research_report as tool_get_research_report
+        from src.tools.get_research_report import (
+            get_research_report as tool_get_research_report,
+        )
 
         force_value = force if isinstance(force, bool) else False
         return tool_get_research_report(
-            symbol,
-            days=days,
-            limit=50,
-            use_cache=not force_value,
+            symbol, days=days, limit=50, use_cache=not force_value
         )
     from src.tools.search_news import search_news as tool_search_news
 
@@ -205,16 +142,13 @@ def search_news(
     return tool_search_news(symbol, days=days, limit=50, use_cache=not force_value)
 
 
-# ---------------------------------------------------------------------------
-# /announcements
-# ---------------------------------------------------------------------------
-
-
 @router.get("/announcements", summary="获取公司公告")
 def get_announcements(
     symbol: str = Query(..., description="股票代码"),
     days: int = Query(90, ge=1, le=365, description="查询最近N天"),
-    type: str = Query("all", description="公告类型: all | 业绩 | 分红 | 增持 | 减持 | 高管变动"),
+    type: str = Query(
+        "all", description="公告类型: all | 业绩 | 分红 | 增持 | 减持 | 高管变动"
+    ),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """获取上市公司正式公告。
@@ -239,11 +173,6 @@ def get_announcements(
     )
 
 
-# ---------------------------------------------------------------------------
-# /risk-events
-# ---------------------------------------------------------------------------
-
-
 @router.get("/risk-events", summary="获取风险事件")
 def get_risk_events(
     symbol: str = Query(..., description="股票代码"),
@@ -266,35 +195,21 @@ def get_risk_events(
     )
 
 
-# ---------------------------------------------------------------------------
-# /sentiment
-# ---------------------------------------------------------------------------
-
-
 @router.get("/sentiment", summary="获取舆情分析证据")
 def get_sentiment(
     symbol: str = Query(..., description="股票代码"),
     days: int = Query(90, ge=1, le=90, description="分析最近N天"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
-    """获取供模型研判舆情的资讯和研报证据，不在程序中做词典投票。"""
-    symbol = _normalize_symbol(symbol)
-    days_value = days if isinstance(days, int) else 90
-    force_value = force if isinstance(force, bool) else False
-    cache_part = f"d{days_value}"
-    if not force_value:
-        cached = _daily_cache_get(SENTIMENT_CACHE_KEY, symbol, cache_part)
-        if cached:
-            cached["_cached"] = True
-            return cached
-    data = _fetch_sentiment(symbol, days_value)
-    _daily_cache_put(SENTIMENT_CACHE_KEY, symbol, data, cache_part)
-    return data
+    from src.services.market_data_client import read_source
 
-
-# ---------------------------------------------------------------------------
-# /research-report
-# ---------------------------------------------------------------------------
+    return read_source(
+        "news.sentiment",
+        {
+            "symbol": _normalize_symbol(symbol),
+            "days": days if isinstance(days, int) else 90,
+        },
+    )
 
 
 @router.get("/research-report", summary="获取券商研报")
@@ -311,21 +226,15 @@ def get_research_report(
 
     按天缓存。
     """
-    from src.tools.get_research_report import get_research_report as tool_get_research_report
+    from src.tools.get_research_report import (
+        get_research_report as tool_get_research_report,
+    )
 
     force_value = force if isinstance(force, bool) else False
     days_value = days if isinstance(days, int) else 1095
     return tool_get_research_report(
-        _normalize_symbol(symbol),
-        days=days_value,
-        limit=100,
-        use_cache=not force_value,
+        _normalize_symbol(symbol), days=days_value, limit=100, use_cache=not force_value
     )
-
-
-# ---------------------------------------------------------------------------
-# /social-sentiment
-# ---------------------------------------------------------------------------
 
 
 @router.get("/social-sentiment", summary="获取社交媒体分析证据")
@@ -335,7 +244,9 @@ def get_social_sentiment(
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """获取公开讨论样本、热度和来源，语义情绪由模型结合上下文研判。"""
-    from src.tools.get_social_sentiment import get_social_sentiment as tool_get_social_sentiment
+    from src.tools.get_social_sentiment import (
+        get_social_sentiment as tool_get_social_sentiment,
+    )
 
     force_value = force if isinstance(force, bool) else False
     days_value = days if isinstance(days, int) else 90
@@ -346,14 +257,3 @@ def get_social_sentiment(
         max_pages=3,
         use_cache=not force_value,
     )
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible re-exports (external callers use getattr / direct import)
-# ---------------------------------------------------------------------------
-
-from ._helpers import (
-    _fetch_rsshub_entries,
-    _resolve_post_publish_time,
-)
-from ._fetch_statements import _fetch_from_ths_triple

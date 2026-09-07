@@ -32,10 +32,12 @@ from api.v1.endpoints import (
     industry_cycle,
     buy_decision,
     indicator_screening,
+    data_service,
 )
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
+router.include_router(data_service.router, prefix="/data-service", tags=["DataService"])
 
 router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 

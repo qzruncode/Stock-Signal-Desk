@@ -48,9 +48,12 @@ class TestSearchPerformance:
         assert avg_ms < 20, f"Fast-path resolution too slow: {avg_ms:.2f}ms"
 
     @pytest.mark.benchmark
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code", return_value={})
-    def test_resolve_name_to_code_typo_fallback_budget(self, mock_akshare):
-        """Benchmark typo/fuzzy fallback separately with a smaller iteration budget."""
+    @patch(
+        "src.services.name_to_code_resolver.get_database_stock_indexes",
+        return_value=({}, {}),
+    )
+    def test_resolve_name_to_code_typo_fallback_budget(self, _mock_master):
+        """Benchmark strict unknown-name rejection with an isolated master."""
         typo_inputs = [
             "贵州茅苔",
             "平安银形",
@@ -72,24 +75,24 @@ class TestSearchPerformance:
         assert avg_ms < 100, f"Typo fallback too slow: {avg_ms:.2f}ms"
 
     @pytest.mark.benchmark
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_fuzzy_match_performance_large_set(self, mock_akshare):
-        """Test difflib fuzzy matching performance with a 5000+ stock set."""
-        # Simulate 5000 stocks from AkShare
+    @patch("src.services.name_to_code_resolver.get_database_stock_indexes")
+    def test_exact_match_performance_large_set(self, mock_master):
+        """Test exact maintained-identity matching with a 5000-stock set."""
         fake_market = {f"股票_{i}": f"{i:06d}" for i in range(5000)}
-        mock_akshare.return_value = fake_market
+        mock_master.return_value = (
+            fake_market,
+            {code: name for name, code in fake_market.items()},
+        )
 
         query = "股票_4999"  # Worst case or near worst case for fuzzy matching
 
         start_time = time.time()
         iterations = 20
         for _ in range(iterations):
-            resolve_name_to_code(query)
+            assert resolve_name_to_code(query) == "004999"
 
         duration = time.time() - start_time
         avg_ms = (duration / iterations) * 1000
 
-        print(f"\nFuzzy match (5000 stocks) avg time: {avg_ms:.2f}ms")
-        # Fuzzy matching 5000 strings is CPU intensive.
-        # Aiming for < 100ms per request on a standard CI environment.
-        assert avg_ms < 200, f"Fuzzy matching too slow: {avg_ms:.2f}ms"
+        print(f"\nExact match (5000 stocks) avg time: {avg_ms:.2f}ms")
+        assert avg_ms < 20, f"Exact matching too slow: {avg_ms:.2f}ms"
