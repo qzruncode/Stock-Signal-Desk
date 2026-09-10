@@ -60,6 +60,26 @@ def _is_provider_reported_timeout(error: BaseException) -> bool:
     return "timeout" in name or "timeout" in text or "timed out" in text
 
 
+def _is_context_window_error(error: BaseException) -> bool:
+    """Recognize provider errors that mean the request cannot fit its window."""
+    name = type(error).__name__.lower()
+    text = str(error).lower()
+    markers = (
+        "context window",
+        "context_window",
+        "contextwindow",
+        "context length",
+        "maximum context",
+        "max context",
+        "prompt is too long",
+        "prompt too long",
+        "too many tokens",
+        "input tokens exceed",
+        "exceeds the model's maximum",
+    )
+    return any(marker in name or marker in text for marker in markers)
+
+
 class ModelProviderReportedTimeoutError(RuntimeError):
     """The upstream provider reported a timeout; no local deadline is applied."""
 
@@ -71,6 +91,26 @@ class ModelProviderUnavailableError(RuntimeError):
     analysis deadline.  The graph can therefore close safely as ``partial``
     without pretending that a completed answer was produced.
     """
+
+
+class ModelContextWindowExceededError(RuntimeError):
+    """The model request cannot fit the configured input and output budget."""
+
+    def __init__(
+        self,
+        *,
+        context_window: int,
+        estimated_input_tokens: int,
+        message_count: int,
+    ) -> None:
+        self.context_window = int(context_window)
+        self.estimated_input_tokens = int(estimated_input_tokens)
+        self.message_count = int(message_count)
+        super().__init__(
+            "model context window exceeded "
+            f"(window={self.context_window}, estimated_input={self.estimated_input_tokens}, "
+            f"messages={self.message_count})"
+        )
 
 
 class ManagedModelStream:
@@ -225,6 +265,15 @@ class GuardedModelRuntime:
                 await finalize(exc)
                 raise
             except BaseException as exc:
+                if _is_context_window_error(exc):
+                    error = ModelContextWindowExceededError(
+                        context_window=0,
+                        estimated_input_tokens=0,
+                        message_count=0,
+                    )
+                    last_error = error
+                    await finalize(error)
+                    raise error from exc
                 error: BaseException = (
                     ModelProviderReportedTimeoutError(
                         "upstream model provider reported timeout"
@@ -294,6 +343,7 @@ class GuardedModelRuntime:
 __all__ = [
     "GuardedModelRuntime",
     "ManagedModelStream",
+    "ModelContextWindowExceededError",
     "ModelProviderReportedTimeoutError",
     "ModelProviderUnavailableError",
 ]

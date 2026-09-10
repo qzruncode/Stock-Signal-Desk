@@ -11,6 +11,7 @@ from fastapi import Body, Depends, HTTPException, Query, Request
 
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
+from api.v1.endpoints.agent.conversation_lifecycle import conversation_transition
 from src.agent.run_registry import active_run_registry
 from src.agent.langgraph_runtime import agent_graph_runtime
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
@@ -175,24 +176,23 @@ def _conversation_presentation(
     return payload
 
 
-async def _cancel_conversation_run_before_delete(
+async def _cancel_conversation_run_before_history_change(
     conversation_id: str,
     db_manager: DatabaseManager,
+    *,
+    timeout_seconds: float = 10.0,
 ) -> None:
-    """Stop local or cross-worker execution before deleting its transcript."""
+    """Wait for the writer to finish while the caller holds the transition lease."""
     active_run_registry.configure(db_manager)
-    local_run = active_run_registry.get(conversation_id)
     cancelled = await active_run_registry.cancel(conversation_id)
     if cancelled:
-        logger.info("[Agent] cancelled active run for deleted conversation %s", conversation_id)
-    if not cancelled or local_run is not None:
-        return
+        logger.info("[Agent] requested cancellation before history change %s", conversation_id)
 
-    # A different worker owns the task. Its durable cancel watcher must publish
-    # the terminal state before the parent conversation is removed, otherwise
-    # its partial/trace writes would target a deleted row.
-    deadline = asyncio.get_running_loop().time() + 10.0
-    while asyncio.get_running_loop().time() < deadline:
+    # A retained local handle does not prove that another worker is stopped.
+    # Terminal publication commits the transcript before releasing the active
+    # slot; always consult that durable authority before replacing history.
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
         durable = await asyncio.to_thread(
             db_manager.get_agent_run,
             conversation_id=conversation_id,
@@ -201,12 +201,18 @@ async def _cancel_conversation_run_before_delete(
             "queued",
             "running",
             "recovering",
+            "interrupted",
         }:
             return
+        if durable.get("status") == "interrupted":
+            # A worker can park for approval just after the cancel request.
+            await asyncio.to_thread(db_manager.request_agent_run_cancel, conversation_id)
+        if asyncio.get_running_loop().time() >= deadline:
+            break
         await asyncio.sleep(0.1)
     raise HTTPException(
         status_code=409,
-        detail="任务正在其他节点停止，请稍后重试删除",
+        detail="任务尚未停止，历史未修改，请稍后重试",
     )
 
 
@@ -240,9 +246,10 @@ async def clear_agent_conversations(
     conversation_ids = service.list_conversation_ids()
     deleted = 0
     for conversation_id in conversation_ids:
-        await _cancel_conversation_run_before_delete(conversation_id, db_manager)
-        await agent_graph_runtime.delete_thread(conversation_id)
-        deleted += service.delete_conversation(conversation_id)
+        async with conversation_transition(db_manager, conversation_id):
+            await _cancel_conversation_run_before_history_change(conversation_id, db_manager)
+            await agent_graph_runtime.delete_thread(conversation_id)
+            deleted += service.delete_conversation(conversation_id)
     return {"deleted": deleted}
 
 
@@ -391,20 +398,15 @@ async def delete_agent_conversation(
     db_manager: DatabaseManager = Depends(get_database_manager),
 ):
     service = _session_service(request, db_manager)
-    # Resolve the target before mutating run state.  A typo/non-existent id
-    # must be a clean 404 and must never cancel an unrelated registry entry.
-    if not service.get_conversation(conversation_id):
-        raise HTTPException(status_code=404, detail="对话不存在")
-
-    # 必须先取消活跃 run 再删 DB:cancel 会 task.cancel() 唤醒后台 task 的
-    # CancelledError 分支,该分支会 save_partial_assistant_text 落库。若先删
-    # 会话记录,后写的 partial 会挂到已不存在的 conversation_id 上成为孤儿
-    # 消息(FK 缺失时残留脏数据)。先 cancel 让 task 收尾、再删 DB。
-    await _cancel_conversation_run_before_delete(conversation_id, db_manager)
-    await agent_graph_runtime.delete_thread(conversation_id)
-    deleted = service.delete_conversation(conversation_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="对话不存在")
+    async with conversation_transition(db_manager, conversation_id):
+        # Resolve ownership under the same lease as cancellation and deletion.
+        if not service.get_conversation(conversation_id):
+            raise HTTPException(status_code=404, detail="对话不存在")
+        await _cancel_conversation_run_before_history_change(conversation_id, db_manager)
+        await agent_graph_runtime.delete_thread(conversation_id)
+        deleted = service.delete_conversation(conversation_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="对话不存在")
     return {"deleted": deleted}
 
 
@@ -424,7 +426,7 @@ async def cancel_agent_conversation_run(
 
 
 @router.put("/agent/conversations/{conversation_id}/snapshot")
-def sync_agent_conversation_snapshot(
+async def sync_agent_conversation_snapshot(
     conversation_id: str,
     request: Request,
     payload: Dict[str, Any] = Body(...),
@@ -443,12 +445,24 @@ def sync_agent_conversation_snapshot(
     # arbitrarily large historical tool tree re-enter storage and later cost a
     # browser a deep JSON walk.  Replace any legacy value with an empty marker;
     # the canonical transcript and LangGraph checkpoint remain authoritative.
-    conversation = service.save_conversation_snapshot(
-        conversation_id,
-        messages,
-        thread_state={},
-        prune_agent_context_to_messages=bool(payload.get("prune_agent_context_to_messages")),
-    )
-    if not conversation:
-        raise HTTPException(status_code=404, detail="对话不存在")
+    prune_checkpoint = bool(payload.get("prune_agent_context_to_messages"))
+    async with conversation_transition(db_manager, conversation_id):
+        if not service.get_conversation(conversation_id):
+            raise HTTPException(status_code=404, detail="对话不存在")
+        if messages is not None:
+            # A transcript replacement is a history mutation even for older
+            # clients that omit the pruning flag. Neither a stopped writer
+            # nor a new admission may race the checkpoint/transcript update.
+            await _cancel_conversation_run_before_history_change(conversation_id, db_manager)
+            if agent_graph_runtime.initialized:
+                await agent_graph_runtime.replace_checkpoint_messages(conversation_id, messages)
+        conversation = await asyncio.to_thread(
+            service.save_conversation_snapshot,
+            conversation_id,
+            messages,
+            thread_state={},
+            prune_agent_context_to_messages=prune_checkpoint,
+        )
+        if not conversation:
+            raise HTTPException(status_code=404, detail="对话不存在")
     return _conversation_presentation(conversation)

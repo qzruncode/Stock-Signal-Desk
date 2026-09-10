@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ContextEditingMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
@@ -14,6 +15,8 @@ from src.tools.registry import ToolRegistry
 
 from .agent_tools import build_langchain_tools
 from .answer_contract import StructuredAgentAnswer
+from .context import ContextBudgetMiddleware
+from .memory import ConversationMemoryMiddleware
 from .middleware import (
     AgentPromptMiddleware,
     OperationPolicyMiddleware,
@@ -21,7 +24,6 @@ from .middleware import (
     ToolExecutionMiddleware,
 )
 from .state import AgentState, GraphContext
-from .memory import ConversationMemoryMiddleware
 
 
 class _RuntimeModelPlaceholder(BaseChatModel):
@@ -74,6 +76,8 @@ def build_agent_graph(
         middleware=(
             ConversationMemoryMiddleware(),
             AgentPromptMiddleware(),
+            ContextEditingMiddleware(token_count_method="approximate"),
+            ContextBudgetMiddleware(),
             OperationPolicyMiddleware(),
             ToolExecutionMiddleware(),
             TerminalPublicationMiddleware(),

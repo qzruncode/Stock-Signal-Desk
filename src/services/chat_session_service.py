@@ -3,12 +3,19 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from src.storage import DatabaseManager
 from src.agent.progress import is_non_answer_agent_message, strip_agent_progress
 from src.agent.langgraph_runtime.evidence_identity import strip_internal_evidence_diagnostic
+
+
+@dataclass(frozen=True)
+class PreparedChatHistory:
+    messages: List[Dict[str, Any]]
+    replace_checkpoint: bool
 
 
 class ChatSessionService:
@@ -202,11 +209,26 @@ class ChatSessionService:
         parent_message_id: Optional[str] = None,
         edit_message_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Attach a fresh client turn to the canonical server transcript.
+        """Compatibility facade for callers that only need the transcript."""
+        return self.prepare_request_with_server_history(
+            conversation_id,
+            incoming_messages,
+            parent_message_id=parent_message_id,
+            edit_message_id=edit_message_id,
+        ).messages
 
-        An assistant-ui edit is represented as a new branch message.  It must
-        replace the edited message and everything after it in the canonical
-        transcript instead of being appended as another user turn.
+    def prepare_request_with_server_history(
+        self,
+        conversation_id: str,
+        incoming_messages: List[Dict[str, Any]],
+        *,
+        parent_message_id: Optional[str] = None,
+        edit_message_id: Optional[str] = None,
+    ) -> PreparedChatHistory:
+        """Resolve transcript and checkpoint branch from one canonical read.
+
+        Reload reuses the original user id; edit supplies its source id. Both
+        replace that turn and its descendants, including derived graph state.
         """
         detail = self.get_conversation(conversation_id) or {}
         historical = [
@@ -228,6 +250,19 @@ class ChatSessionService:
         ]
         clean_parent = str(parent_message_id or "").strip()
         clean_edit = str(edit_message_id or "").strip()
+        existing_user_ids = {message["id"] for message in historical if message["role"] == "user"}
+        if not clean_edit:
+            clean_edit = next(
+                (
+                    message_id
+                    for message in reversed(incoming_messages)
+                    if str(message.get("role") or "").lower() == "user"
+                    and (message_id := str(message.get("id") or message.get("unstable_id") or "").strip())
+                    and message_id in existing_user_ids
+                ),
+                "",
+            )
+        original_length = len(historical)
         if clean_edit:
             edit_index = next(
                 (index for index, message in enumerate(historical) if message["id"] == clean_edit),
@@ -263,7 +298,10 @@ class ChatSessionService:
         }
         if incoming_ids:
             historical = [message for message in historical if message["id"] not in incoming_ids]
-        return [*historical, *incoming_messages]
+        return PreparedChatHistory(
+            messages=[*historical, *incoming_messages],
+            replace_checkpoint=bool(clean_edit) or len(historical) < original_length,
+        )
 
     def save_partial_assistant_text(self, conversation_id: str, assistant_text: str) -> None:
         """增量保存"进行中"的 assistant 文本(刷新后可恢复已生成部分)。

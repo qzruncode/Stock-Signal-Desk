@@ -68,6 +68,26 @@ async def _start_interrupt(
     )
 
 
+def test_history_reset_clears_the_native_pending_interrupt() -> None:
+    async def scenario() -> None:
+        manager = LangGraphRuntimeManager(registry=_registry(_side_effect_operation()), response_format=None)
+        executor = FakeAtomicExecutor()
+        await manager.start(testing=True)
+        try:
+            await _start_interrupt(manager, executor=executor, conversation_id="history-reset")
+            assert await manager.pending_interrupt("history-reset") is not None
+            await manager.replace_checkpoint_messages("history-reset", [])
+            assert await manager.pending_interrupt("history-reset") is None
+            state = await manager.get_state("history-reset")
+            assert state["messages"] == []
+            assert state["conversation_context"] is None
+            assert not executor.calls
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
 async def _resume(
     manager: LangGraphRuntimeManager,
     *,

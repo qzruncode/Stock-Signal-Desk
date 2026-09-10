@@ -7,6 +7,7 @@ import logging
 from typing import Any, Mapping
 
 from src.agent.langgraph_runtime import agent_graph_runtime
+from src.agent.resource_scheduler import ResourceCapacityExceeded, agent_conversation_lease
 from src.agent.run_registry import ActiveRun, RunBroadcaster, active_run_registry
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
@@ -32,98 +33,104 @@ async def recover_interrupted_agent_runs(
         request = candidate.get("request") or {}
         if not run_id or not conversation_id or request.get("engine") != "langgraph_agent_loop":
             continue
-        reclaimed = await asyncio.to_thread(
-            db_manager.reclaim_agent_run,
-            run_id,
-            worker_id=active_run_registry.worker_id,
-        )
-        if reclaimed is None:
-            continue
-        messages = request.get("messages")
-        body = request.get("body")
-        if not isinstance(messages, list) or not isinstance(body, Mapping):
-            await asyncio.to_thread(
-                db_manager.finish_agent_run,
-                run_id,
-                status="failed",
-                error_code="recovery_payload_invalid",
-                error_detail="durable request payload is incomplete",
-            )
-            continue
-        # A process can restart after durable run admission but before the
-        # first graph checkpoint commits.  This is a new-engine run with a
-        # persisted request, not a legacy checkpoint to convert.  Restart it
-        # from that input instead of invoking an empty graph with ``None``.
-        resume_from_checkpoint = await agent_graph_runtime.has_checkpoint(
-            conversation_id,
-            run_id=run_id,
-        )
-        if not resume_from_checkpoint:
-            logger.info(
-                "[Agent] recovery restarting uncheckpointed request run_id=%s conversation_id=%s",
-                run_id,
-                conversation_id,
-            )
         try:
-            llm_cfg = config_loader()
-            run = await active_run_registry.adopt_recovered(
-                conversation_id=conversation_id,
-                run_id=run_id,
-                event_cursor=int(reclaimed.get("event_cursor") or 0),
-                attempt=int(reclaimed.get("attempt") or 1),
-            )
-            tenant_id = str(reclaimed.get("tenant_id") or "local")
-            owner_id = str(reclaimed.get("owner_id") or "admin")
-            session_service = ChatSessionService(
-                db_manager,
-                tenant_id=tenant_id,
-                owner_id=owner_id,
-            )
-
-            async def factory(
-                broadcaster: RunBroadcaster,
-                *,
-                _run: ActiveRun = run,
-                _messages: list[dict[str, Any]] = [dict(item) for item in messages],
-                _body: Mapping[str, Any] = dict(body),
-                _llm_cfg: Mapping[str, Any] = dict(llm_cfg),
-                _tenant_id: str = tenant_id,
-                _owner_id: str = owner_id,
-                _resume_from_checkpoint: bool = resume_from_checkpoint,
-            ) -> asyncio.Task:
-                return asyncio.create_task(
-                    background_runner(
-                        controller=broadcaster,
-                        run=_run,
-                        messages=_messages,
-                        body=_body,
-                        llm_cfg=_llm_cfg,
-                        conversation_id=conversation_id,
-                        db_manager=db_manager,
-                        session_service=session_service,
-                        tenant_id=_tenant_id,
-                        owner_id=_owner_id,
-                        recovery=_resume_from_checkpoint,
-                    )
+            async with agent_conversation_lease(db_manager, conversation_id):
+                reclaimed = await asyncio.to_thread(
+                    db_manager.reclaim_agent_run,
+                    run_id,
+                    worker_id=active_run_registry.worker_id,
                 )
+                if reclaimed is None:
+                    continue
+                messages = request.get("messages")
+                body = request.get("body")
+                if not isinstance(messages, list) or not isinstance(body, Mapping):
+                    await asyncio.to_thread(
+                        db_manager.finish_agent_run,
+                        run_id,
+                        status="failed",
+                        error_code="recovery_payload_invalid",
+                        error_detail="durable request payload is incomplete",
+                    )
+                    continue
+                # A process can restart after durable run admission but before the
+                # first graph checkpoint commits.  This is a new-engine run with a
+                # persisted request, not a legacy checkpoint to convert.  Restart it
+                # from that input instead of invoking an empty graph with ``None``.
+                resume_from_checkpoint = await agent_graph_runtime.has_checkpoint(
+                    conversation_id,
+                    run_id=run_id,
+                )
+                if not resume_from_checkpoint:
+                    logger.info(
+                        "[Agent] recovery restarting uncheckpointed request run_id=%s conversation_id=%s",
+                        run_id,
+                        conversation_id,
+                    )
+                try:
+                    llm_cfg = config_loader()
+                    run = await active_run_registry.adopt_recovered(
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        event_cursor=int(reclaimed.get("event_cursor") or 0),
+                        attempt=int(reclaimed.get("attempt") or 1),
+                    )
+                    tenant_id = str(reclaimed.get("tenant_id") or "local")
+                    owner_id = str(reclaimed.get("owner_id") or "admin")
+                    session_service = ChatSessionService(
+                        db_manager,
+                        tenant_id=tenant_id,
+                        owner_id=owner_id,
+                    )
 
-            await run.start(factory)
-            recovered += 1
-            logger.info(
-                "[Agent] recovered LangGraph run_id=%s conversation_id=%s attempt=%s",
-                run_id,
-                conversation_id,
-                reclaimed.get("attempt"),
-            )
-        except Exception as exc:
-            logger.exception("[Agent] failed to recover run_id=%s", run_id)
-            await asyncio.to_thread(
-                db_manager.finish_agent_run,
-                run_id,
-                status="failed",
-                error_code="recovery_start_failed",
-                error_detail=str(exc),
-            )
+                    async def factory(
+                        broadcaster: RunBroadcaster,
+                        *,
+                        _run: ActiveRun = run,
+                        _messages: list[dict[str, Any]] = [dict(item) for item in messages],
+                        _body: Mapping[str, Any] = dict(body),
+                        _llm_cfg: Mapping[str, Any] = dict(llm_cfg),
+                        _tenant_id: str = tenant_id,
+                        _owner_id: str = owner_id,
+                        _resume_from_checkpoint: bool = resume_from_checkpoint,
+                    ) -> asyncio.Task:
+                        return asyncio.create_task(
+                            background_runner(
+                                controller=broadcaster,
+                                run=_run,
+                                messages=_messages,
+                                body=_body,
+                                llm_cfg=_llm_cfg,
+                                conversation_id=conversation_id,
+                                db_manager=db_manager,
+                                session_service=session_service,
+                                tenant_id=_tenant_id,
+                                owner_id=_owner_id,
+                                recovery=_resume_from_checkpoint,
+                            )
+                        )
+
+                    await run.start(factory)
+                    recovered += 1
+                    logger.info(
+                        "[Agent] recovered LangGraph run_id=%s conversation_id=%s attempt=%s",
+                        run_id,
+                        conversation_id,
+                        reclaimed.get("attempt"),
+                    )
+                except Exception as exc:
+                    logger.exception("[Agent] failed to recover run_id=%s", run_id)
+                    await asyncio.to_thread(
+                        db_manager.finish_agent_run,
+                        run_id,
+                        status="failed",
+                        error_code="recovery_start_failed",
+                        error_detail=str(exc),
+                    )
+        except ResourceCapacityExceeded:
+            # Deletion or another admission owns the conversation; leave the
+            # candidate untouched for the next recovery scan.
+            continue
     return recovered
 
 

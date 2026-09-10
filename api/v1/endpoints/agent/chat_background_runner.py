@@ -17,6 +17,21 @@ from src.storage import DatabaseManager
 logger = logging.getLogger(__name__)
 
 
+def _graph_history_mode(body: Mapping[str, Any]) -> str:
+    """Choose continuation or branch semantics for the native checkpoint."""
+    run_config = body.get("runConfig") or body.get("run_config")
+    custom = run_config.get("custom") if isinstance(run_config, Mapping) else None
+    edit_message_id = None
+    if isinstance(custom, Mapping):
+        edit_message_id = custom.get("editMessageId") or custom.get("edit_message_id")
+    requested_mode = str(body.get("history_mode") or "").strip().lower()
+    if str(edit_message_id or "").strip() or requested_mode in {"replace", "branch", "reset"}:
+        return "replace"
+    if requested_mode == "server":
+        return "continue"
+    return "auto"
+
+
 async def _checkpoint_state(conversation_id: str) -> dict[str, Any]:
     try:
         return await agent_graph_runtime.get_state(conversation_id)
@@ -109,6 +124,7 @@ async def _execute_background_agent_run(
                 messages=messages,
                 user_text=latest_user_text(messages),
                 system_prompt=system_prompt,
+                history_mode=_graph_history_mode(body),
                 **common,
             )
 

@@ -8,7 +8,7 @@ api.v1.endpoints.agent.conversations.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +17,7 @@ from api.app import create_app
 import src.auth as auth
 from src.agent.run_registry import ActiveRun, RunBroadcaster, active_run_registry
 from api.v1.endpoints.agent.conversations import _conversation_presentation
+from src.agent.langgraph_runtime import agent_graph_runtime
 from src.services.chat_session_service import ChatSessionService
 
 
@@ -612,6 +613,30 @@ def test_snapshot_forwards_structured_context_pruning_request(client, mock_servi
     assert resp.status_code == 200
     assert mock_service.save_conversation_snapshot.call_args.kwargs["prune_agent_context_to_messages"] is True
     assert mock_service.save_conversation_snapshot.call_args.kwargs["thread_state"] == {}
+
+
+def test_snapshot_pruning_replaces_the_native_checkpoint_when_runtime_is_ready(client, mock_service):
+    mock_service.save_conversation_snapshot.return_value = {"id": "c1"}
+    with (
+        patch.object(agent_graph_runtime, "graph", object()),
+        patch(
+            "api.v1.endpoints.agent.conversations.agent_graph_runtime.replace_checkpoint_messages",
+            new=AsyncMock(),
+        ) as replace_checkpoint,
+    ):
+        resp = client.put(
+            "/api/v1/agent/conversations/c1/snapshot",
+            json={
+                "messages": [{"id": "u1", "role": "user", "content": "保留"}],
+                "prune_agent_context_to_messages": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    replace_checkpoint.assert_awaited_once_with(
+        "c1",
+        [{"id": "u1", "role": "user", "content": "保留"}],
+    )
 
 
 def test_assistant_progress_copy_is_not_persisted():

@@ -10,14 +10,23 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from langchain_core.messages import AIMessage, AIMessageChunk, convert_to_messages
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    RemoveMessage,
+    ToolMessage,
+    convert_to_messages,
+)
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphRecursionError
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command, Overwrite
 
 from src.agent.model_runtime import (
+    ModelContextWindowExceededError,
     ModelProviderReportedTimeoutError,
     ModelProviderUnavailableError,
 )
@@ -67,6 +76,107 @@ def _identity_compact(_tool_name: str, result: Any) -> Any:
 
 def _identity_fallback(_tool_name: str, _arguments: dict[str, Any], result: Any) -> Any:
     return result
+
+
+def _latest_turn_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the new client turn for an existing checkpoint thread.
+
+    The HTTP layer still receives and persists the complete visible transcript.
+    A native LangGraph continuation only needs the newest user turn; the
+    checkpoint already owns the summarized working context and tool messages.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        if str(messages[index].get("role") or "").strip().lower() == "user":
+            return [dict(message) for message in messages[index:]]
+    return [dict(message) for message in messages[-1:]]
+
+
+def _checkpoint_has_messages(snapshot: Any) -> bool:
+    values = getattr(snapshot, "values", None)
+    if not isinstance(values, Mapping):
+        return False
+    messages = values.get("messages")
+    return isinstance(messages, (list, tuple)) and bool(messages)
+
+
+def _reset_turn_state() -> dict[str, Any]:
+    """Shared run-local defaults; use native Overwrite for reducer channels."""
+    return {
+        "tool_results": Overwrite([]),
+        "evidence": Overwrite([]),
+        "claim_evidence": [],
+        "completed_tool_call_ids": Overwrite([]),
+        "approved_tool_call_ids": Overwrite([]),
+        "rejected_tool_call_ids": Overwrite([]),
+        "tool_call_count": Overwrite(0),
+        "model_turn_count": Overwrite(0),
+        "evidence_repair_count": Overwrite(0),
+        "content_access_repair_count": Overwrite(0),
+        "response_repair_count": Overwrite(0),
+        "fallback_repair_count": Overwrite(0),
+        "work_budget_exhausted": False,
+        "work_budget_detail": "",
+        "content_access_targets": [],
+        "required_content_reads": [],
+        "pending_content_reads": [],
+        "content_access_feedback": "",
+        "evidence_feedback": "",
+        "fallback_feedback": "",
+        "response_format_feedback": "",
+        "pending_interrupt": None,
+        "structured_answer": None,
+        "structured_answer_call_id": "",
+        "answer_draft": "",
+        "answer_final": "",
+        "terminal_detail": "",
+        "error_code": None,
+    }
+
+
+def _checkpoint_cleanup_for_continuation(snapshot: Any) -> list[RemoveMessage]:
+    """Remove an interrupted AI tool-call turn before appending new input.
+
+    A cancelled tool node can leave its AIMessage checkpointed without all of
+    the corresponding ToolMessage results.  LangChain's message reducer
+    requires those pairs to be complete on the next model call, so use the
+    native RemoveMessage operation to remove that incomplete turn atomically
+    with the next user message.
+    """
+    values = getattr(snapshot, "values", None)
+    raw_messages = values.get("messages") if isinstance(values, Mapping) else None
+    if not isinstance(raw_messages, (list, tuple)):
+        return []
+    try:
+        messages = list(convert_to_messages(raw_messages))
+    except (TypeError, ValueError):
+        return []
+
+    answered_tool_call_ids = {
+        str(message.tool_call_id or "").strip()
+        for message in messages
+        if isinstance(message, ToolMessage) and str(message.tool_call_id or "").strip()
+    }
+    remove_ids: list[str] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, AIMessage) or not message.tool_calls:
+            continue
+        pending = {
+            str(call.get("id") or "").strip()
+            for call in message.tool_calls
+            if str(call.get("id") or "").strip()
+        } - answered_tool_call_ids
+        if not pending:
+            continue
+        # Remove the incomplete model turn and any partial tool-node writes
+        # after it, while retaining a following user message if one exists.
+        for trailing in messages[index:]:
+            if isinstance(trailing, HumanMessage):
+                break
+            message_id = str(getattr(trailing, "id", "") or "").strip()
+            if message_id and message_id not in remove_ids:
+                remove_ids.append(message_id)
+        break
+    return [RemoveMessage(id=message_id) for message_id in remove_ids]
 
 
 def _postgres_connection_string(value: str) -> str:
@@ -348,6 +458,33 @@ class LangGraphRuntimeManager:
             raise RuntimeError("LangGraph runtime has not been initialized")
         return self.graph
 
+    async def replace_checkpoint_messages(
+        self,
+        conversation_id: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Synchronize a visible transcript branch into the native checkpoint.
+
+        The UI may delete or edit a turn without immediately starting a new
+        model run.  Reset the message reducer and the run-local channels
+        together so the next continuation cannot resurrect the old branch.
+        """
+        graph = self._require_graph()
+        config = self.graph_config(conversation_id)
+        snapshot = await graph.aget_state(config)
+        if not _checkpoint_has_messages(snapshot):
+            return
+        update: dict[str, Any] = {
+            **_reset_turn_state(),
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *convert_to_messages(messages),
+            ],
+            "conversation_context": None,
+            "status": "idle",
+        }
+        await graph.aupdate_state(config, update)
+
     def _context(
         self,
         *,
@@ -372,9 +509,20 @@ class LangGraphRuntimeManager:
             )
             from src.agent.usage import PersistedUsageCallback
 
+            model_config = dict(llm_config)
+            try:
+                context_window = int(model_config.get("context_window") or 0)
+            except (TypeError, ValueError):
+                context_window = 0
             model_client: Any = LiteLLMChatModel(
-                gateway=gateway, llm_config=dict(llm_config),
+                gateway=gateway,
+                llm_config=model_config,
                 callbacks=[PersistedUsageCallback(database, run_id)],
+                profile=(
+                    {"max_input_tokens": context_window}
+                    if context_window > 0
+                    else None
+                ),
             )
         else:
             model_client = model
@@ -450,6 +598,14 @@ class LangGraphRuntimeManager:
                 context=context,
                 error_code="model_provider_unavailable",
                 message="模型服务暂时不可用；已保留已有工具观察和证据。",
+            )
+        except ModelContextWindowExceededError:
+            return await self._terminate_partial(
+                graph,
+                config=config,
+                context=context,
+                error_code="model_context_window_exceeded",
+                message="本轮上下文超过模型可用窗口；已保留会话记录，请缩小本轮输入后继续。",
             )
         except GraphRecursionError:
             return await self._terminate_partial(
@@ -675,8 +831,21 @@ class LangGraphRuntimeManager:
         owner_id: str,
         model: Any | None = None,
         executor: Any | None = None,
+        history_mode: str = "auto",
     ) -> GraphRunResult:
         graph = self._require_graph()
+        normalized_history_mode = str(history_mode or "auto").strip().lower()
+        checkpoint = await graph.aget_state(self.graph_config(conversation_id))
+        continue_checkpoint = (
+            _checkpoint_has_messages(checkpoint)
+            and normalized_history_mode not in {"replace", "branch", "reset"}
+        )
+        graph_messages = _latest_turn_messages(messages) if continue_checkpoint else [dict(item) for item in messages]
+        checkpoint_cleanup = (
+            _checkpoint_cleanup_for_continuation(checkpoint)
+            if continue_checkpoint
+            else []
+        )
         context = self._context(
             llm_config=llm_config,
             database=database,
@@ -691,48 +860,26 @@ class LangGraphRuntimeManager:
         )
         limits = get_agent_runtime_limits()
         input_state: AgentGraphInput = {
-            "messages": Overwrite(convert_to_messages(messages)),
+            **_reset_turn_state(),
+            **({} if continue_checkpoint else {"conversation_context": None}),
+            "messages": (
+                [*checkpoint_cleanup, *convert_to_messages(graph_messages)]
+                if continue_checkpoint
+                else Overwrite(convert_to_messages(graph_messages))
+            ),
             "engine": "langgraph_agent_loop",
             "run_id": run_id,
             "conversation_id": conversation_id,
             "user_text": user_text,
             "system_prompt": system_prompt,
             "reference_time": datetime.now().astimezone().isoformat(),
-            "tool_results": Overwrite([]),
-            "evidence": Overwrite([]),
-            "claim_evidence": [],
-            "completed_tool_call_ids": Overwrite([]),
-            "approved_tool_call_ids": Overwrite([]),
-            "rejected_tool_call_ids": Overwrite([]),
-            "tool_call_count": Overwrite(0),
-            "model_turn_count": Overwrite(0),
-            "evidence_repair_count": Overwrite(0),
-            "content_access_repair_count": Overwrite(0),
-            "response_repair_count": Overwrite(0),
-            "fallback_repair_count": Overwrite(0),
             "tool_call_limit": limits.max_tool_calls,
             "evidence_repair_limit": _evidence_repair_limit(),
             "content_access_repair_limit": _content_access_repair_limit(),
             "response_repair_limit": _response_repair_limit(),
             "fallback_repair_limit": _fallback_repair_limit(),
-            "work_budget_exhausted": False,
-            "work_budget_detail": "",
-            "evidence_feedback": "",
-            "fallback_feedback": "",
-            "content_access_targets": [],
-            "required_content_reads": [],
-            "pending_content_reads": [],
-            "content_access_feedback": "",
-            "response_format_feedback": "",
-            "pending_interrupt": None,
-            "structured_answer": None,
-            "structured_answer_call_id": "",
             "structured_output_required": self.response_format is not None,
-            "answer_draft": "",
-            "answer_final": "",
-            "terminal_detail": "",
             "status": "running",
-            "error_code": None,
         }
         output = await self._invoke_graph(
             graph,

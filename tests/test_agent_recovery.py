@@ -10,6 +10,18 @@ from api.v1.endpoints.agent import chat_recovery
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 
 
+class _LeaseDatabase:
+    """Lease API double; cross-worker exclusion is tested against SQLite separately."""
+
+    def try_acquire_agent_resource(self, **kwargs):
+        assert kwargs["resource_name"] == "agent-conversation:conversation-1"
+        assert kwargs["slots"] == 1
+        return "conversation-lease"
+
+    def release_agent_resource(self, lease_id, **_kwargs):
+        assert lease_id == "conversation-lease"
+
+
 class _EmptyCheckpointGraph:
     async def aget_state(self, _config):
         return SimpleNamespace(config={"configurable": {"thread_id": "agent-v2:conversation"}}, values={})
@@ -36,7 +48,7 @@ def test_has_checkpoint_requires_committed_state_for_the_same_run() -> None:
 def test_recovery_restarts_a_new_engine_request_when_first_checkpoint_is_missing(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    class Database:
+    class Database(_LeaseDatabase):
         def list_recoverable_agent_runs(self, *, limit):
             assert limit == 20
             return [{
@@ -99,7 +111,7 @@ def test_recovery_restarts_a_new_engine_request_when_first_checkpoint_is_missing
 def test_recovery_restarts_an_uncheckpointed_retained_request(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    class Database:
+    class Database(_LeaseDatabase):
         def list_recoverable_agent_runs(self, *, limit):
             assert limit == 20
             return [{

@@ -9,11 +9,12 @@ second, hand-written structured-output loop.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, Awaitable, Callable, Mapping
 
 from langchain_core.language_models.chat_models import BaseChatModel, agenerate_from_stream
 from langchain_core.messages import AIMessageChunk, BaseMessage, convert_to_openai_messages
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -203,6 +204,35 @@ class LiteLLMChatModel(BaseChatModel):
     @property
     def _identifying_params(self) -> dict[str, Any]:
         return {"model": str(self.llm_config.get("model") or "")}
+
+    def get_num_tokens_from_messages(
+        self,
+        messages: Sequence[BaseMessage],
+        tools: Sequence[Any] | None = None,
+    ) -> int:
+        """Count the same OpenAI-compatible payload used by the gateway."""
+        payload = convert_to_openai_messages(messages)
+        tool_payload = None
+        if tools:
+            tool_payload = [convert_to_openai_tool(tool) for tool in tools]
+        try:
+            import litellm
+
+            return int(
+                litellm.token_counter(
+                    model=str(self.llm_config.get("model") or ""),
+                    messages=payload,
+                    tools=tool_payload,
+                )
+            )
+        except Exception:
+            message_tokens = count_tokens_approximately(messages)
+            if not tool_payload:
+                return message_tokens
+            return message_tokens + max(
+                1,
+                len(json.dumps(tool_payload, ensure_ascii=False, default=str)) // 4,
+            )
 
     def bind_tools(
         self,

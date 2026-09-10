@@ -12,6 +12,7 @@ from assistant_stream.serialization.data_stream import DataStreamResponse
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from api.v1.endpoints.agent.conversation_lifecycle import conversation_transition
 from src.agent.run_registry import RunBroadcaster, RunCapacityExceeded, active_run_registry
 from src.agent.run_streaming import (
     durable_subscriber_stream,
@@ -221,103 +222,110 @@ async def agent_chat_impl(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     conversation = session_service.ensure_conversation(conversation_id)
     conv_id = conversation["id"]
-    if body.get("history_mode") == "server":
-        messages = session_service.compose_request_with_server_history(
-            conv_id,
-            list(messages),
-            parent_message_id=body.get("history_parent_id"),
-            edit_message_id=edit_message_id,
-        )
-    # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
-    # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会
-    # 都通过检查、各自落库 messages 后第二个静默 attach 到第一个 run 而丢消息。
-    # 拿到 None 表示已有活跃 run → 409 触发前端续流。
-    try:
-        run = await active_run_registry.try_claim(
-            conv_id,
-            max_active_runs=limits.max_active_runs,
-            max_owner_active_runs=limits.max_active_runs_per_owner,
-            request_payload={
-                "engine": "langgraph_agent_loop",
-                "body": body,
-                "messages": list(messages),
-                "conversation_id": conv_id,
-                "model": llm_cfg.get("model"),
-            },
-            tenant_id=tenant_id,
-            owner_id=owner_id,
-        )
-    except RunCapacityExceeded:
-        logger.warning(
-            "[Agent] global capacity exhausted conversation_id=%s active=%s limit=%s",
-            conv_id,
-            active_run_registry.stats()["active_runs"],
-            limits.max_active_runs,
-        )
-        return JSONResponse(
-            status_code=503,
-            headers={"Retry-After": "5"},
-            content={
-                "error": "agent_busy",
-                "message": "AI 助手当前任务较多，请稍后重试",
-                "retry_after_seconds": 5,
-            },
-        )
-    if run is None:
-        logger.info("[Agent] chat rejected: run already in progress for %s", conv_id)
-        return JSONResponse(
-            status_code=409,
-            content={"error": "run_in_progress", "conversation_id": conv_id},
-        )
-
-    logger.info(
-        f"[Agent] Chat request with {len(messages)} messages, "
-        f"model={llm_cfg['model']}, conversation_id={conv_id}, run_id={run.run_id}"
-    )
-
-    # 生成开始前同步落库本次完整 messages(含刚发的 user 消息)。
-    # 这一步不能放在后台 task 里:用户一发送就刷新时,conversation detail 会
-    # 先于后台 task 执行,如果库里还没有本次 user,前端只能恢复出空白历史。
-    try:
-        await asyncio.to_thread(
-            session_service.save_conversation_snapshot,
-            conv_id,
-            list(messages),
-            skip_title=True,
-        )
-    except Exception as exc:
-        logger.exception("[Agent] failed to persist request snapshot conversation_id=%s", conv_id)
-        await active_run_registry.mark_done(conv_id, "failed", error="request_snapshot_failed")
-        raise HTTPException(status_code=500, detail="保存对话失败，请重试") from exc
-
-    async def factory(broadcaster: RunBroadcaster) -> "asyncio.Task":
-        return asyncio.create_task(
-            background_runner(
-                controller=broadcaster,
-                run=run,
-                messages=list(messages),
-                body=body,
-                llm_cfg=llm_cfg,
-                conversation_id=conv_id,
-                db_manager=db_manager,
-                session_service=session_service,
+    async with conversation_transition(db_manager, conv_id):
+        if not session_service.get_conversation(conv_id):
+            raise HTTPException(status_code=404, detail="对话不存在")
+        if body.get("history_mode") == "server":
+            prepared = await asyncio.to_thread(
+                session_service.prepare_request_with_server_history,
+                conv_id,
+                list(messages),
+                parent_message_id=body.get("history_parent_id"),
+                edit_message_id=edit_message_id,
+            )
+            messages = prepared.messages
+            if prepared.replace_checkpoint:
+                body["history_mode"] = "replace"
+        # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
+        # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会
+        # 都通过检查、各自落库 messages 后第二个静默 attach 到第一个 run 而丢消息。
+        # 拿到 None 表示已有活跃 run → 409 触发前端续流。
+        try:
+            run = await active_run_registry.try_claim(
+                conv_id,
+                max_active_runs=limits.max_active_runs,
+                max_owner_active_runs=limits.max_active_runs_per_owner,
+                request_payload={
+                    "engine": "langgraph_agent_loop",
+                    "body": body,
+                    "messages": list(messages),
+                    "conversation_id": conv_id,
+                    "model": llm_cfg.get("model"),
+                },
                 tenant_id=tenant_id,
                 owner_id=owner_id,
             )
+        except RunCapacityExceeded:
+            logger.warning(
+                "[Agent] global capacity exhausted conversation_id=%s active=%s limit=%s",
+                conv_id,
+                active_run_registry.stats()["active_runs"],
+                limits.max_active_runs,
+            )
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": "5"},
+                content={
+                    "error": "agent_busy",
+                    "message": "AI 助手当前任务较多，请稍后重试",
+                    "retry_after_seconds": 5,
+                },
+            )
+        if run is None:
+            logger.info("[Agent] chat rejected: run already in progress for %s", conv_id)
+            return JSONResponse(
+                status_code=409,
+                content={"error": "run_in_progress", "conversation_id": conv_id},
+            )
+
+        logger.info(
+            f"[Agent] Chat request with {len(messages)} messages, "
+            f"model={llm_cfg['model']}, conversation_id={conv_id}, run_id={run.run_id}"
         )
 
-    # run 已由前面的 try_claim 原子创建(判定 + 创建在同一锁内)。首连接必须先
-    # subscribe 再启动后台 task,否则 task 可能在首个订阅者 subscribe 之前就
-    # emit 完所有 chunk,导致首连收不到内容。
-    first_queue = run.broadcaster.subscribe()
-    try:
-        await run.start(factory)
-    except Exception as exc:
-        run.broadcaster.unsubscribe(first_queue)
-        await active_run_registry.mark_done(conv_id, "failed", error="run_start_failed")
-        logger.exception("[Agent] failed to start run_id=%s", run.run_id)
-        raise HTTPException(status_code=500, detail="AI 助手任务启动失败，请重试") from exc
-    return DataStreamResponse(stream_for_client(subscriber_stream(run, first_queue)))
+        # 生成开始前同步落库本次完整 messages(含刚发的 user 消息)。
+        # 这一步不能放在后台 task 里:用户一发送就刷新时,conversation detail 会
+        # 先于后台 task 执行,如果库里还没有本次 user,前端只能恢复出空白历史。
+        try:
+            await asyncio.to_thread(
+                session_service.save_conversation_snapshot,
+                conv_id,
+                list(messages),
+                skip_title=True,
+            )
+        except Exception as exc:
+            logger.exception("[Agent] failed to persist request snapshot conversation_id=%s", conv_id)
+            await active_run_registry.mark_done(conv_id, "failed", error="request_snapshot_failed")
+            raise HTTPException(status_code=500, detail="保存对话失败，请重试") from exc
+
+        async def factory(broadcaster: RunBroadcaster) -> "asyncio.Task":
+            return asyncio.create_task(
+                background_runner(
+                    controller=broadcaster,
+                    run=run,
+                    messages=list(messages),
+                    body=body,
+                    llm_cfg=llm_cfg,
+                    conversation_id=conv_id,
+                    db_manager=db_manager,
+                    session_service=session_service,
+                    tenant_id=tenant_id,
+                    owner_id=owner_id,
+                )
+            )
+
+        # run 已由前面的 try_claim 原子创建(判定 + 创建在同一锁内)。首连接必须先
+        # subscribe 再启动后台 task,否则 task 可能在首个订阅者 subscribe 之前就
+        # emit 完所有 chunk,导致首连收不到内容。
+        first_queue = run.broadcaster.subscribe()
+        try:
+            await run.start(factory)
+        except Exception as exc:
+            run.broadcaster.unsubscribe(first_queue)
+            await active_run_registry.mark_done(conv_id, "failed", error="run_start_failed")
+            logger.exception("[Agent] failed to start run_id=%s", run.run_id)
+            raise HTTPException(status_code=500, detail="AI 助手任务启动失败，请重试") from exc
+        return DataStreamResponse(stream_for_client(subscriber_stream(run, first_queue)))
 
 
 __all__ = ["agent_chat_impl"]

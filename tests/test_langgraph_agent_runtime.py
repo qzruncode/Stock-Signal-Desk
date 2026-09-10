@@ -124,6 +124,25 @@ class FakeAtomicExecutor:
         }
 
 
+class BlockingAtomicExecutor(FakeAtomicExecutor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.block = True
+
+    async def execute(
+        self,
+        action: Mapping[str, Any],
+        *,
+        approved: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        if self.block:
+            self.started.set()
+            await self.release.wait()
+        return await super().execute(action, approved=approved)
+
+
 def _registry(*tools: ToolSpec) -> ToolRegistry:
     registry = object.__new__(ToolRegistry)
     registry._tools = OrderedDict((tool.name, tool) for tool in tools)
@@ -1252,7 +1271,8 @@ def test_successful_group_read_is_kept_as_context_for_the_next_model_turn() -> N
     asyncio.run(scenario())
 
 
-def test_group_context_survives_a_later_turn_on_the_same_checkpoint_thread() -> None:
+@pytest.mark.parametrize("history_mode", ["auto", "continue", "replace", "branch", "reset"])
+def test_group_context_follows_checkpoint_branch_ownership(history_mode) -> None:
     async def scenario() -> None:
         registry = _registry(_search_operation())
         executor = FakeAtomicExecutor(
@@ -1313,9 +1333,18 @@ def test_group_context_survives_a_later_turn_on_the_same_checkpoint_thread() -> 
                 owner_id="owner",
                 model=second_model,
                 executor=executor,
+                history_mode=history_mode,
             )
-            assert second.state["conversation_context"]["group_name"] == "新能源"
-            assert any("新能源" in str(message.content) for message in second_model.calls[0])
+            if history_mode in {"auto", "continue"}:
+                assert second.state["conversation_context"]["group_name"] == "新能源"
+                assert any("新能源" in str(message.content) for message in second_model.calls[0])
+                assert sum(str(message.content) == "读取新能源分组" for message in second_model.calls[0]) == 1
+            else:
+                assert second.state["conversation_context"] is None
+                assert all("新能源" not in str(message.content) for message in second_model.calls[0])
+                assert second.state["evidence"] == []
+                assert second.state["tool_results"] == []
+            assert sum("继续刚才的分析" in str(message.content) for message in second_model.calls[0]) == 1
         finally:
             await manager.close()
 
@@ -1435,6 +1464,117 @@ def test_native_tool_handler_reuses_the_application_executor_contract() -> None:
             assert result.status == "completed"
             assert result.state["tool_results"][0]["success"] is True
             assert result.state["evidence"]
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_tool_turn_is_removed_before_the_next_checkpoint_continuation() -> None:
+    async def scenario() -> None:
+        manager = LangGraphRuntimeManager(
+            registry=_registry(_search_operation()),
+            response_format=None,
+        )
+        executor = BlockingAtomicExecutor()
+        await manager.start(testing=True)
+        try:
+            first_task = asyncio.create_task(
+                manager.run_new(
+                    messages=[{"id": "old-user", "role": "user", "content": "旧问题"}],
+                    user_text="旧问题",
+                    system_prompt="",
+                    llm_config={},
+                    database=None,
+                    controller=None,
+                    run_id="cancelled-tool-run",
+                    conversation_id="cancelled-tool-continuation",
+                    run_attempt=1,
+                    tenant_id="tenant",
+                    owner_id="owner",
+                    model=ScriptedChatModel(
+                        responses=[
+                            _tool_call("pending-tool", "primary"),
+                        ]
+                    ),
+                    executor=executor,
+                )
+            )
+            await executor.started.wait()
+            first_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first_task
+
+            checkpoint = await manager.graph.aget_state(
+                manager.graph_config("cancelled-tool-continuation")
+            )
+            assert any(
+                isinstance(message, AIMessage)
+                and any(call.get("id") == "pending-tool" for call in message.tool_calls)
+                for message in checkpoint.values["messages"]
+            )
+
+            executor.block = False
+            next_model = ScriptedChatModel(responses=[AIMessage(content="新问题已处理")])
+            result = await manager.run_new(
+                messages=[{"id": "new-user", "role": "user", "content": "新问题"}],
+                user_text="新问题",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="continued-after-cancel",
+                conversation_id="cancelled-tool-continuation",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=next_model,
+                executor=executor,
+            )
+
+            assert result.status == "completed"
+            assert all(
+                not (
+                    isinstance(message, AIMessage)
+                    and any(call.get("id") == "pending-tool" for call in message.tool_calls)
+                )
+                for message in next_model.calls[0]
+            )
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_snapshot_branch_replaces_the_native_checkpoint_messages() -> None:
+    async def scenario() -> None:
+        manager = LangGraphRuntimeManager(registry=_registry(), response_format=None)
+        await manager.start(testing=True)
+        try:
+            await manager.run_new(
+                messages=[{"id": "old-user", "role": "user", "content": "旧问题"}],
+                user_text="旧问题",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="before-snapshot-branch",
+                conversation_id="snapshot-branch",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=ScriptedChatModel(responses=[AIMessage(content="旧答案")]),
+            )
+
+            await manager.replace_checkpoint_messages(
+                "snapshot-branch",
+                [{"id": "new-user", "role": "user", "content": "保留的问题"}],
+            )
+            checkpoint = await manager.graph.aget_state(manager.graph_config("snapshot-branch"))
+
+            assert [message.id for message in checkpoint.values["messages"]] == ["new-user"]
+            assert checkpoint.values["status"] == "idle"
+            assert checkpoint.values["answer_final"] == ""
         finally:
             await manager.close()
 

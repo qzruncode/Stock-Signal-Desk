@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from api.v1.endpoints.agent.chat_background_runner import _graph_history_mode
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 import src.auth as auth
 
@@ -140,3 +141,18 @@ def test_checkpoint_history_endpoint_is_read_only_and_owner_scoped() -> None:
         before_checkpoint_id="cp-2",
     )
     service.get_conversation.assert_called_once_with("conversation")
+
+
+def test_server_follow_up_continues_checkpoint_unless_it_is_an_edit() -> None:
+    assert _graph_history_mode(
+        {"history_mode": "server", "history_parent_id": "assistant-1"}
+    ) == "continue"
+    assert _graph_history_mode(
+        {
+            "history_mode": "server",
+            "history_parent_id": "assistant-1",
+            "runConfig": {"custom": {"editMessageId": "user-1"}},
+        }
+    ) == "replace"
+    assert _graph_history_mode({"history_mode": "branch"}) == "replace"
+    assert _graph_history_mode({}) == "auto"

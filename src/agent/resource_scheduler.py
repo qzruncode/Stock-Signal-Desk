@@ -80,4 +80,19 @@ async def agent_resource_lease(
         )
 
 
-__all__ = ["ResourceCapacityExceeded", "agent_resource_lease"]
+def agent_conversation_lease(database, conversation_id: str):
+    """Serialize admission and history mutations, not the full model run.
+
+    Fresh requests, approval resumes and recovery share this durable slot with
+    transcript deletion. A caller must start its task before releasing it.
+    """
+    return agent_resource_lease(
+        database,
+        resource_name=f"agent-conversation:{conversation_id}",
+        slots=1,
+        lease_seconds=30.0,
+        wait=False,
+    )
+
+
+__all__ = ["ResourceCapacityExceeded", "agent_resource_lease", "agent_conversation_lease"]
