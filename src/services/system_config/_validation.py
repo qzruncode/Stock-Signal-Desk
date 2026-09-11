@@ -8,93 +8,13 @@ import re
 from typing import Any, Dict, List, Set, Tuple
 from urllib.parse import urlparse
 
-from src.config import parse_env_bool
-
-
 class ValidationMixin:
     """Validate individual field values and shared primitive helpers."""
 
     @classmethod
     def _validate_cross_field(cls, effective_map: Dict[str, str], updated_keys: Set[str]) -> List[Dict[str, Any]]:
-        """Validate dependencies across multiple keys (notification-side cross checks).
-
-        LLM 渠道 / YAML / runtime 选模型的跨字段校验已随多供应商路由退役；
-        仅保留通知渠道（Telegram / 飞书 / 每日摘要保留位）的依赖检查。
-        """
-        issues: List[Dict[str, Any]] = []
-
-        token_value = (effective_map.get("TELEGRAM_BOT_TOKEN") or "").strip()
-        chat_id_value = (effective_map.get("TELEGRAM_CHAT_ID") or "").strip()
-        if (
-            token_value
-            and not chat_id_value
-            and ("TELEGRAM_BOT_TOKEN" in updated_keys or "TELEGRAM_CHAT_ID" in updated_keys)
-        ):
-            issues.append(
-                {
-                    "key": "TELEGRAM_CHAT_ID",
-                    "code": "missing_dependency",
-                    "message": "TELEGRAM_CHAT_ID is required when TELEGRAM_BOT_TOKEN is set",
-                    "severity": "error",
-                    "expected": "non-empty TELEGRAM_CHAT_ID",
-                    "actual": chat_id_value,
-                }
-            )
-
-        feishu_relevant_keys = {
-            "FEISHU_APP_ID",
-            "FEISHU_APP_SECRET",
-            "FEISHU_WEBHOOK_URL",
-            "FEISHU_WEBHOOK_SECRET",
-            "FEISHU_WEBHOOK_KEYWORD",
-            "FEISHU_STREAM_ENABLED",
-            "FEISHU_FOLDER_TOKEN",
-        }
-        has_feishu_app_id = bool((effective_map.get("FEISHU_APP_ID") or "").strip())
-        has_feishu_app_secret = bool((effective_map.get("FEISHU_APP_SECRET") or "").strip())
-        has_feishu_app_credentials = has_feishu_app_id or has_feishu_app_secret
-        has_feishu_webhook = bool((effective_map.get("FEISHU_WEBHOOK_URL") or "").strip())
-        has_feishu_folder_token = bool((effective_map.get("FEISHU_FOLDER_TOKEN") or "").strip())
-        has_feishu_full_cloud_doc_credentials = has_feishu_app_id and has_feishu_app_secret and has_feishu_folder_token
-        feishu_stream_enabled = (effective_map.get("FEISHU_STREAM_ENABLED") or "false").strip().lower() == "true"
-        if (
-            has_feishu_app_credentials
-            and not has_feishu_full_cloud_doc_credentials
-            and not has_feishu_webhook
-            and not (feishu_stream_enabled and has_feishu_app_id and has_feishu_app_secret)
-            and (updated_keys & feishu_relevant_keys)
-        ):
-            issues.append(
-                {
-                    "key": "FEISHU_WEBHOOK_URL",
-                    "code": "feishu_mode_mismatch",
-                    "message": (
-                        "仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书群 Webhook 推送；"
-                        "如需通知推送请填写 FEISHU_WEBHOOK_URL，若要使用应用机器人请同时开启 "
-                        "FEISHU_STREAM_ENABLED 并完成应用发布与权限配置。"
-                    ),
-                    "severity": "warning",
-                    "expected": "FEISHU_WEBHOOK_URL or FEISHU_STREAM_ENABLED=true",
-                    "actual": "app credentials only",
-                }
-            )
-
-        if parse_env_bool(effective_map.get("NOTIFICATION_DAILY_DIGEST_ENABLED"), default=False):
-            issues.append(
-                {
-                    "key": "NOTIFICATION_DAILY_DIGEST_ENABLED",
-                    "code": "reserved_notification_daily_digest",
-                    "message": (
-                        "NOTIFICATION_DAILY_DIGEST_ENABLED is reserved; "
-                        "the current P4 implementation does not send daily digests."
-                    ),
-                    "severity": "warning",
-                    "expected": "reserved flag only",
-                    "actual": effective_map.get("NOTIFICATION_DAILY_DIGEST_ENABLED", ""),
-                }
-            )
-
-        return issues
+        """Return cross-field validation issues for the current config surface."""
+        return []
 
     @classmethod
     def _validate_value(cls, key: str, value: str, field_schema: Dict[str, Any]) -> List[Dict[str, Any]]:

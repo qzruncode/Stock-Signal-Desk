@@ -14,7 +14,7 @@ from src.report_language import (
     is_supported_report_language_value,
     normalize_report_language,
 )
-from src.config.env_helpers import parse_env_bool, parse_env_int, parse_env_float
+from src.config.env_helpers import parse_env_int, parse_env_float
 from src.config.llm_config import (
     resolve_unified_llm_temperature,
 )
@@ -25,8 +25,6 @@ from src.config.news_config import (
 from src.config.proxy_config import resolve_proxy_and_configure_no_proxy
 from src.config.setup import setup_env
 from src.config.config_loader import load_config_from_env
-
-logger = logging.getLogger(__name__)
 
 FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT = 8.0
 
@@ -57,11 +55,6 @@ class Config:
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
 
-    # === 飞书云文档配置 ===
-    feishu_app_id: Optional[str] = None
-    feishu_app_secret: Optional[str] = None
-    feishu_folder_token: Optional[str] = None
-
     # === AI 分析配置 ===
     # 模型/鉴权统一由 Anthropic 网关（ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL）决定，
     # 由 src.llm.anthropic_gateway 解析，不在 Config 上落地字段。
@@ -69,7 +62,6 @@ class Config:
     llm_temperature: float = 0.7
     llm_thinking_enabled: bool = False
     llm_reasoning_effort: str = "auto"
-    gemini_request_delay: float = 2.0
 
     # === 新闻与分析筛选配置 ===
     news_max_age_days: int = 3
@@ -78,14 +70,7 @@ class Config:
 
     # === 通知配置 ===
     wechat_webhook_url: str = ""
-    report_type: str = "simple"
     report_language: str = "zh"
-    report_summary_only: bool = False
-    report_show_llm_model: bool = True
-    report_integrity_enabled: bool = True
-    report_integrity_retry: int = 1
-    report_history_compare_n: int = 0
-    analysis_delay: float = 0.0
     wechat_max_bytes: int = 4000
     wechat_msg_type: str = "markdown"
 
@@ -103,20 +88,12 @@ class Config:
     log_level: str = "INFO"
 
     # === 系统配置 ===
-    max_workers: int = 3
     debug: bool = False
     http_proxy: Optional[str] = None
     https_proxy: Optional[str] = None
 
     # === RSS 配置 ===
     rsshub_base_url: str = "http://127.0.0.1:1200"
-
-    # === 定时任务配置 ===
-    schedule_enabled: bool = False
-    schedule_time: str = "18:00"
-    schedule_run_immediately: bool = True
-    run_immediately: bool = True
-    trading_day_check_enabled: bool = True
 
     # === 实时行情增强数据配置 ===
     enable_realtime_quote: bool = True
@@ -132,14 +109,6 @@ class Config:
     fundamental_retry_max: int = 1
     fundamental_cache_ttl_seconds: int = 120
     fundamental_cache_max_entries: int = 256
-
-    # === Portfolio 配置 ===
-    portfolio_risk_concentration_alert_pct: float = 35.0
-    portfolio_risk_drawdown_alert_pct: float = 15.0
-    portfolio_risk_stop_loss_alert_pct: float = 10.0
-    portfolio_risk_stop_loss_near_ratio: float = 0.8
-    portfolio_risk_lookback_days: int = 180
-    portfolio_fx_update_enabled: bool = True
 
     # === 流控配置 ===
     akshare_sleep_min: float = 2.0
@@ -160,19 +129,6 @@ class Config:
     bot_rate_limit_window: int = 60
     bot_admin_users: List[str] = field(default_factory=list)
 
-    feishu_verification_token: Optional[str] = None
-    feishu_encrypt_key: Optional[str] = None
-    feishu_stream_enabled: bool = False
-
-    dingtalk_app_key: Optional[str] = None
-    dingtalk_app_secret: Optional[str] = None
-    dingtalk_stream_enabled: bool = False
-
-    wecom_corpid: Optional[str] = None
-    wecom_token: Optional[str] = None
-    wecom_encoding_aes_key: Optional[str] = None
-    wecom_agent_id: Optional[str] = None
-
     # === 配置校验模式 ===
     config_validate_mode: str = "warn"
 
@@ -181,10 +137,6 @@ class Config:
         {
             "ADMIN_AUTH_ENABLED",
             "STOCK_LIST",
-            "RUN_IMMEDIATELY",
-            "SCHEDULE_ENABLED",
-            "SCHEDULE_TIME",
-            "SCHEDULE_RUN_IMMEDIATELY",
         }
     )
     _BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
@@ -207,25 +159,11 @@ class Config:
             cls,
             setup_env=setup_env,
             resolve_proxy_and_configure_no_proxy=resolve_proxy_and_configure_no_proxy,
-            parse_env_bool=parse_env_bool,
             parse_env_int=parse_env_int,
             parse_env_float=parse_env_float,
             resolve_unified_llm_temperature=resolve_unified_llm_temperature,
-            logger=logger,
             fundamental_stage_timeout_seconds_default=FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
         )
-    @classmethod
-    def _parse_report_type(cls, value: str) -> str:
-        v = (value or "simple").strip().lower()
-        if v in ("simple", "full", "brief"):
-            return v
-        import logging as _logging
-
-        _logging.getLogger(__name__).warning(
-            f"REPORT_TYPE '{value}' invalid, fallback to 'simple' (valid: simple/full/brief)"
-        )
-        return "simple"
-
     @classmethod
     def _get_env_file_value(cls, key: str) -> Optional[str]:
         env_path = cls._resolve_env_path()
@@ -411,24 +349,6 @@ class Config:
                     severity="warning",
                     message="未配置企业微信 Webhook，将不发送推送通知",
                     field="WECHAT_WEBHOOK_URL",
-                )
-            )
-
-        has_feishu_app_id = bool((self.feishu_app_id or "").strip())
-        has_feishu_app_secret = bool((self.feishu_app_secret or "").strip())
-        has_feishu_app_credentials = has_feishu_app_id or has_feishu_app_secret
-        has_feishu_doc_token = bool((self.feishu_folder_token or "").strip())
-        has_feishu_full_cloud_doc_credentials = has_feishu_app_id and has_feishu_app_secret and has_feishu_doc_token
-        if (
-            has_feishu_app_credentials
-            and not has_feishu_full_cloud_doc_credentials
-            and not (self.feishu_stream_enabled and has_feishu_app_id and has_feishu_app_secret)
-        ):
-            issues.append(
-                ConfigIssue(
-                    severity="warning",
-                    message="仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书群推送；若要使用应用机器人，请同时开启 FEISHU_STREAM_ENABLED 并完成应用发布与权限配置。",
-                    field="FEISHU_APP_ID",
                 )
             )
 

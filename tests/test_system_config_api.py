@@ -42,7 +42,6 @@ class SystemConfigApiTestCase(unittest.TestCase):
                 [
                     "STOCK_LIST=600519,000001",
                     "GEMINI_API_KEY=secret-key-value",
-                    "SCHEDULE_TIME=18:00",
                     "LOG_LEVEL=INFO",
                     "ADMIN_AUTH_ENABLED=true",
                 ]
@@ -97,18 +96,6 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(stock_schema["help_key"], "settings.base.STOCK_LIST")
         self.assertTrue(stock_schema["examples"])
         self.assertTrue(stock_schema["docs"])
-
-    def test_get_config_schema_includes_notification_noise_fields(self) -> None:
-        payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
-        item_map = {item["key"]: item for item in payload["items"]}
-
-        self.assertEqual(item_map["NOTIFICATION_DEDUP_TTL_SECONDS"]["schema"]["data_type"], "integer")
-        self.assertEqual(item_map["NOTIFICATION_COOLDOWN_SECONDS"]["schema"]["data_type"], "integer")
-        self.assertEqual(item_map["NOTIFICATION_DAILY_DIGEST_ENABLED"]["schema"]["data_type"], "boolean")
-        min_severity_schema = item_map["NOTIFICATION_MIN_SEVERITY"]["schema"]
-        self.assertEqual(min_severity_schema["options"][0]["value"], "")
-        self.assertIn("", min_severity_schema["validation"]["enum"])
-        self.assertIn("warning", min_severity_schema["validation"]["enum"])
 
     def test_get_setup_status_returns_readiness_payload(self) -> None:
         self.env_path.write_text(
@@ -203,30 +190,6 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertIn("\n\n# Secrets\n", env_content)
         self.assertIn("STOCK_LIST=600519,300750\n", env_content)
 
-    def test_put_config_returns_startup_only_schedule_warning(self) -> None:
-        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
-        payload = system_config.update_system_config(
-            request=UpdateSystemConfigRequest(
-                config_version=current["config_version"],
-                reload_now=True,
-                items=[
-                    {"key": "RUN_IMMEDIATELY", "value": "false"},
-                    {"key": "SCHEDULE_RUN_IMMEDIATELY", "value": "true"},
-                ],
-            ),
-            service=self.service,
-        ).model_dump()
-
-        self.assertTrue(payload["success"])
-        run_warning = next(warning for warning in payload["warnings"] if "RUN_IMMEDIATELY 已写入 .env" in warning)
-        schedule_warning = next(warning for warning in payload["warnings"] if "SCHEDULE_RUN_IMMEDIATELY" in warning)
-
-        self.assertIn("非 schedule 模式", run_warning)
-        self.assertNotIn("以 schedule 模式", run_warning)
-        self.assertIn("不会因为本次保存启动、停止或重建 scheduler", schedule_warning)
-        self.assertIn("以 schedule 模式重新启动后生效", schedule_warning)
-        self.assertNotIn("它属于启动期单次运行配置", schedule_warning)
-
     def test_test_notification_channel_endpoint_returns_service_payload(self) -> None:
         with patch.object(
             self.service,
@@ -300,29 +263,6 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(payload["latency_ms"], 42)
         mock_test.assert_called_once()
         self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
-
-    def test_test_notification_channel_schema_accepts_p6_channels(self) -> None:
-        ntfy_request = NotificationChannelTestRequest(
-            channel="ntfy",
-            items=[{"key": "NTFY_URL", "value": "https://ntfy.sh/dsa-topic"}],
-            title="DSA 通知测试",
-            content="hello",
-            timeout_seconds=5,
-        )
-        gotify_request = NotificationChannelTestRequest(
-            channel="gotify",
-            items=[
-                {"key": "GOTIFY_URL", "value": "https://gotify.example"},
-                {"key": "GOTIFY_TOKEN", "value": "app-token"},
-            ],
-            title="DSA 通知测试",
-            content="hello",
-            timeout_seconds=5,
-        )
-
-        self.assertEqual(ntfy_request.channel, "ntfy")
-        self.assertEqual(gotify_request.channel, "gotify")
-
 
 if __name__ == "__main__":
     unittest.main()

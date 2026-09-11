@@ -1,18 +1,16 @@
 # Stock Assistant
 
-A 股 / 港股 / 美股自选股 AI 分析工作台。项目由 FastAPI 后端和 React WebUI 组成，用于管理自选股、选择分析模板、发起单股或批量分析，并追踪任务输出与历史报告。
+A 股 / 港股 / 美股自选股 AI 研究工作台。项目由 FastAPI 后端和 React WebUI 组成，用于管理自选股、进行研究对话、追踪任务运行并维护研究档案。
 
 ## 当前功能
 
-- **单股 AI 分析**：输入股票代码或名称，选择提示词模板后发起实时分析
-- **任务追踪**：通过 SSE 查看运行中的分析任务，支持查看完整 prompt 与 AI 输出
-- **历史报告**：查看历史分析记录，支持重新分析、查看 Markdown 全文和批量删除历史
-- **提示词模板**：在 WebUI 中新建、编辑、删除、设为默认模板，并用于单股 / 批量分析
+- **AI 研究对话**：通过 Agent Chat 发起流式研究任务，支持证据、审批、取消与恢复
+- **任务追踪**：通过运行记录和 SSE 查看工具轨迹、证据与 AI 输出
+- **研究档案**：保存研究结论及后续参考表现和变化提醒
+- **Agent 提示词**：在 WebUI 中新建、编辑、删除和激活 Agent 提示词
 - **自选股管理**：维护 `STOCK_LIST`，支持单条添加、批量添加、按市场分组展示和删除
-- **批量分析**：对当前自选股列表跑批，查看跑批进度、跑批记录和汇总报告
-- **定时跑批**：在 WebUI 中配置每日跑批时间点和使用的提示词模板
 - **模型配置**：在设置页维护模型 API Key、主模型和相关参数，保存后自动重载配置
-- **可选推送**：分析时可开启企业微信推送；跑批完成后也会尝试发送通知
+- **可选推送**：通过通知工具发送研究过程中的自定义提醒
 - **可选认证**：支持运行时开启管理员认证，未登录时跳转登录页
 - **独立数据服务**：独立 PostgreSQL、自动采集与持久任务；业务/工具通过 API 读取，数据维护中心支持策略、时效、覆盖明细、取消及失败重试
 
@@ -146,15 +144,15 @@ cd apps/dsa-web && npm run lint
 ├── server.py                # uvicorn 入口
 ├── api/                     # FastAPI 应用、路由和中间件
 │   └── v1/
-│       ├── endpoints/       # auth / analysis / history / system / prompts / batch / watchlist
+│       ├── endpoints/       # auth / agent / system / watchlist
 │       └── schemas/         # API 入参和响应模型
 ├── apps/dsa-web/            # React + Vite 前端
 │   └── src/
 │       ├── pages/           # Home / Watchlist / Settings / Login 页面
-│       ├── components/      # 任务、历史、报告、自选股、模板、批量分析等组件
+│       ├── components/      # 对话、运行记录、研究档案、自选股与设置组件
 │       ├── api/             # 前端 API client
 │       ├── hooks/           # 任务流、仪表盘状态、自动补全等 hooks
-│       └── stores/          # 批量分析、自选股等状态管理
+│       └── stores/          # 对话、自选股等状态管理
 ├── market_data_service/     # 独立数据服务、采集适配器、迁移与部署
 ├── data_provider/           # 旧兼容模块与纯代码规范化工具；业务采集已迁出
 ├── src/                     # 分析、配置、LLM、搜索、通知、存储等核心逻辑
@@ -168,11 +166,12 @@ cd apps/dsa-web && npm run lint
 当前 v1 API 挂载在 `/api/v1` 下：
 
 - `/auth`：登录状态、登录、登出、初始密码设置
-- `/analysis`：提交分析任务、查询任务状态、任务 SSE、手动推送分析结果
-- `/history`：历史报告列表、详情、Markdown、关联新闻和删除
+- `/agent`：研究对话、任务运行、研究档案、提示词、质量与运行监控
 - `/system`：系统配置读取、保存、导入导出、连接测试
-- `/prompts`：提示词模板管理
-- `/batch`：批量分析、跑批记录、汇总报告、定时跑批配置
+- `/data-service`：数据服务健康、数据集、采集任务与任务进度
+- `/rss`：财经来源与内容读取
+- `/indicator-screening`：指标筛选与分组保存
+- `/stocks`：股票搜索与基础信息
 - `/watchlist`：自选股读取、添加、删除
 
 ## License

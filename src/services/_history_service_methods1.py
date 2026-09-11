@@ -176,7 +176,7 @@ class _HistoryServiceMethods1:
         Get history report detail.
 
         Uses database primary key for precise query, avoiding returning incorrect records
-        due to duplicate query_id in batch analysis.
+        due to duplicate query_id in historical analysis records.
 
         Args:
             record_id: Analysis history record primary key ID

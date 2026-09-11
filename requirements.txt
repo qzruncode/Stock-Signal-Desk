@@ -16,15 +16,13 @@ chinese-calendar==1.11.0   # Existing calendar API used by stock-sync routes
 pandas>=2.0.0               # 数据分析
 pypinyin>=0.50.0            # Name-to-code resolver (pinyin matching)
 numpy>=1.24.0               # 数值计算
-json-repair>=0.55.1         # JSON 修复
 jsonschema>=4.20.0          # Tool 参数在执行前按 JSON Schema 校验
 
 # AI 分析
 # Keep the historical minimum version while excluding quarantined builds and avoiding future major breaks.
-litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0   # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
+litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0   # Unified LLM client behind the Anthropic gateway
 tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
-PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
 langchain>=1.3.14,<1.4.0  # Official create_agent factory and middleware layer
 langgraph>=1.2.10,<1.3.0 # Application-hosted Agent state graph (locked to LangChain compatibility)
 langgraph-checkpoint-sqlite>=3.1.1,<4.0.0   # Local durable checkpoints

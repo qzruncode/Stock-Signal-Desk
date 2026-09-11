@@ -72,27 +72,12 @@ class SetupStatusMixin:
             "LLM_REASONING_EFFORT",
             "LLM_TEMPERATURE",
             "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
-            "FEISHU_STREAM_ENABLED",
         }:
             return True
         prefixes = (
             "ANTHROPIC_",
             "CLAUDE_CODE_",
-            "FEISHU_",
-            "TELEGRAM_",
-            "EMAIL_",
-            "DISCORD_",
-            "SLACK_",
-            "DINGTALK_",
             "WECHAT_",
-            "PUSHOVER_",
-            "NTFY_",
-            "GOTIFY_",
-            "PUSHPLUS_",
-            "SERVERCHAN",
-            "CUSTOM_WEBHOOK",
-            "WECOM_",
-            "ASTRBOT_",
         )
         return key.startswith(prefixes)
 

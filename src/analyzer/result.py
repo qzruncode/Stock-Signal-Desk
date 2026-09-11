@@ -10,9 +10,9 @@ from src.report_language import get_signal_level
 @dataclass
 class AnalysisResult:
     """
-    AI 分析结果数据类 - 决策仪表盘版
+    历史 AI 分析结果数据类 - 决策仪表盘版
 
-    封装 Gemini 返回的分析结果，包含决策仪表盘和详细分析
+    用于兼容历史报告中的结构化结果，包含决策仪表盘和详细分析。
     """
 
     code: str
@@ -68,8 +68,8 @@ class AnalysisResult:
     current_price: Optional[float] = None  # 分析时的股价
     change_pct: Optional[float] = None  # 分析时的涨跌幅(%)
 
-    # ========== 模型标记（Issue #528）==========
-    model_used: Optional[str] = None  # 分析使用的 LLM 模型（完整名，如 gemini/gemini-2.0-flash）
+    # ========== 模型标记 ==========
+    model_used: Optional[str] = None  # 分析使用的 LLM 模型
 
     # ========== 历史对比（Report Engine P0）==========
     query_id: Optional[str] = None  # 本次分析 query_id，用于历史对比时排除本次记录

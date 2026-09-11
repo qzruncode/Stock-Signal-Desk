@@ -8,7 +8,7 @@ for _name, _value in vars(_models).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
-__all__ = ['AgentArtifact', 'AgentTextDocument', 'AgentTextChunk', 'AgentRunTrace', 'AgentRuntimeControl', 'AgentRun', 'AgentRunEvent', 'AgentStepExecution', 'AgentEffectOutbox', 'AgentRateLimitBucket', 'AgentResourceLease', 'AgentCircuitBreaker', 'BacktestResult', 'BacktestSummary', 'PortfolioAccount', 'PortfolioTrade', 'PortfolioCashLedger']
+__all__ = ['AgentArtifact', 'AgentTextDocument', 'AgentTextChunk', 'AgentRunTrace', 'AgentRuntimeControl', 'AgentRun', 'AgentRunEvent', 'AgentStepExecution', 'AgentEffectOutbox', 'AgentRateLimitBucket', 'AgentResourceLease', 'AgentCircuitBreaker', 'BacktestResult']
 
 class AgentArtifact(Base):
     """Independent, versioned orchestration artifact payload."""
@@ -437,100 +437,3 @@ class BacktestResult(Base):
         ),
         Index("ix_backtest_code_date", "code", "analysis_date"),
     )
-
-class BacktestSummary(Base):
-    """回测汇总指标。"""
-
-    __tablename__ = "backtest_summaries"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    scope = Column(String(16), nullable=False, index=True)
-    code = Column(String(16), index=True)
-    eval_window_days = Column(Integer, nullable=False, default=10)
-    engine_version = Column(String(16), nullable=False, default="v1")
-    computed_at = Column(DateTime, default=datetime.now, index=True)
-    total_evaluations = Column(Integer, default=0)
-    completed_count = Column(Integer, default=0)
-    insufficient_count = Column(Integer, default=0)
-    long_count = Column(Integer, default=0)
-    cash_count = Column(Integer, default=0)
-    win_count = Column(Integer, default=0)
-    loss_count = Column(Integer, default=0)
-    neutral_count = Column(Integer, default=0)
-    direction_accuracy_pct = Column(Float)
-    win_rate_pct = Column(Float)
-    neutral_rate_pct = Column(Float)
-    avg_stock_return_pct = Column(Float)
-    avg_simulated_return_pct = Column(Float)
-    stop_loss_trigger_rate = Column(Float)
-    take_profit_trigger_rate = Column(Float)
-    ambiguous_rate = Column(Float)
-    avg_days_to_first_hit = Column(Float)
-    advice_breakdown_json = Column(Text)
-    diagnostics_json = Column(Text)
-
-    __table_args__ = (
-        UniqueConstraint(
-            "scope", "code", "eval_window_days", "engine_version", name="uix_backtest_summary_scope_code_window_version"
-        ),
-    )
-
-class PortfolioAccount(Base):
-    """Portfolio account metadata."""
-
-    __tablename__ = "portfolio_accounts"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    owner_id = Column(String(64), index=True)
-    name = Column(String(64), nullable=False)
-    broker = Column(String(64))
-    market = Column(String(8), nullable=False, default="cn", index=True)
-    base_currency = Column(String(8), nullable=False, default="CNY")
-    is_active = Column(Boolean, nullable=False, default=True, index=True)
-    created_at = Column(DateTime, default=datetime.now, index=True)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-    __table_args__ = (Index("ix_portfolio_account_owner_active", "owner_id", "is_active"),)
-
-class PortfolioTrade(Base):
-    """Executed trade events."""
-
-    __tablename__ = "portfolio_trades"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    account_id = Column(Integer, ForeignKey("portfolio_accounts.id"), nullable=False, index=True)
-    trade_uid = Column(String(128))
-    symbol = Column(String(16), nullable=False, index=True)
-    market = Column(String(8), nullable=False, default="cn")
-    currency = Column(String(8), nullable=False, default="CNY")
-    trade_date = Column(Date, nullable=False, index=True)
-    side = Column(String(8), nullable=False)
-    quantity = Column(Float, nullable=False)
-    price = Column(Float, nullable=False)
-    fee = Column(Float, default=0.0)
-    tax = Column(Float, default=0.0)
-    note = Column(String(255))
-    dedup_hash = Column(String(64), index=True)
-    created_at = Column(DateTime, default=datetime.now, index=True)
-
-    __table_args__ = (
-        UniqueConstraint("account_id", "trade_uid", name="uix_portfolio_trade_uid"),
-        UniqueConstraint("account_id", "dedup_hash", name="uix_portfolio_trade_dedup_hash"),
-        Index("ix_portfolio_trade_account_date", "account_id", "trade_date"),
-    )
-
-class PortfolioCashLedger(Base):
-    """Cash in/out events."""
-
-    __tablename__ = "portfolio_cash_ledger"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    account_id = Column(Integer, ForeignKey("portfolio_accounts.id"), nullable=False, index=True)
-    event_date = Column(Date, nullable=False, index=True)
-    direction = Column(String(8), nullable=False)
-    amount = Column(Float, nullable=False)
-    currency = Column(String(8), nullable=False, default="CNY")
-    note = Column(String(255))
-    created_at = Column(DateTime, default=datetime.now, index=True)
-
-    __table_args__ = (Index("ix_portfolio_cash_account_date", "account_id", "event_date"),)

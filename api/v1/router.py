@@ -14,7 +14,6 @@ from fastapi import APIRouter
 from api.v1.endpoints import (
     auth,
     system_config,
-    batches,
     stocks,
     watchlist,
     agent,
@@ -30,9 +29,6 @@ router.include_router(data_service.router, prefix="/data-service", tags=["DataSe
 router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 
 router.include_router(system_config.router, prefix="/system", tags=["SystemConfig"])
-
-
-router.include_router(batches.router, prefix="/batch", tags=["Batch"])
 
 router.include_router(watchlist.router, prefix="/watchlist", tags=["Watchlist"])
 

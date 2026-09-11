@@ -29,7 +29,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 [
                     "STOCK_LIST=600519,000001",
                     "GEMINI_API_KEY=secret-key-value",
-                    "SCHEDULE_TIME=18:00",
                     "LOG_LEVEL=INFO",
                 ]
             )
@@ -145,57 +144,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertEqual(self.env_path.stat().st_mode & 0o777, 0o600)
 
-    def test_get_config_uses_switch_default_for_missing_report_model_toggle(self) -> None:
-        payload = self.service.get_config(include_schema=True)
-        items = {item["key"]: item for item in payload["items"]}
-
-        self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "true")
-        self.assertFalse(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
-
-        self._rewrite_env(
-            "STOCK_LIST=600519,000001",
-            "GEMINI_API_KEY=secret-key-value",
-            "SCHEDULE_TIME=18:00",
-            "LOG_LEVEL=INFO",
-            "REPORT_SHOW_LLM_MODEL=false",
-        )
-
-        payload = self.service.get_config(include_schema=True)
-        items = {item["key"]: item for item in payload["items"]}
-
-        self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "false")
-        self.assertTrue(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
-
-    def test_get_config_preserves_explicit_empty_switch_value(self) -> None:
-        self._rewrite_env(
-            "STOCK_LIST=600519,000001",
-            "GEMINI_API_KEY=secret-key-value",
-            "SCHEDULE_TIME=18:00",
-            "LOG_LEVEL=INFO",
-            "WEBHOOK_VERIFY_SSL=",
-        )
-
-        payload = self.service.get_config(include_schema=True)
-        items = {item["key"]: item for item in payload["items"]}
-
-        self.assertEqual(items["WEBHOOK_VERIFY_SSL"]["value"], "")
-        self.assertTrue(items["WEBHOOK_VERIFY_SSL"]["raw_value_exists"])
-
-    def test_get_config_preserves_explicit_empty_report_show_llm_model_value(self) -> None:
-        self._rewrite_env(
-            "STOCK_LIST=600519,000001",
-            "GEMINI_API_KEY=secret-key-value",
-            "SCHEDULE_TIME=18:00",
-            "LOG_LEVEL=INFO",
-            "REPORT_SHOW_LLM_MODEL=",
-        )
-
-        payload = self.service.get_config(include_schema=True)
-        items = {item["key"]: item for item in payload["items"]}
-
-        self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "")
-        self.assertTrue(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
-
     def test_get_setup_status_reports_required_gaps_for_empty_config(self) -> None:
         self._rewrite_env("")
 
@@ -289,83 +237,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(current_map["STOCK_LIST"], "600519,300750")
         self.assertEqual(current_map["GEMINI_API_KEY"], "secret-key-value")
 
-    def test_validate_reports_invalid_time(self) -> None:
-        validation = self.service.validate(items=[{"key": "SCHEDULE_TIME", "value": "25:70"}])
-        self.assertFalse(validation["valid"])
-        self.assertTrue(any(issue["code"] == "invalid_format" for issue in validation["issues"]))
-
-    def test_validate_reports_invalid_feishu_webhook_url(self) -> None:
-        validation = self.service.validate(items=[{"key": "FEISHU_WEBHOOK_URL", "value": "feishu-hook-without-scheme"}])
-        self.assertFalse(validation["valid"])
-        self.assertTrue(any(issue["code"] == "invalid_url" for issue in validation["issues"]))
-
-    def test_validate_warns_daily_digest_is_reserved(self) -> None:
-        validation = self.service.validate(items=[{"key": "NOTIFICATION_DAILY_DIGEST_ENABLED", "value": "true"}])
-
-        self.assertTrue(validation["valid"])
-        self.assertTrue(
-            any(
-                issue["key"] == "NOTIFICATION_DAILY_DIGEST_ENABLED"
-                and issue["code"] == "reserved_notification_daily_digest"
-                and issue["severity"] == "warning"
-                for issue in validation["issues"]
-            )
-        )
-
-    def test_validate_warns_when_feishu_app_credentials_are_used_without_webhook(self) -> None:
-        validation = self.service.validate(
-            items=[
-                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
-                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
-            ]
-        )
-        self.assertTrue(validation["valid"])
-        self.assertTrue(
-            any(
-                issue["code"] == "feishu_mode_mismatch" and issue["severity"] == "warning"
-                for issue in validation["issues"]
-            )
-        )
-
-    def test_validate_no_warning_when_feishu_cloud_doc_credentials_without_webhook(self) -> None:
-        validation = self.service.validate(
-            items=[
-                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
-                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
-                {"key": "FEISHU_FOLDER_TOKEN", "value": "folder_xxx"},
-            ]
-        )
-        self.assertTrue(validation["valid"])
-        self.assertFalse(
-            any(
-                issue["code"] == "feishu_mode_mismatch" and issue["severity"] == "warning"
-                for issue in validation["issues"]
-            )
-        )
-
-    def test_validate_warns_when_only_folder_token_cleared_with_app_credentials(self) -> None:
-        """Clearing FEISHU_FOLDER_TOKEN while app credentials remain should trigger mismatch."""
-        old_version = self.manager.get_config_version()
-        self.service.update(
-            config_version=old_version,
-            items=[
-                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
-                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
-            ],
-        )
-        validation = self.service.validate(
-            items=[
-                {"key": "FEISHU_FOLDER_TOKEN", "value": ""},
-            ]
-        )
-        self.assertTrue(validation["valid"])
-        self.assertTrue(
-            any(
-                issue["code"] == "feishu_mode_mismatch" and issue["severity"] == "warning"
-                for issue in validation["issues"]
-            )
-        )
-
     def test_validate_accepts_report_language_english(self) -> None:
         validation = self.service.validate(items=[{"key": "REPORT_LANGUAGE", "value": "en"}])
 
@@ -430,71 +301,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         joined = " | ".join(response["warnings"])
         self.assertIn("effective_days=1", joined)
         self.assertIn("min(profile_days, NEWS_MAX_AGE_DAYS)", joined)
-
-    def test_update_appends_max_workers_warning(self) -> None:
-        response = self.service.update(
-            config_version=self.manager.get_config_version(),
-            items=[{"key": "MAX_WORKERS", "value": "1"}],
-            reload_now=False,
-        )
-
-        self.assertTrue(response["success"])
-        joined = " | ".join(response["warnings"])
-        self.assertIn("MAX_WORKERS=1", joined)
-        self.assertIn("reload_now=false", joined)
-
-    def test_update_appends_mode_specific_startup_warnings(self) -> None:
-        response = self.service.update(
-            config_version=self.manager.get_config_version(),
-            items=[
-                {"key": "RUN_IMMEDIATELY", "value": "false"},
-                {"key": "SCHEDULE_ENABLED", "value": "true"},
-                {"key": "SCHEDULE_RUN_IMMEDIATELY", "value": "true"},
-            ],
-            reload_now=True,
-        )
-
-        self.assertTrue(response["success"])
-        run_warning = next(warning for warning in response["warnings"] if "RUN_IMMEDIATELY 已写入 .env" in warning)
-        schedule_warning = next(warning for warning in response["warnings"] if "SCHEDULE_ENABLED" in warning)
-
-        self.assertIn("非 schedule 模式", run_warning)
-        self.assertNotIn("以 schedule 模式", run_warning)
-        self.assertIn("SCHEDULE_RUN_IMMEDIATELY", schedule_warning)
-        self.assertIn("不会因为本次保存启动、停止或重建 scheduler", schedule_warning)
-        self.assertIn("以 schedule 模式重新启动后生效", schedule_warning)
-        self.assertNotIn("它属于启动期单次运行配置", schedule_warning)
-
-    def test_update_appends_schedule_time_runtime_rebind_warning(self) -> None:
-        response = self.service.update(
-            config_version=self.manager.get_config_version(),
-            items=[{"key": "SCHEDULE_TIME", "value": "09:30"}],
-            reload_now=True,
-        )
-
-        self.assertTrue(response["success"])
-        schedule_time_warning = next(
-            warning for warning in response["warnings"] if "SCHEDULE_TIME=09:30 已写入 .env" in warning
-        )
-
-        self.assertIn("已经以 schedule 模式运行", schedule_time_warning)
-        self.assertIn("自动重建 daily job", schedule_time_warning)
-        self.assertIn("不会启动 scheduler", schedule_time_warning)
-        self.assertNotIn("重启当前进程", schedule_time_warning)
-        self.assertNotIn("不会因为本次保存启动、停止或重建 scheduler", schedule_time_warning)
-
-    def test_update_schedule_time_blank_warning_reports_effective_default(self) -> None:
-        response = self.service.update(
-            config_version=self.manager.get_config_version(),
-            items=[{"key": "SCHEDULE_TIME", "value": "   "}],
-            reload_now=True,
-        )
-
-        self.assertTrue(response["success"])
-        self.assertTrue(
-            any("SCHEDULE_TIME=18:00 已写入 .env" in warning for warning in response["warnings"]),
-            response["warnings"],
-        )
 
     def test_update_appends_webui_bind_restart_warning(self) -> None:
         response = self.service.update(

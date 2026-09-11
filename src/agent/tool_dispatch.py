@@ -17,7 +17,6 @@ from src.tools.base import (
 )
 from src.tools.process_runner import (
     ISOLATED_TOOL_NAMES,
-    STATEFUL_TOOL_NAMES,
 )
 from src.tools.registry import ToolRegistry
 
@@ -75,12 +74,7 @@ class ToolDispatcher:
             ),
             tool_effect_approval(request.approved),
         ):
-            if request.tool_name in STATEFUL_TOOL_NAMES:
-                raw_result = self._registry.execute(
-                    request.tool_name,
-                    arguments,
-                )
-            elif (
+            if (
                 request.tool_name in ISOLATED_TOOL_NAMES or request.force_isolation
             ) and self._registry.supports_isolated_execution(request.tool_name):
                 raw_result = self._isolated_executor(

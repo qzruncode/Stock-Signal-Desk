@@ -294,22 +294,17 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
                 "list_analysis_tasks",
                 "get_analysis_status",
                 "send_notification",
-                "send_batch_run_notification",
             }.isdisjoint(names)
         )
 
-    def test_single_operation_schemas_do_not_hide_report_lookup_or_schedule_fallback(self) -> None:
+    def test_custom_notification_schema_is_minimal(self) -> None:
         registry = ToolRegistry()
         notification = registry.get_tool("send_custom_notification")
-        schedule = registry.get_tool("update_analysis_schedule")
 
         self.assertIsNotNone(notification)
-        self.assertIsNotNone(schedule)
         notification_fields = set(notification.model_parameters()["properties"])
         self.assertEqual(notification_fields, {"message", "title"})
         self.assertNotIn("confirmed", notification_fields)
-        schedule_schema = schedule.model_parameters()
-        self.assertIn("prompt_template_id", schedule_schema["required"])
 
     def test_rss_exposes_generic_operations_and_complete_source_catalog(self) -> None:
         names = set(ToolRegistry().get_tool_names())

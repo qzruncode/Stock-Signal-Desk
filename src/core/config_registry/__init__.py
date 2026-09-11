@@ -47,7 +47,7 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "category": "system",
         "title": "System",
-        "description": "Runtime and scheduling controls.",
+        "description": "Runtime and WebUI controls.",
         "display_order": 50,
     },
     {
@@ -174,31 +174,10 @@ def _infer_category(key: str) -> str:
         or key in ("ENABLE_REALTIME_QUOTE", "ENABLE_CHIP_DISTRIBUTION")
     ):
         return "data_source"
-    if (
-        key.startswith(
-            (
-                "WECHAT",
-                "FEISHU",
-                "TELEGRAM",
-                "EMAIL",
-                "PUSHOVER",
-                "NTFY",
-                "GOTIFY",
-                "PUSHPLUS",
-                "SERVERCHAN",
-                "DINGTALK",
-                "DISCORD",
-                "SLACK",
-                "CUSTOM_WEBHOOK",
-                "WECOM",
-                "ASTRBOT",
-            )
-        )
-        or "WEBHOOK" in key
-    ):
+    if key.startswith("WECHAT_"):
         return "notification"
     if key.startswith(
-        ("LOG_", "SCHEDULE_", "WEBUI_", "HTTP_", "HTTPS_", "MAX_", "DEBUG", "TRADING_DAY_", "ANALYSIS_DELAY")
+        ("LOG_", "WEBUI_", "HTTP_", "HTTPS_", "MAX_", "DEBUG")
     ):
         return "system"
     return "uncategorized"
@@ -226,7 +205,7 @@ def _infer_data_type(key: str, value_hint: Optional[str]) -> str:
     except (TypeError, ValueError):
         pass
 
-    if key in {"STOCK_LIST", "EMAIL_RECEIVERS", "CUSTOM_WEBHOOK_URLS"}:
+    if key == "STOCK_LIST":
         return "array"
     return "string"
 

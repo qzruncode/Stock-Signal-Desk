@@ -29,7 +29,7 @@ describe('systemConfigApi', () => {
         latency_ms: 15,
         attempts: [
           {
-            channel: 'custom',
+            channel: 'wechat',
             success: true,
             message: 'sent',
             target: 'https://example.com/hook?token=***',
@@ -44,8 +44,8 @@ describe('systemConfigApi', () => {
     });
 
     const result = await systemConfigApi.testNotificationChannel({
-      channel: 'custom',
-      items: [{ key: 'CUSTOM_WEBHOOK_URLS', value: 'https://example.com/hook?token=secret' }],
+      channel: 'wechat',
+      items: [{ key: 'WECHAT_WEBHOOK_URL', value: 'https://example.com/hook?token=secret' }],
       maskToken: '******',
       title: 'hello',
       content: 'world',
@@ -55,8 +55,8 @@ describe('systemConfigApi', () => {
     expect(post).toHaveBeenCalledWith(
       '/api/v1/system/config/notification/test-channel',
       {
-        channel: 'custom',
-        items: [{ key: 'CUSTOM_WEBHOOK_URLS', value: 'https://example.com/hook?token=secret' }],
+        channel: 'wechat',
+        items: [{ key: 'WECHAT_WEBHOOK_URL', value: 'https://example.com/hook?token=secret' }],
         mask_token: '******',
         title: 'hello',
         content: 'world',

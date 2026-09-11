@@ -69,7 +69,15 @@ class TestConfigIssue:
 class TestValidateStructuredHappyPath:
     def test_no_issues_when_fully_configured(self):
         cfg = _make_config()
-        issues = cfg.validate_structured()
+        with patch.dict(
+            "os.environ",
+            {
+                "ANTHROPIC_BASE_URL": "https://gw.example.com",
+                "ANTHROPIC_AUTH_TOKEN": "secret-token",
+                "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+            },
+        ):
+            issues = cfg.validate_structured()
         # No errors or warnings.
         errors = [i for i in issues if i.severity == "error"]
         warnings = [i for i in issues if i.severity == "warning"]

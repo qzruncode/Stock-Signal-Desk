@@ -5,7 +5,6 @@ from src.storage.mixins.news import NewsMixin
 from src.storage.mixins.macro import MacroMixin
 from src.storage.mixins.analysis import AnalysisMixin
 from src.storage.mixins.chat import ChatMixin
-from src.storage.mixins.batch import BatchMixin
 from src.storage.mixins.watchlist import WatchlistMixin
 from src.storage.mixins.agent_prompt import AgentPromptMixin
 from src.storage.mixins.agent_artifact import AgentArtifactMixin
@@ -20,7 +19,6 @@ __all__ = [
     "MacroMixin",
     "AnalysisMixin",
     "ChatMixin",
-    "BatchMixin",
     "WatchlistMixin",
     "AgentPromptMixin",
     "AgentArtifactMixin",

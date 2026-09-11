@@ -4,9 +4,8 @@
 The class implementation is split across ``src.services.system_config`` for
 readability. This module preserves the public surface: ``SystemConfigService``,
 ``ConfigValidationError``, ``ConfigConflictError`` and ``ConfigImportError``.
-Module-level imports of ``Config``, ``setup_env`` and ``requests`` are
-intentionally kept here so existing test patches at
-``src.services.system_config_service.<symbol>`` continue to work.
+Module-level imports of ``Config`` and ``setup_env`` are kept here because
+the service reload path and its tests patch those symbols at this boundary.
 """
 
 from __future__ import annotations
@@ -15,13 +14,9 @@ import io
 import logging
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-import requests  # noqa: F401 — re-exported for test patches.
-
 from src.config import (
     Config,
     normalize_news_strategy_profile,
-    parse_env_bool,  # noqa: F401
-    parse_env_int,  # noqa: F401
     resolve_news_window_days,
     setup_env,
 )
@@ -300,61 +295,6 @@ class SystemConfigService(
                     f"NEWS_MAX_AGE_DAYS={max_age}, "
                     f"effective_days={effective_days} "
                     "(effective_days=min(profile_days, NEWS_MAX_AGE_DAYS))."
-                )
-            )
-
-        if "MAX_WORKERS" in submitted_keys:
-            try:
-                max_workers = max(1, int(current_map.get("MAX_WORKERS", "3") or "3"))
-            except (TypeError, ValueError):
-                max_workers = 3
-            if reload_now:
-                warnings.append(
-                    (
-                        f"MAX_WORKERS={max_workers} 已保存。任务队列空闲时会自动应用；"
-                        "若当前存在运行中任务，将在队列空闲后生效。"
-                    )
-                )
-            else:
-                warnings.append(
-                    (
-                        f"MAX_WORKERS={max_workers} 已写入 .env，但本次未触发运行时重载"
-                        "（reload_now=false）；重载后才会应用。"
-                    )
-                )
-
-        startup_only_run_keys = submitted_keys & {
-            "RUN_IMMEDIATELY",
-        }
-        if startup_only_run_keys:
-            warnings.append(
-                (
-                    f"{', '.join(sorted(startup_only_run_keys))} 已写入 .env。"
-                    "它属于启动期单次运行配置：当前已运行的 WebUI/API 进程不会因为本次保存立即触发分析；"
-                    "请重启当前进程后，在非 schedule 模式下按新值生效。"
-                )
-            )
-
-        startup_only_schedule_keys = submitted_keys & {
-            "SCHEDULE_ENABLED",
-            "SCHEDULE_RUN_IMMEDIATELY",
-        }
-        if startup_only_schedule_keys:
-            warnings.append(
-                (
-                    f"{', '.join(sorted(startup_only_schedule_keys))} 已写入 .env。"
-                    "这些属于启动期调度模式配置：当前已运行的 WebUI/API 进程不会因为本次保存启动、"
-                    "停止或重建 scheduler；请重启当前进程，并以 schedule 模式重新启动后生效。"
-                )
-            )
-
-        if "SCHEDULE_TIME" in submitted_keys:
-            schedule_time = (current_map.get("SCHEDULE_TIME", "") or "").strip() or "18:00"
-            warnings.append(
-                (
-                    f"SCHEDULE_TIME={schedule_time} 已写入 .env。"
-                    "如果当前进程已经以 schedule 模式运行，scheduler 会在下一轮检查中自动重建 daily job；"
-                    "如果当前进程未以 schedule 模式运行，本次保存不会启动 scheduler。"
                 )
             )
 

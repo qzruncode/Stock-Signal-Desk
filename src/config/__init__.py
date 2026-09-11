@@ -20,12 +20,7 @@ from src.config.config_dataclass import (
     FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
 )
 from src.config.env_helpers import parse_env_bool, parse_env_int, parse_env_float
-from src.config.llm_config import (
-    get_fixed_litellm_temperature,
-    normalize_litellm_temperature,
-    resolve_litellm_thinking_enabled,
-    resolve_unified_llm_temperature,
-)
+from src.config.llm_config import resolve_unified_llm_temperature
 from src.config.news_config import (
     NEWS_STRATEGY_WINDOWS,
     normalize_news_strategy_profile,
@@ -43,10 +38,7 @@ __all__ = [
     "parse_env_int",
     "parse_env_float",
     "NEWS_STRATEGY_WINDOWS",
-    "get_fixed_litellm_temperature",
-    "normalize_litellm_temperature",
     "normalize_news_strategy_profile",
-    "resolve_litellm_thinking_enabled",
     "resolve_news_window_days",
     "resolve_unified_llm_temperature",
     "resolve_proxy_and_configure_no_proxy",

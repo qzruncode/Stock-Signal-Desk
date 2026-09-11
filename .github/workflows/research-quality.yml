@@ -8,13 +8,11 @@ on:
       - 'src/storage/**'
       - 'src/tools/registry.py'
       - 'src/services/research*'
-      - 'src/services/batch_scheduler.py'
       - 'api/**'
       - 'apps/dsa-web/**'
       - 'tests/test_*research*'
       - 'tests/test_agent_*'
       - 'tests/test_langgraph*'
-      - 'tests/test_batch_scheduler.py'
       - 'tests/fixtures/agent_regression.json'
       - 'requirements*'
       - 'scripts/evaluate_agent.py'
@@ -49,7 +47,7 @@ jobs:
           tests/test_agent_regression.py tests/test_research_workspace.py
           tests/test_research_api.py tests/test_research_migration.py
           tests/test_langgraph_native_stream.py tests/test_langgraph_agent_runtime.py
-          tests/test_langgraph_approval.py tests/test_batch_scheduler.py tests/test_agent_quality.py
+          tests/test_langgraph_approval.py tests/test_agent_quality.py
       - uses: actions/setup-node@v6
         with:
           node-version: '24'

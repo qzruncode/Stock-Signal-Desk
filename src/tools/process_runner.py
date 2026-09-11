@@ -34,26 +34,6 @@ ISOLATED_TOOL_NAMES = frozenset(
     }
 )
 
-# These adapters control process-owned queues/threads and cannot survive a
-# one-shot child process. They remain single external operations.
-STATEFUL_TOOL_NAMES = frozenset(
-    {
-        "list_batch_runs",
-        "get_current_batch_run_status",
-        "read_batch_run",
-        "read_batch_run_report",
-        "pause_batch_run",
-        "continue_batch_run",
-        "resume_failed_batch_run",
-        "regenerate_batch_run_report",
-        "stop_batch_run",
-        "delete_batch_run",
-        "get_analysis_schedule",
-        "update_analysis_schedule",
-    }
-)
-
-
 class ToolProcessTimeout(TimeoutError):
     """One isolated atomic call exceeded its application-owned deadline."""
 
@@ -199,7 +179,6 @@ def execute_tool_isolated(
 
 __all__ = [
     "ISOLATED_TOOL_NAMES",
-    "STATEFUL_TOOL_NAMES",
     "ToolProcessTimeout",
     "execute_tool_isolated",
 ]

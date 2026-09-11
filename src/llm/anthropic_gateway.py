@@ -122,31 +122,3 @@ def build_litellm_kwargs(llm_cfg: Dict[str, Any], *, stream: bool, **extra: Any)
         kwargs["extra_headers"] = llm_cfg["extra_headers"]
     kwargs.update(extra)
     return kwargs
-
-
-def completion_gateway(**extra: Any) -> Any:
-    """Sync 入口：解析网关配置 → 组装 kwargs → ``litellm.completion``。
-
-    调用方通过 ``messages``/``tools``/``max_tokens`` 等 extra 传业务参数，
-    ``stream`` 默认 False（可由 extra 覆盖）。
-    """
-    import litellm  # 延迟导入，避免模块加载期强依赖
-
-    llm_cfg = resolve_anthropic_gateway_config()
-    stream = bool(extra.pop("stream", False))
-    kwargs = build_litellm_kwargs(llm_cfg, stream=stream, **extra)
-    return litellm.completion(**kwargs)
-
-
-async def acompletion_gateway(**extra: Any) -> Any:
-    """Async 入口：解析网关配置 → 组装 kwargs → ``await litellm.acompletion``。
-
-    调用方通过 ``messages``/``tools``/``max_tokens`` 等 extra 传业务参数，
-    ``stream`` 默认 True（与 AI 助手流式回答一致，可由 extra 覆盖）。
-    """
-    import litellm  # 延迟导入，避免模块加载期强依赖
-
-    llm_cfg = resolve_anthropic_gateway_config()
-    stream = bool(extra.pop("stream", True))
-    kwargs = build_litellm_kwargs(llm_cfg, stream=stream, **extra)
-    return await litellm.acompletion(**kwargs)

@@ -90,9 +90,6 @@ TOOL_MODULES: tuple[str, ...] = (
     "search_analysis_history",
     "read_analysis_report",
     "delete_analysis_history",
-    "manage_analysis_templates",
-    "manage_batch_run",
-    "manage_analysis_schedule",
     "get_notification_status",
     "send_notification",
     # Quotes and price history
