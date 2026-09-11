@@ -34,10 +34,9 @@ from src.batch_runner import (
     BatchRunControl,
     BatchRunState,
     BatchRunner,
-    _CRITERIA_NUM_LABELS,
  )
 
-__all__ = ['_get_batch_max_concurrent', '_lookup_stock_name', '_normalize_results', '_with_batch_decision_schema', '_criteria_decision_meta', '_format_criteria_detail', '_write_aggregated_report', '_build_template_report_content', '_build_criteria_report_content', '_get_result_items', '_one_line', '_escape_table_cell', '_normalize_decision', '_json_objects_from_text', '_extract_structured_decision', '_get_result_decision', '_is_passed_stock', '_get_stock_decision_summaries', '_send_batch_notification', '_build_batch_notification_content']
+__all__ = ['_get_batch_max_concurrent', '_lookup_stock_name', '_normalize_results', '_with_batch_decision_schema', '_write_aggregated_report', '_build_template_report_content', '_get_result_items', '_one_line', '_escape_table_cell', '_normalize_decision', '_json_objects_from_text', '_extract_structured_decision', '_get_result_decision', '_is_passed_stock', '_get_stock_decision_summaries', '_send_batch_notification', '_build_batch_notification_content']
 
 def _get_batch_max_concurrent() -> int:
     raw = os.getenv("BATCH_MAX_CONCURRENT", "").strip()
@@ -85,84 +84,11 @@ def _with_batch_decision_schema(system_prompt: str) -> str:
         return base
     return f"{base}\n\n{BATCH_DECISION_SCHEMA_INSTRUCTION}".strip()
 
-def _criteria_decision_meta(summary: Dict) -> Dict[str, str]:
-    """Map the professional checklist result onto the shared decision shape."""
-    final = summary.get("final_decision") or "关键取证未完成，暂停判断"
-    decision = (
-        "buy"
-        if summary.get("gate_pass_complete") is True
-        else "unknown" if int(summary.get("insufficient_count") or 0) > 0 else "reject"
-    )
-    total = summary.get("total", 8)
-    passed = summary.get("passed_count", 0)
-    failed = summary.get("failed_count", 0)
-    insufficient = summary.get("insufficient_count", 0)
-    not_evaluated = summary.get("not_evaluated_count", 0)
-    reason = (
-        f"通过{passed}/{total}；不通过{failed}、取证未完成{insufficient}、"
-        f"后续未执行{not_evaluated}。" + _one_line(summary.get("stopped_verdict") or "", limit=90)
-    )
-
-    if summary.get("from_cache"):
-        reason = f"{reason}（缓存）"
-
-    return {
-        "decision": decision,
-        "decision_label": final,
-        "decision_reason": reason,
-        "decision_source": "buy_criteria",
-    }
-
-def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> str:
-    """Build the readable professional checklist detail for the batch view."""
-    label = f"{stock_name}({stock_code})" if stock_name and stock_name != stock_code else stock_code
-    final = summary.get("final_decision") or "关键取证未完成，暂停判断"
-    passed = summary.get("passed_count", 0)
-    failed = summary.get("failed_count", 0)
-    insufficient = summary.get("insufficient_count", 0)
-    not_evaluated = summary.get("not_evaluated_count", 0)
-    cache_mark = "（缓存复用）" if summary.get("from_cache") else ""
-
-    lines = [
-        f"# {label} 八维专业买入分析",
-        "",
-        f"**最终结论**: {final}{cache_mark}",
-        (f"✅ 通过 {passed}/8 / ❌ 不通过 {failed} / " f"? 取证未完成 {insufficient} / 未执行 {not_evaluated}"),
-        f"**首个停止项**: {summary.get('stopped_at_name') or '八维全部通过'}",
-        "",
-        "## 逐项结果",
-        "",
-    ]
-    for c in summary.get("criteria", []):
-        idx = c.get("index")
-        num = _CRITERIA_NUM_LABELS[idx] if isinstance(idx, int) and 0 <= idx < len(_CRITERIA_NUM_LABELS) else "-"
-        mark = {
-            "pass": "✅ 通过",
-            "fail": "❌ 不通过",
-            "insufficient": "? 取证未完成",
-        }.get(str(c.get("status") or ""), "? 取证未完成")
-        name = c.get("criterion_name") or c.get("criterion_id") or ""
-        verdict = (c.get("verdict") or "").strip()
-        line = f"{num} {name}  {mark}"
-        if verdict:
-            line += f" — {verdict}"
-        lines.append(line)
-    if not_evaluated:
-        lines.extend(
-            [
-                "",
-                f"> 首个阻断后，后续 {not_evaluated} 维按布尔状态机未执行。",
-            ]
-        )
-
-    return "\n".join(lines)
-
 def _write_aggregated_report(
     run_id: str,
     state: BatchRunState,
     template_name: str,
     started_at: datetime,
-    analysis_mode: str = "template",
 ) -> str:
     """Write aggregated MD report and return the file path."""
     BATCH_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -171,10 +97,7 @@ def _write_aggregated_report(
     filename = f"batch_{ts}_{run_id[:8]}.md"
     filepath = BATCH_REPORTS_DIR / filename
 
-    if analysis_mode == "buy_criteria":
-        content = _build_criteria_report_content(state, template_name, started_at)
-    else:
-        content = _build_template_report_content(state, template_name, started_at)
+    content = _build_template_report_content(state, template_name, started_at)
 
     filepath.write_text(content, encoding="utf-8")
     logger.info("Batch report saved: %s", filepath)
@@ -250,86 +173,6 @@ def _build_template_report_content(
         )
         for item in unknown_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} | `{item['model']}` |")
-        lines.append("")
-
-    if failed_items:
-        lines.extend(["## 分析失败", ""])
-        for code, result in failed_items:
-            reason = _one_line(result.get("text") or "未知错误", limit=100)
-            lines.append(f"- **{code}**: {reason}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-def _build_criteria_report_content(
-    state: BatchRunState,
-    template_name: str,
-    started_at: datetime,
-) -> str:
-    """Build the buy-criteria-mode aggregated report (8/8 通过 / 卡点).
-
-    Keeps the ``## 筛选通过股票`` heading with a bare-code first column so the
-    frontend can extract passed codes and build a watchlist group.
-    """
-    result_items = _get_result_items(state)
-    failed_items = [(code, result) for code, result in result_items if not result.get("success")]
-    summary_items = _get_stock_decision_summaries(result_items)
-    passed_items = [item for item in summary_items if item["decision"] == "buy"]
-    rejected_items = [item for item in summary_items if item["decision"] != "buy"]
-    success_rate = (state.success / state.total * 100) if state.total else 0
-
-    lines = [
-        "# 买入判断筛选汇总",
-        "",
-        f"- **触发时间**: {started_at.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"- **筛选方式**: 八维布尔买入判断（首个非通过即停止）",
-        f"- **股票数量**: {state.total}",
-        f"- **完成率**: {state.completed}/{state.total}",
-        f"- **分析成功率**: {success_rate:.1f}%",
-        f"- **筛选通过(8/8)**: {len(passed_items)}",
-        f"- **未通过**: {len(rejected_items)}",
-        f"- **分析失败**: {len(failed_items)}",
-        "",
-        "---",
-        "",
-        "## 统计概览",
-        "",
-        "| 指标 | 数值 |",
-        "| --- | ---: |",
-        f"| 总股票数 | {state.total} |",
-        f"| 已完成 | {state.completed} |",
-        f"| 分析成功 | {state.success} |",
-        f"| 分析失败 | {state.failed} |",
-        f"| 筛选通过(8/8) | {len(passed_items)} |",
-        f"| 未通过 | {len(rejected_items)} |",
-        f"| 分析成功率 | {success_rate:.1f}% |",
-        "",
-    ]
-
-    lines.extend(["## 筛选通过股票", ""])
-    if passed_items:
-        lines.extend(
-            [
-                "| 股票 | 结论 | 摘要 |",
-                "| --- | --- | --- |",
-            ]
-        )
-        for item in passed_items:
-            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
-    else:
-        lines.append("本次筛选没有八维全部通过的股票。")
-    lines.append("")
-
-    if rejected_items:
-        lines.extend(["## 未通过股票", ""])
-        lines.extend(
-            [
-                "| 股票 | 结论 | 卡点与理由 |",
-                "| --- | --- | --- |",
-            ]
-        )
-        for item in rejected_items:
-            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
         lines.append("")
 
     if failed_items:
@@ -440,7 +283,6 @@ def _send_batch_notification(
     state: BatchRunState,
     template_name: str,
     report_path: str,
-    analysis_mode: str = "template",
 ):
     """Send WeChat notification about completed batch run."""
     try:
@@ -451,7 +293,6 @@ def _send_batch_notification(
             state,
             template_name,
             report_path,
-            analysis_mode=analysis_mode,
         )
         service = get_notification_service()
         service.send(content)
@@ -464,9 +305,6 @@ def _build_batch_notification_content(
     state: BatchRunState,
     template_name: str,
     report_path: str,
-    analysis_mode: str = "template",
 ) -> str:
     """Build batch completion notification markdown content."""
-    if analysis_mode == "buy_criteria":
-        return _build_criteria_notification_content(state, template_name, report_path)
     return _build_template_notification_content(state, template_name, report_path)

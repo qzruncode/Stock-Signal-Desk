@@ -21,7 +21,6 @@ from src.services.market_theme._streaming import (
     stream_market_mainline_report_via_litellm,
 )
 from src.services.market_theme._llm import _validate_model_report
-from src.services.buy_criteria.data_service import DataService, _clear_cache
 from src.services.task_queue import TaskStatus
 from src.storage import MarketMainlineReport
 
@@ -294,43 +293,6 @@ def test_candidate_mainline_keeps_structured_branch_and_trigger_progress() -> No
         "evidence_refs": ["evidence-2"],
     }
     assert validated["future_mainlines"] == validated["candidate_mainlines"]
-
-def test_buy_criteria_never_promotes_legacy_market_evidence_to_mainline(monkeypatch):
-    monkeypatch.setattr(
-        MarketThemeService,
-        "get_model_report",
-        lambda self, force=False, trigger_generation=True: {
-            "report_pending": True,
-            "as_of_date": "2026-07-21",
-            "current_mainlines": [],
-        },
-    )
-    monkeypatch.setattr(
-        MarketThemeService,
-        "get_cached_evidence",
-        lambda self: {
-            "generated_at": "2026-07-21 10:00:00 CST",
-            "data_time": "2026-07-21",
-            "market_stage": {"label": "主线扩散期"},
-            "current_themes": [
-                {
-                    "name": "科技成长",
-                    "rank_label": "主线",
-                    "stage": "发酵期",
-                    "components": ["机器人"],
-                    "thesis": "产业与资金共振",
-                    "evidence": ["机器人板块走强"],
-                }
-            ],
-            "next_themes": [],
-        },
-    )
-    _clear_cache()
-
-    report = DataService().get_market_mainline_report()
-
-    assert report["report_pending"] is True
-    assert report["current_mainlines"] == []
 
 def test_report_evidence_pack_uses_the_public_feed_summarizer() -> None:
     context = {

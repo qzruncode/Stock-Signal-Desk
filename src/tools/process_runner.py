@@ -39,8 +39,6 @@ ISOLATED_TOOL_NAMES = frozenset(
 # one-shot child process. They remain single external operations.
 STATEFUL_TOOL_NAMES = frozenset(
     {
-        "read_analysis_task",
-        "list_analysis_tasks",
         "list_batch_runs",
         "get_current_batch_run_status",
         "read_batch_run",

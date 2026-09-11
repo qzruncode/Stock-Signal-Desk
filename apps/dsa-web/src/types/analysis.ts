@@ -3,25 +3,9 @@
  * Aligned with the API schema.
  */
 
-// ============ Request Types ============
-
-export type StockReportType = 'simple' | 'detailed' | 'full' | 'brief';
-export type ReportType = StockReportType | 'market_review' | 'conversation';
-
-export interface AnalysisRequest {
-  stockCode?: string;
-  stockCodes?: string[];
-  reportType?: StockReportType;
-  forceRefresh?: boolean;
-  asyncMode?: boolean;
-  stockName?: string;
-  originalQuery?: string;
-  selectionSource?: 'manual' | 'autocomplete' | 'import';
-  notify?: boolean;
-  promptTemplateId?: string;
-}
-
 // ============ Report Types ============
+
+export type ReportType = 'simple' | 'detailed' | 'full' | 'brief' | 'market_review' | 'conversation';
 
 export type ReportLanguage = 'zh' | 'en';
 
@@ -112,101 +96,6 @@ export interface AnalysisReport {
   strategy?: ReportStrategy;
   details?: ReportDetails;
   conversation?: ConversationRecord;
-}
-
-// ============ Analysis Result Types ============
-
-/** Sync analysis response */
-export interface AnalysisResult {
-  queryId: string;
-  stockCode: string;
-  stockName: string;
-  report: AnalysisReport;
-  createdAt: string;
-}
-
-/** Async task accepted response */
-export interface TaskAccepted {
-  taskId: string;
-  status: 'pending' | 'processing';
-  message?: string;
-}
-
-export interface BatchTaskAcceptedItem {
-  taskId: string;
-  stockCode: string;
-  status: 'pending' | 'processing';
-  message?: string;
-}
-
-export interface BatchDuplicateTaskItem {
-  stockCode: string;
-  existingTaskId: string;
-  message: string;
-}
-
-export interface BatchTaskAcceptedResponse {
-  accepted: BatchTaskAcceptedItem[];
-  duplicates: BatchDuplicateTaskItem[];
-  message: string;
-}
-
-export type AnalyzeAsyncResponse = TaskAccepted | BatchTaskAcceptedResponse;
-
-export type AnalyzeResponse = AnalysisResult | AnalyzeAsyncResponse;
-
-/** Task status */
-export interface TaskStatus {
-  taskId: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  progress?: number;
-  message?: string;
-  result?: AnalysisResult;
-  error?: string;
-  stockName?: string;
-  originalQuery?: string;
-  selectionSource?: string;
-  skills?: string[];
-  promptTemplateId?: string;
-  promptTemplateName?: string;
-  conversation?: ConversationRecord;
-}
-
-/** Task details used by task list and SSE events */
-export interface TaskInfo {
-  taskId: string;
-  stockCode: string;
-  stockName?: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  progress: number;
-  message?: string;
-  reportType: string;
-  createdAt: string;
-  startedAt?: string;
-  completedAt?: string;
-  error?: string;
-  originalQuery?: string;
-  selectionSource?: string;
-  promptTemplateId?: string;
-  promptTemplateName?: string;
-  conversation?: ConversationRecord;
-  result?: Record<string, unknown>;
-}
-
-/** Task list response */
-export interface TaskListResponse {
-  total: number;
-  pending: number;
-  processing: number;
-  tasks: TaskInfo[];
-}
-
-/** Duplicate task error response */
-export interface DuplicateTaskError {
-  error: 'duplicate_task';
-  message: string;
-  stockCode: string;
-  existingTaskId: string;
 }
 
 // ============ Error Types ============

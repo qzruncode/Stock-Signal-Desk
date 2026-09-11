@@ -21,7 +21,6 @@ from src.services.market_theme._streaming import (
     stream_market_mainline_report_via_litellm,
 )
 from src.services.market_theme._llm import _validate_model_report
-from src.services.buy_criteria.data_service import DataService, _clear_cache
 from src.services.task_queue import TaskStatus
 from src.storage import MarketMainlineReport
 

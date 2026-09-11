@@ -3,39 +3,11 @@
 
 from __future__ import annotations
 
-import sys
-import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-# Keep task_queue import lightweight in environments without optional deps,
-# but restore sys.modules immediately to avoid cross-test pollution.
-_orig_data_provider_utils = sys.modules.get("data_provider.utils")
-_orig_data_provider = sys.modules.get("data_provider")
-
-if _orig_data_provider_utils is None:
-    utils_mod = types.ModuleType("data_provider.utils")
-    utils_mod.canonical_stock_code = lambda x: (x or "").strip().upper()
-    utils_mod.normalize_stock_code = lambda x: (x or "").strip().upper().removesuffix(".SH").removesuffix(".SZ")
-    sys.modules["data_provider.utils"] = utils_mod
-
-if _orig_data_provider is None:
-    pkg_mod = types.ModuleType("data_provider")
-    pkg_mod.utils = sys.modules["data_provider.utils"]
-    sys.modules["data_provider"] = pkg_mod
-
-from src.services.task_queue import AnalysisTaskQueue, TaskInfo, TaskStatus, get_task_queue, _dedupe_stock_code_key
-
-if _orig_data_provider_utils is None:
-    sys.modules.pop("data_provider.utils", None)
-else:
-    sys.modules["data_provider.utils"] = _orig_data_provider_utils
-
-if _orig_data_provider is None:
-    sys.modules.pop("data_provider", None)
-else:
-    sys.modules["data_provider"] = _orig_data_provider
+from src.services.task_queue import AnalysisTaskQueue, TaskInfo, TaskStatus, get_task_queue
 
 
 class TaskQueueConfigSyncTestCase(unittest.TestCase):
@@ -69,7 +41,11 @@ class TaskQueueConfigSyncTestCase(unittest.TestCase):
 
     def test_sync_max_workers_deferred_when_busy(self) -> None:
         queue = AnalysisTaskQueue(max_workers=3)
-        queue._analyzing_stocks["600519"] = "task1"
+        queue._tasks["task1"] = TaskInfo(
+            task_id="task1",
+            stock_code="600519",
+            status=TaskStatus.PROCESSING,
+        )
 
         result = queue.sync_max_workers(1)
         self.assertEqual(result, "deferred_busy")
@@ -96,12 +72,13 @@ class TaskQueueConfigSyncTestCase(unittest.TestCase):
 
         self.assertEqual(queue.max_workers, 2)
 
-    def test_dedupe_stock_code_key_normalizes_market_suffix(self) -> None:
-        self.assertEqual(_dedupe_stock_code_key(" 600519.sh "), "600519")
-
     def test_get_task_queue_defers_sync_when_busy(self) -> None:
         queue = AnalysisTaskQueue(max_workers=3)
-        queue._analyzing_stocks["600519"] = "task1"
+        queue._tasks["task1"] = TaskInfo(
+            task_id="task1",
+            stock_code="600519",
+            status=TaskStatus.PROCESSING,
+        )
 
         with patch("src.config.get_config", return_value=SimpleNamespace(max_workers=1)):
             synced = get_task_queue()
@@ -115,16 +92,15 @@ class TaskQueueConfigSyncTestCase(unittest.TestCase):
         self.assertIsNone(queue._mark_task_completed_locked("missing", {"stock_name": "贵州茅台"}))
         self.assertIsNone(queue._mark_task_failed_locked("missing", "boom"))
 
-    def test_terminal_update_does_not_clear_newer_inflight_marker(self) -> None:
+    def test_terminal_update_marks_the_task_failed(self) -> None:
         queue = AnalysisTaskQueue(max_workers=3)
         stale_task = TaskInfo(task_id="old-task", stock_code="600519", status=TaskStatus.PROCESSING)
         queue._tasks[stale_task.task_id] = stale_task
-        queue._analyzing_stocks[_dedupe_stock_code_key("600519")] = "new-task"
 
         snapshot = queue._mark_task_failed_locked(stale_task.task_id, "boom")
 
         self.assertIsNotNone(snapshot)
-        self.assertEqual(queue._analyzing_stocks[_dedupe_stock_code_key("600519")], "new-task")
+        self.assertEqual(snapshot.status, TaskStatus.FAILED)
 
 
 if __name__ == "__main__":

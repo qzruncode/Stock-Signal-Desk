@@ -304,18 +304,14 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertIn("read_company_news_akshare", names)
         self.assertIn("read_company_announcements_akshare", names)
 
-    def test_model_catalog_excludes_multiplexed_status_and_notification_adapters(self) -> None:
+    def test_model_catalog_excludes_removed_task_status_adapters(self) -> None:
         names = set(ToolRegistry().get_tool_names())
 
+        self.assertIn("send_custom_notification", names)
         self.assertTrue(
             {
                 "read_analysis_task",
                 "list_analysis_tasks",
-                "send_custom_notification",
-            }.issubset(names)
-        )
-        self.assertTrue(
-            {
                 "get_analysis_status",
                 "send_notification",
                 "send_batch_run_notification",

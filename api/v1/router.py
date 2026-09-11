@@ -12,7 +12,6 @@ API v1 路由聚合
 from fastapi import APIRouter
 
 from api.v1.endpoints import (
-    analysis,
     auth,
     history,
     system_config,
@@ -30,7 +29,6 @@ from api.v1.endpoints import (
     rss,
     market_themes,
     industry_cycle,
-    buy_decision,
     indicator_screening,
     data_service,
 )
@@ -40,8 +38,6 @@ router = APIRouter(prefix="/api/v1")
 router.include_router(data_service.router, prefix="/data-service", tags=["DataService"])
 
 router.include_router(auth.router, prefix="/auth", tags=["Auth"])
-
-router.include_router(analysis.router, prefix="/analysis", tags=["Analysis"])
 
 router.include_router(history.router, prefix="/history", tags=["History"])
 
@@ -69,8 +65,6 @@ router.include_router(stock_info.router, prefix="/stocks", tags=["Stocks"])
 router.include_router(financials.router, prefix="/stocks", tags=["Stocks"])
 
 router.include_router(industry_cycle.router, prefix="/stocks", tags=["Stocks"])
-
-router.include_router(buy_decision.router, prefix="/stocks", tags=["Stocks"])
 
 router.include_router(
     indicator_screening.router,

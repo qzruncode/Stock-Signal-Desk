@@ -1,4 +1,4 @@
-"""AnalysisTaskQueue method group 2."""
+"""Background task queue method group 2."""
 
 from __future__ import annotations
 
@@ -18,17 +18,11 @@ from src.services.task_queue import (
     List,
     Any,
     TYPE_CHECKING,
-    Tuple,
     Literal,
     Callable,
-    canonical_stock_code,
-    normalize_stock_code,
-    SELECTION_SOURCES,
     logger,
-    _dedupe_stock_code_key,
     TaskStatus,
     TaskInfo,
-    DuplicateTaskError,
  )
 
 class _AnalysisTaskQueueMethods2:
@@ -75,16 +69,11 @@ class _AnalysisTaskQueueMethods2:
 
         self._broadcast_event(event_type, task_snapshot.to_dict())
         return task_snapshot
-    def _clear_analyzing_stock_locked(self, task: TaskInfo) -> None:
-        """Remove an in-flight stock marker only when it still points to this task."""
-        dedupe_key = _dedupe_stock_code_key(task.stock_code)
-        if self._analyzing_stocks.get(dedupe_key) == task.task_id:
-            del self._analyzing_stocks[dedupe_key]
     def _mark_task_completed_locked(
         self,
         task_id: str,
         result: Any,
-        message: str = "分析完成",
+        message: str = "任务完成",
     ) -> Optional[TaskInfo]:
         """Transition a task to completed and return a broadcast snapshot."""
         task = self._tasks.get(task_id)
@@ -98,14 +87,13 @@ class _AnalysisTaskQueueMethods2:
         task.message = message
         if isinstance(result, dict):
             task.stock_name = result.get("stock_name", task.stock_name)
-        self._clear_analyzing_stock_locked(task)
         return task.copy()
     def _mark_task_failed_locked(
         self,
         task_id: str,
         error_msg: str,
         *,
-        message_prefix: str = "分析失败",
+        message_prefix: str = "任务失败",
         message_limit: int = 50,
     ) -> Optional[TaskInfo]:
         """Transition a task to failed and return a broadcast snapshot."""
@@ -117,103 +105,7 @@ class _AnalysisTaskQueueMethods2:
         task.completed_at = datetime.now()
         task.error = error_msg[:200]
         task.message = f"{message_prefix}: {error_msg[:message_limit]}"
-        self._clear_analyzing_stock_locked(task)
         return task.copy()
-    def _execute_task(
-        self,
-        task_id: str,
-        stock_code: str,
-        report_type: str,
-        force_refresh: bool,
-        notify: bool = True,
-        prompt_template_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        执行分析任务（在线程池中运行）
-
-        Args:
-            task_id: 任务 ID
-            stock_code: 股票代码
-            report_type: 报告类型
-            force_refresh: 是否强制刷新
-
-        Returns:
-            分析结果字典
-        """
-        # 更新状态为处理中
-        with self._data_lock:
-            task = self._tasks.get(task_id)
-            if not task:
-                return None
-            task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.now()
-            task.message = "正在分析中..."
-            task.progress = 10
-
-        self._broadcast_event("task_started", task.to_dict())
-
-        try:
-            # 导入分析服务（延迟导入避免循环依赖）
-            from src.services.analysis_service import AnalysisService
-
-            # 执行分析
-            service = AnalysisService()
-
-            def _on_progress(progress: int, message: str) -> None:
-                self.update_task_progress(task_id, progress, message)
-
-            def _on_conversation(conversation: Dict[str, Any]) -> None:
-                with self._data_lock:
-                    task = self._tasks.get(task_id)
-                    if not task:
-                        return
-                    task.conversation = conversation
-                    task.prompt_template_id = conversation.get("template_id") or task.prompt_template_id
-                    task.prompt_template_name = conversation.get("template_name") or task.prompt_template_name
-                    snapshot = task.copy()
-                self._broadcast_event("task_progress", snapshot.to_dict())
-
-            result = service.analyze_stock(
-                stock_code=stock_code,
-                report_type=report_type,
-                force_refresh=force_refresh,
-                query_id=task_id,
-                send_notification=notify,
-                progress_callback=_on_progress,
-                prompt_template_id=prompt_template_id,
-                conversation_callback=_on_conversation,
-            )
-
-            if result:
-                with self._data_lock:
-                    task_snapshot = self._mark_task_completed_locked(task_id, result)
-
-                if task_snapshot is not None:
-                    self._broadcast_event("task_completed", task_snapshot.to_dict())
-                logger.info(f"[TaskQueue] 任务完成: {task_id} ({stock_code})")
-
-                # 清理过期任务
-                self._cleanup_old_tasks()
-
-                return result
-            else:
-                # 分析返回空结果
-                raise Exception(service.last_error or "分析返回空结果")
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"[TaskQueue] 任务失败: {task_id} ({stock_code}), 错误: {error_msg}")
-
-            with self._data_lock:
-                task_snapshot = self._mark_task_failed_locked(task_id, error_msg)
-
-            if task_snapshot is not None:
-                self._broadcast_event("task_failed", task_snapshot.to_dict())
-
-            # 清理过期任务
-            self._cleanup_old_tasks()
-
-            return None
     def _execute_background_task(
         self,
         task_id: str,

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Mixin: analysis history and buy criteria operations."""
+"""Mixin: analysis history operations."""
 import json as _json
 import logging
 import re
@@ -9,13 +9,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import select, and_, desc, func, delete
 from sqlalchemy.orm import Session
 
-from src.storage.models import AnalysisHistory, BuyCriteriaRecord, BacktestResult
+from src.storage.models import AnalysisHistory, BacktestResult
 
 logger = logging.getLogger(__name__)
 
 
 class AnalysisMixin:
-    """Mixin providing analysis history and buy criteria CRUD operations."""
+    """Mixin providing analysis history CRUD operations."""
 
     def save_analysis_history(
         self,
@@ -228,89 +228,6 @@ class AnalysisMixin:
                 .first()
             )
             return result
-
-    # ── Buy Criteria Records ──────────────────────────────────────────────
-
-    def save_buy_criteria_record(
-        self,
-        symbol: str,
-        trade_date,
-        stock_name: str,
-        final_decision: str,
-        passed_count: int,
-        failed_count: int,
-        not_evaluated_count: int,
-        stopped_at: str | None,
-        summary: str,
-        results: list,
-    ) -> None:
-        """保存或更新买入判断记录（按 symbol+trade_date upsert）。"""
-        now = datetime.now()
-        record_data = {
-            "symbol": symbol,
-            "trade_date": trade_date,
-            "stock_name": stock_name,
-            "final_decision": final_decision,
-            "passed_count": passed_count,
-            "failed_count": failed_count,
-            "not_evaluated_count": not_evaluated_count,
-            "stopped_at": stopped_at,
-            "summary": summary,
-            "results_json": _json.dumps(results, ensure_ascii=False),
-            "created_at": now,
-        }
-
-        with self.session_scope() as session:
-            existing = (
-                session.execute(
-                    select(BuyCriteriaRecord).where(
-                        BuyCriteriaRecord.symbol == symbol,
-                        BuyCriteriaRecord.trade_date == trade_date,
-                    )
-                )
-                .scalars()
-                .first()
-            )
-
-            if existing:
-                for key, value in record_data.items():
-                    setattr(existing, key, value)
-                existing.created_at = now
-                logger.info(
-                    "[storage] updated buy_criteria_record: %s @ %s",
-                    symbol,
-                    trade_date,
-                )
-            else:
-                record = BuyCriteriaRecord(**record_data)
-                session.add(record)
-                logger.info(
-                    "[storage] inserted buy_criteria_record: %s @ %s",
-                    symbol,
-                    trade_date,
-                )
-
-    def get_buy_criteria_record(
-        self,
-        symbol: str,
-        trade_date,
-    ) -> dict[str, Any] | None:
-        """按股票代码+交易日查询记录，返回 dict 或 None。"""
-        with self.get_session() as session:
-            record = (
-                session.execute(
-                    select(BuyCriteriaRecord).where(
-                        BuyCriteriaRecord.symbol == symbol,
-                        BuyCriteriaRecord.trade_date == trade_date,
-                    )
-                )
-                .scalars()
-                .first()
-            )
-            if record:
-                session.expunge(record)
-                return record.to_dict()
-            return None
 
     # ── Sniper point helpers ──────────────────────────────────────────────
 

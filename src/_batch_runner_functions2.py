@@ -34,62 +34,9 @@ from src.batch_runner import (
     BatchRunControl,
     BatchRunState,
     BatchRunner,
-    _CRITERIA_NUM_LABELS,
  )
 
-__all__ = ['_build_criteria_notification_content', '_build_template_notification_content', '_save_batch_run_progress', '_save_batch_run_start', '_save_batch_run_resume_start', '_save_batch_run_end']
-
-def _build_criteria_notification_content(
-    state: BatchRunState,
-    template_name: str,
-    report_path: str,
-) -> str:
-    """Build buy-criteria batch completion notification content."""
-    from datetime import datetime
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report_name = Path(report_path).name
-
-    result_items = _get_result_items(state)
-    failed_items = [(code, result) for code, result in result_items if not result.get("success")]
-    summary_items = _get_stock_decision_summaries(result_items)
-    passed_items = [item for item in summary_items if item["decision"] == "buy"]
-    rejected_items = [item for item in summary_items if item["decision"] != "buy"]
-    success_rate = (state.success / state.total * 100) if state.total else 0
-
-    lines = [
-        "## 买入判断筛选汇总",
-        "",
-        f"> 筛选方式: **八维布尔买入判断**",
-        f"> 时间: {now}",
-        f"> 完成: **{state.completed}/{state.total}**",
-        f"> 分析成功: **{state.success}** | 分析失败: **{state.failed}** | 分析成功率: **{success_rate:.1f}%**",
-        f"> 筛选通过(8/8): **{len(passed_items)}** | 未通过: **{len(rejected_items)}**",
-        f"> 报告: `{report_name}`",
-        "",
-        "### 筛选通过股票",
-        "",
-    ]
-    if passed_items:
-        lines.append("| 股票 | 结论 | 摘要 |")
-        lines.append("| --- | --- | --- |")
-        for item in passed_items:
-            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
-    else:
-        lines.append("本次筛选没有八维全部通过的股票。")
-    lines.append("")
-
-    if failed_items:
-        lines.append("### 分析失败")
-        lines.append("")
-        for code, result in failed_items[:20]:
-            lines.append(f"- **{code}**: {_one_line(result.get('text') or '未知错误', limit=80)}")
-        if len(failed_items) > 20:
-            lines.append(f"- 另有 {len(failed_items) - 20} 项失败，请查看完整报告。")
-        lines.append("")
-
-    lines.append(f"*买入判断筛选完成于 {now}*")
-    return "\n".join(lines)
+__all__ = ['_build_template_notification_content', '_save_batch_run_progress', '_save_batch_run_start', '_save_batch_run_resume_start', '_save_batch_run_end']
 
 def _build_template_notification_content(
     state: BatchRunState,
@@ -205,7 +152,6 @@ def _save_batch_run_start(
     template_id: str,
     template_name: str,
     stock_codes: List[str],
-    analysis_mode: str = "template",
 ):
     try:
         db = DatabaseManager.get_instance()
@@ -222,7 +168,7 @@ def _save_batch_run_start(
             results_json="[]",
             stock_codes_json=json.dumps(stock_codes, ensure_ascii=False),
             status="running",
-            analysis_mode=analysis_mode,
+            analysis_mode="template",
         )
         with db.get_session() as session:
             session.add(record)

@@ -297,7 +297,7 @@ def main() -> int:
 
     logger.info("模式: Web 服务")
     logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
-    logger.info("通过 /api/v1/analysis/analyze 接口触发分析")
+    logger.info("通过 /api/v1/agent/chat 接口使用投研助手")
     logger.info(f"API 文档: http://{args.host}:{args.port}/docs")
     logger.info("按 Ctrl+C 退出...")
     try:

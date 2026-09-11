@@ -24,7 +24,7 @@ from src.llm.anthropic_gateway import (
 )
 from src.llm.generation_params import apply_litellm_generation_params
 from src.storage import DatabaseManager, persist_llm_usage
-from src.services.buy_criteria.mainline_policy import (
+from src.services.market_theme.mainline_policy import (
     MainlineLifecycle,
     MainlineTriggerProgress,
 )

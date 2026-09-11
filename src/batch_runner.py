@@ -237,8 +237,6 @@ class BatchRunner:
         template_name: str = "默认",
         template_id: str = "",
         triggered_by: str = "manual",
-        analysis_mode: str = "template",
-        force_refresh: bool = False,
         control: Optional[BatchRunControl] = None,
         on_progress: Optional[Callable[[BatchRunState], None]] = None,
     ) -> BatchRunState:
@@ -250,8 +248,6 @@ class BatchRunner:
             template_name: 模板名称
             template_id: 模板 ID
             triggered_by: 触发来源 (manual/scheduled)
-            analysis_mode: 分析模式 (template/buy_criteria)
-            force_refresh: 买入判断模式下是否绕过当日缓存重新分析
             on_progress: 每完成一只股票时回调
 
         Returns:
@@ -263,11 +259,10 @@ class BatchRunner:
         started_at = datetime.now(timezone.utc)
 
         logger.info(
-            "Batch run started: run_id=%s stocks=%d template=%s mode=%s",
+            "Batch run started: run_id=%s stocks=%d template=%s",
             run_id,
             len(stock_codes),
             template_name,
-            analysis_mode,
         )
 
         # Save initial batch record
@@ -277,7 +272,6 @@ class BatchRunner:
             template_id,
             template_name,
             stock_codes,
-            analysis_mode,
         )
 
         return self._execute(
@@ -290,8 +284,6 @@ class BatchRunner:
             existing_results=None,
             control=control,
             on_progress=on_progress,
-            analysis_mode=analysis_mode,
-            force_refresh=force_refresh,
         )
 
     def resume(
@@ -301,8 +293,6 @@ class BatchRunner:
         stock_codes: List[str],
         system_prompt: str,
         template_name: str = "默认",
-        analysis_mode: str = "template",
-        force_refresh: bool = False,
         started_at: Optional[datetime] = None,
         existing_results: Optional[Dict[str, dict]] = None,
         control: Optional[BatchRunControl] = None,
@@ -319,13 +309,12 @@ class BatchRunner:
             started_at = datetime.now(timezone.utc)
 
         logger.info(
-            "Batch run resumed: run_id=%s total=%d completed=%d pending=%d template=%s mode=%s",
+            "Batch run resumed: run_id=%s total=%d completed=%d pending=%d template=%s",
             run_id,
             len(stock_codes),
             len(completed_codes),
             len(pending_stock_codes),
             template_name,
-            analysis_mode,
         )
 
         _save_batch_run_resume_start(run_id, stock_codes, existing_results)
@@ -340,8 +329,6 @@ class BatchRunner:
             existing_results=existing_results,
             control=control,
             on_progress=on_progress,
-            analysis_mode=analysis_mode,
-            force_refresh=force_refresh,
         )
 
     def _execute(
@@ -356,8 +343,6 @@ class BatchRunner:
         existing_results: Optional[Dict[str, dict]],
         control: Optional[BatchRunControl],
         on_progress: Optional[Callable[[BatchRunState], None]],
-        analysis_mode: str = "template",
-        force_refresh: bool = False,
     ) -> BatchRunState:
         if control is None:
             control = BatchRunControl()
@@ -410,8 +395,6 @@ class BatchRunner:
                         code,
                         stock_name,
                         state,
-                        analysis_mode,
-                        force_refresh,
                     )
                     futures[future] = code
 
@@ -447,7 +430,6 @@ class BatchRunner:
             state,
             template_name,
             started_at,
-            analysis_mode=analysis_mode,
         )
 
         # Save final batch record
@@ -459,7 +441,6 @@ class BatchRunner:
             state,
             template_name,
             report_path,
-            analysis_mode=analysis_mode,
         )
 
         logger.info(
@@ -477,18 +458,9 @@ class BatchRunner:
         stock_code: str,
         stock_name: str,
         state: BatchRunState,
-        analysis_mode: str = "template",
-        force_refresh: bool = False,
     ) -> tuple:
         """Analyze one stock, respecting the concurrency semaphore."""
         with self._semaphore:
-            if analysis_mode == "buy_criteria":
-                return self._analyze_one_criteria(
-                    stock_code,
-                    stock_name,
-                    state,
-                    force_refresh,
-                )
             try:
                 state.start_stock(stock_code, stock_name)
                 text, model, _usage = call_ai_for_stock(
@@ -502,30 +474,6 @@ class BatchRunner:
             except Exception as exc:
                 logger.exception("AI call failed for %s(%s)", stock_name, stock_code)
                 return False, str(exc), "", None
-
-    def _analyze_one_criteria(
-        self,
-        stock_code: str,
-        stock_name: str,
-        state: BatchRunState,
-        force_refresh: bool,
-    ) -> tuple:
-        """Run buy-criteria (8-step) screening for one stock in a batch."""
-        try:
-            state.start_stock(stock_code, stock_name)
-            from src.services.buy_criteria.orchestrator import CriterionOrchestrator
-
-            summary = CriterionOrchestrator().analyze_for_batch(
-                stock_code,
-                reuse_cache=not force_refresh,
-            )
-            text = _format_criteria_detail(stock_code, stock_name, summary)
-            return True, text, "buy_criteria", _criteria_decision_meta(summary)
-        except Exception as exc:
-            logger.exception("Criteria analysis failed for %s(%s)", stock_name, stock_code)
-            return False, str(exc), "", None
-
-_CRITERIA_NUM_LABELS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧"]
 
 
 from . import _batch_runner_functions1 as _batch_runner_functions1

@@ -9,9 +9,7 @@ API v1 Endpoints 模块初始化
 """
 
 __all__ = [
-    "analysis",
     "auth",
-    "buy_decision",
     "history",
     "indicator_screening",
     "industry_cycle",

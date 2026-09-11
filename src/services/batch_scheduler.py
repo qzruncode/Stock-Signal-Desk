@@ -175,7 +175,6 @@ async def run_batch_scheduler(
             BatchRunTriggerRequest(
                 stock_codes=[],
                 template_id=template_id,
-                analysis_mode="template",
                 triggered_by="scheduled",
             )
         )

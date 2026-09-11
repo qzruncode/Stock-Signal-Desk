@@ -1,9 +1,0 @@
-# src/services/buy_criteria/evaluators/__init__.py
-"""Criterion evaluator implementations."""
-from src.services.buy_criteria.evaluators.mainline_position import MainlinePositionEvaluator
-from src.services.buy_criteria.evaluators.industrial_competitiveness import IndustrialCompetitivenessEvaluator
-from src.services.buy_criteria.evaluators.prosperity_cycle import ProsperityCycleEvaluator
-from src.services.buy_criteria.evaluators.growth_space import GrowthSpaceEvaluator
-from src.services.buy_criteria.evaluators.competition_landscape import CompetitionLandscapeEvaluator
-from src.services.buy_criteria.evaluators.catalyst_events import CatalystEventsEvaluator
-from src.services.buy_criteria.evaluators.fatal_risks import FatalRisksEvaluator

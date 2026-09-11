@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.v1.endpoints.batches import router
 from api.v1.endpoints.batches.helpers import (
@@ -35,10 +35,8 @@ from api.v1.endpoints.batches.helpers import (
 from src.batch_runner import (
     BatchRunControl,
     BatchRunner,
-    BatchRunState,
     BATCH_REPORTS_DIR,
     _build_batch_notification_content,
-    _write_aggregated_report,
 )
 from src.config import get_config
 from src.prompt_templates import get_prompt_template_store
@@ -49,10 +47,10 @@ logger = logging.getLogger(__name__)
 
 class BatchRunTriggerRequest(BaseModel):
     stock_codes: list[str] = Field(..., description="股票代码列表")
-    template_id: str = Field("", description="提示词模板 ID（模板分析模式必填）")
-    analysis_mode: str = Field("template", description="分析模式：template / buy_criteria")
-    force_refresh: bool = Field(False, description="买入判断模式下是否绕过当日缓存重新分析")
+    template_id: str = Field("", description="提示词模板 ID")
     triggered_by: Literal["manual", "scheduled"] = Field("manual", description="跑批触发来源")
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class BatchRunItem(BaseModel):
@@ -70,7 +68,10 @@ class BatchRunItem(BaseModel):
     results_json: Optional[str] = None
     stock_codes_json: Optional[str] = None
     status: str = "completed"
-    analysis_mode: Optional[str] = "template"
+    analysis_mode: Optional[str] = Field(
+        "template",
+        description="历史记录中的模式标识；新建跑批固定为 template",
+    )
 
 
 class BatchRunListResponse(BaseModel):
@@ -88,9 +89,7 @@ class BatchRunActionResponse(BaseModel):
 
 @router.post("/run", status_code=202)
 async def trigger_batch_run(request: BatchRunTriggerRequest):
-    """手动触发跑批。模板模式每股一次 AI 调用；买入判断模式每股跑 8 步硬筛。"""
-    analysis_mode = request.analysis_mode if request.analysis_mode in ("template", "buy_criteria") else "template"
-
+    """手动触发基于提示词模板的批量分析。"""
     config = get_config()
     if not request.stock_codes:
         stock_codes = config.stock_list
@@ -103,20 +102,15 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
     if _is_batch_running():
         raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
 
-    if analysis_mode == "buy_criteria":
-        template_id = ""
-        template_name = "买入判断筛选"
-        system_prompt = ""
-    else:
-        store = get_prompt_template_store()
-        template = store.get(request.template_id)
-        if template is None:
-            raise HTTPException(status_code=404, detail="模板不存在")
-        template_id = template["id"]
-        template_name = template["name"]
-        system_prompt = template["content"]
+    store = get_prompt_template_store()
+    template = store.get(request.template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    template_id = template["id"]
+    template_name = template["name"]
+    system_prompt = template["content"]
 
-    runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
+    runner = BatchRunner()
     control = BatchRunControl()
     lease_id, claimed = _claim_batch_execution(
         trigger=request.triggered_by,
@@ -133,8 +127,6 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
                 template_name=template_name,
                 template_id=template_id,
                 triggered_by=request.triggered_by,
-                analysis_mode=analysis_mode,
-                force_refresh=request.force_refresh,
                 control=control,
                 on_progress=on_progress,
             ),
@@ -251,18 +243,19 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
     if run.get("completed_at"):
         raise HTTPException(status_code=400, detail="跑批已完成，无需续跑")
 
-    analysis_mode = run.get("analysis_mode") or "template"
-    if analysis_mode == "buy_criteria":
-        template_name = run.get("template_name") or "买入判断筛选"
-        system_prompt = ""
-    else:
-        store = get_prompt_template_store()
-        template_id = run.get("template_id") or ""
-        template = store.get(template_id)
-        if template is None:
-            raise HTTPException(status_code=404, detail="模板不存在，无法续跑")
-        template_name = template["name"]
-        system_prompt = template["content"]
+    if run.get("analysis_mode") == "buy_criteria":
+        raise HTTPException(
+            status_code=410,
+            detail="旧的买入判断跑批功能已移除，请使用提示词模板重新创建跑批",
+        )
+
+    store = get_prompt_template_store()
+    template_id = run.get("template_id") or ""
+    template = store.get(template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="模板不存在，无法续跑")
+    template_name = template["name"]
+    system_prompt = template["content"]
 
     stock_codes = _resolve_resume_stock_codes(run, request.stock_codes)
     if not stock_codes:
@@ -273,7 +266,7 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
         stock_codes,
     )
     pending_count = len([code for code in stock_codes if code not in existing_results])
-    runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
+    runner = BatchRunner()
     control = BatchRunControl()
     lease_id, claimed = _claim_batch_execution(
         trigger="resume",
@@ -289,7 +282,6 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
                 stock_codes=stock_codes,
                 system_prompt=system_prompt,
                 template_name=template_name,
-                analysis_mode=analysis_mode,
                 started_at=_parse_started_at(run.get("started_at")),
                 existing_results=existing_results,
                 control=control,
@@ -397,7 +389,6 @@ async def notify_batch_run(run_id: str):
             state,
             run.get("template_name") or "-",
             report_path,
-            analysis_mode=run.get("analysis_mode") or "template",
         )
         get_notification_service().send(content)
     except Exception as exc:

@@ -33,6 +33,11 @@ def _regenerate_batch_report_for_run(run: dict) -> tuple[str, BatchRunState]:
     results = _parse_results_json(run.get("results_json"))
     if not results:
         raise HTTPException(status_code=400, detail="该跑批没有可用于汇总的单股结果")
+    if run.get("analysis_mode") == "buy_criteria":
+        raise HTTPException(
+            status_code=410,
+            detail="旧的买入判断跑批报告已停止重新生成",
+        )
 
     run_id = run.get("run_id") or ""
     state = BatchRunState(
@@ -46,7 +51,6 @@ def _regenerate_batch_report_for_run(run: dict) -> tuple[str, BatchRunState]:
         state,
         run.get("template_name") or "-",
         started_at,
-        analysis_mode=run.get("analysis_mode") or "template",
     )
     return report_path, state
 
@@ -107,24 +111,23 @@ def resume_incomplete_batches_on_startup() -> bool:
         if len(existing_results) == 0 or len(existing_results) >= len(stock_codes):
             continue
 
-        analysis_mode = run.get("analysis_mode") or "template"
-        if analysis_mode == "buy_criteria":
-            template_name = run.get("template_name") or "买入判断筛选"
-            system_prompt = ""
-        else:
-            from src.prompt_templates import get_prompt_template_store
+        if run.get("analysis_mode") == "buy_criteria":
+            logger.warning("Skip auto-resume for removed buy-criteria batch %s", run.get("run_id"))
+            continue
 
-            store = get_prompt_template_store()
-            template = store.get(run.get("template_id") or "")
-            if template is None:
-                logger.warning("Cannot auto-resume batch %s: template missing", run.get("run_id"))
-                continue
-            template_name = template["name"]
-            system_prompt = template["content"]
+        from src.prompt_templates import get_prompt_template_store
+
+        store = get_prompt_template_store()
+        template = store.get(run.get("template_id") or "")
+        if template is None:
+            logger.warning("Cannot auto-resume batch %s: template missing", run.get("run_id"))
+            continue
+        template_name = template["name"]
+        system_prompt = template["content"]
 
         from src.batch_runner import BatchRunner
 
-        runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
+        runner = BatchRunner()
         control = BatchRunControl()
         run_id = run["run_id"]
         lease_id, claimed = _claim_batch_execution(
@@ -135,12 +138,11 @@ def resume_incomplete_batches_on_startup() -> bool:
             continue
         try:
             _start_batch_thread(
-                lambda on_progress, run_id=run_id, stock_codes=stock_codes, existing_results=existing_results, system_prompt=system_prompt, template_name=template_name, analysis_mode=analysis_mode, run=run: runner.resume(
+                lambda on_progress, run_id=run_id, stock_codes=stock_codes, existing_results=existing_results, system_prompt=system_prompt, template_name=template_name, run=run: runner.resume(
                     run_id=run_id,
                     stock_codes=stock_codes,
                     system_prompt=system_prompt,
                     template_name=template_name,
-                    analysis_mode=analysis_mode,
                     started_at=_parse_started_at(run.get("started_at")),
                     existing_results=existing_results,
                     control=control,

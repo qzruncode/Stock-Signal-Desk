@@ -16,8 +16,8 @@ e.g. ``from api.v1.endpoints.macro import get_market_breadth``):
   - INDICATOR_FETCHERS (used by stock_info.business._fetch_macro_data)
   - get_index_data / get_bond_yield / get_macro_indicator /
     get_sector_flow / get_market_breadth (used by agent tool_registry,
-    market_theme, buy_criteria, industry_cycle)
-  - _fetch_sector_flow_industry (used by buy_criteria, industry_cycle)
+    market_theme, industry_cycle)
+  - _fetch_sector_flow_industry (used by industry_cycle)
 """
 
 from __future__ import annotations

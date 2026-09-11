@@ -1,4 +1,4 @@
-"""AnalysisTaskQueue method group 1."""
+"""Background task queue method group 1."""
 
 from __future__ import annotations
 
@@ -18,17 +18,11 @@ from src.services.task_queue import (
     List,
     Any,
     TYPE_CHECKING,
-    Tuple,
     Literal,
     Callable,
-    canonical_stock_code,
-    normalize_stock_code,
-    SELECTION_SOURCES,
     logger,
-    _dedupe_stock_code_key,
     TaskStatus,
     TaskInfo,
-    DuplicateTaskError,
  )
 
 class _AnalysisTaskQueueMethods1:
@@ -48,7 +42,6 @@ class _AnalysisTaskQueueMethods1:
 
         # 核心数据结构
         self._tasks: Dict[str, TaskInfo] = {}  # task_id -> TaskInfo
-        self._analyzing_stocks: Dict[str, str] = {}  # dedupe_key -> task_id
         self._futures: Dict[str, Future] = {}  # task_id -> Future
 
         # SSE 订阅者列表（asyncio.Queue 实例）
@@ -78,15 +71,13 @@ class _AnalysisTaskQueueMethods1:
         with self._data_lock:
             if self._executor is not None:
                 return
-            self._executor = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="analysis_task_")
+            self._executor = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="background_task_")
     @property
     def max_workers(self) -> int:
         """Return current executor max worker setting."""
         return self._max_workers
     def _has_inflight_tasks_locked(self) -> bool:
         """Check whether queue has any pending/processing tasks."""
-        if self._analyzing_stocks:
-            return True
         return any(task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING) for task in self._tasks.values())
     def sync_max_workers(
         self,
@@ -135,164 +126,6 @@ class _AnalysisTaskQueueMethods1:
         if log:
             logger.info("[TaskQueue] 最大并发已更新: %s -> %s", previous, target)
         return "applied"
-    def is_analyzing(self, stock_code: str) -> bool:
-        """
-        检查股票是否正在分析中
-
-        Args:
-            stock_code: 股票代码
-
-        Returns:
-            True 表示正在分析中
-        """
-        dedupe_key = _dedupe_stock_code_key(stock_code)
-        with self._data_lock:
-            return dedupe_key in self._analyzing_stocks
-    def get_analyzing_task_id(self, stock_code: str) -> Optional[str]:
-        """
-        获取正在分析该股票的任务 ID
-
-        Args:
-            stock_code: 股票代码
-
-        Returns:
-            任务 ID，如果没有则返回 None
-        """
-        dedupe_key = _dedupe_stock_code_key(stock_code)
-        with self._data_lock:
-            return self._analyzing_stocks.get(dedupe_key)
-    def validate_selection_source(self, selection_source: Optional[str]) -> None:
-        """
-        Validate the selection source parameter.
-
-        Args:
-            selection_source: Selection source label.
-
-        Raises:
-            ValueError: Raised when the selection source is invalid.
-        """
-        if selection_source is not None and selection_source not in SELECTION_SOURCES:
-            raise ValueError(f"Invalid selection_source: {selection_source}. " f"Must be one of {SELECTION_SOURCES}")
-    def submit_task(
-        self,
-        stock_code: str,
-        stock_name: Optional[str] = None,
-        original_query: Optional[str] = None,
-        selection_source: Optional[str] = None,
-        report_type: str = "detailed",
-        force_refresh: bool = False,
-        prompt_template_id: Optional[str] = None,
-    ) -> TaskInfo:
-        """
-        Submit a single analysis task.
-
-        Args:
-            stock_code: Stock code
-            stock_name: Optional stock name
-            original_query: Optional raw user input
-            selection_source: Optional source label
-            report_type: Report type
-            force_refresh: Whether to bypass cache
-
-        Returns:
-            TaskInfo: Accepted task information
-
-        Raises:
-            DuplicateTaskError: Raised when the stock is already being analyzed
-        """
-        stock_code = canonical_stock_code(stock_code)
-        if not stock_code:
-            raise ValueError("股票代码不能为空或仅包含空白字符")
-
-        accepted, duplicates = self.submit_tasks_batch(
-            [stock_code],
-            stock_name=stock_name,
-            original_query=original_query,
-            selection_source=selection_source,
-            report_type=report_type,
-            force_refresh=force_refresh,
-            prompt_template_id=prompt_template_id,
-        )
-        if duplicates:
-            raise duplicates[0]
-        return accepted[0]
-    def submit_tasks_batch(
-        self,
-        stock_codes: List[str],
-        stock_name: Optional[str] = None,
-        original_query: Optional[str] = None,
-        selection_source: Optional[str] = None,
-        report_type: str = "detailed",
-        force_refresh: bool = False,
-        notify: bool = True,
-        prompt_template_id: Optional[str] = None,
-    ) -> Tuple[List[TaskInfo], List[DuplicateTaskError]]:
-        """
-        Submit analysis tasks in batch.
-
-        - Duplicate stocks are skipped and recorded in duplicates.
-        - If executor submission fails, the current batch is rolled back.
-        """
-        self.validate_selection_source(selection_source)
-
-        accepted: List[TaskInfo] = []
-        duplicates: List[DuplicateTaskError] = []
-        created_task_ids: List[str] = []
-
-        canonical_codes = [
-            normalized for normalized in (canonical_stock_code(code) for code in stock_codes) if normalized
-        ]
-
-        with self._data_lock:
-            for stock_code in canonical_codes:
-                dedupe_key = _dedupe_stock_code_key(stock_code)
-                if dedupe_key in self._analyzing_stocks:
-                    existing_task_id = self._analyzing_stocks[dedupe_key]
-                    duplicates.append(DuplicateTaskError(stock_code, existing_task_id))
-                    continue
-
-                task_id = uuid.uuid4().hex
-                task_info = TaskInfo(
-                    task_id=task_id,
-                    stock_code=stock_code,
-                    stock_name=stock_name,
-                    status=TaskStatus.PENDING,
-                    message="任务已加入队列",
-                    report_type=report_type,
-                    original_query=original_query,
-                    selection_source=selection_source,
-                    prompt_template_id=prompt_template_id,
-                )
-                self._tasks[task_id] = task_info
-                self._analyzing_stocks[dedupe_key] = task_id
-
-                try:
-                    future = self.executor.submit(
-                        self._execute_task,
-                        task_id,
-                        stock_code,
-                        report_type,
-                        force_refresh,
-                        notify,
-                        prompt_template_id,
-                    )
-                except Exception:
-                    # Roll back the current batch to avoid partial submission.
-                    self._rollback_submitted_tasks_locked(created_task_ids + [task_id])
-                    raise
-
-                self._futures[task_id] = future
-                accepted.append(task_info)
-                created_task_ids.append(task_id)
-                logger.info(f"[TaskQueue] 任务已提交: {stock_code} -> {task_id}")
-
-            # Keep task_created ordered before worker-emitted task_started/task_completed.
-            # Broadcasting here also preserves batch rollback semantics because we only
-            # reach this point after every submit in the batch has succeeded.
-            for task_info in accepted:
-                self._broadcast_event("task_created", task_info.to_dict())
-
-        return accepted, duplicates
     def submit_background_task(
         self,
         run_task: Callable[[], Optional[Any]],
@@ -306,8 +139,8 @@ class _AnalysisTaskQueueMethods1:
         """
         Submit a generic background callable with task lifecycle tracking.
 
-        This is used by callers that need task status visibility but do not
-        map to standard per-stock async analysis flow.
+        This is used by callers that need task status visibility for a
+        long-running background operation.
         """
         task_id = task_id or uuid.uuid4().hex
         task_info = TaskInfo(
@@ -333,18 +166,6 @@ class _AnalysisTaskQueueMethods1:
             self._broadcast_event("task_created", task_info.to_dict())
 
         return task_info.copy()
-    def _rollback_submitted_tasks_locked(self, task_ids: List[str]) -> None:
-        """回滚当前批次已创建但尚未稳定返回给调用方的任务。"""
-        for task_id in task_ids:
-            future = self._futures.pop(task_id, None)
-            if future is not None:
-                future.cancel()
-
-            task = self._tasks.pop(task_id, None)
-            if task:
-                dedupe_key = _dedupe_stock_code_key(task.stock_code)
-                if self._analyzing_stocks.get(dedupe_key) == task_id:
-                    del self._analyzing_stocks[dedupe_key]
     def get_task(self, task_id: str) -> Optional[TaskInfo]:
         """
         获取任务信息

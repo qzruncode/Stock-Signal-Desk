@@ -2,7 +2,7 @@
 """Batches run endpoint tests — trigger, current status, pause/resume/stop.
 
 Covers api.v1.endpoints.batches.run route-level behavior:
-- trigger_batch_run: empty stock list, buy_criteria mode, template mode, conflict
+- trigger_batch_run: empty stock list, template mode, removed mode, conflict
 - get_current_batch_status: idle / running / finished states
 - pause/resume/stop: 404 when no running control
 - get_batch_run_detail: 404 when missing
@@ -61,35 +61,13 @@ def test_trigger_run_rejects_empty_stock_list(client):
     assert resp.status_code == 400
 
 
-def test_trigger_run_buy_criteria_starts_without_template(client):
-    captured = {}
+def test_trigger_run_rejects_removed_buy_criteria_mode(client):
+    resp = client.post(
+        "/api/v1/batch/run",
+        json={"stock_codes": ["000001"], "analysis_mode": "buy_criteria"},
+    )
 
-    def _fake_start(run_factory, control=None, lease_id=None):
-        captured["started"] = True
-        # mimic the state assignment the real thread would do
-        state = run_factory(lambda s: None)
-        h._running_batch = {"running": True, "state": state.to_dict() if state else None}
-
-    with (
-        patch("api.v1.endpoints.batches.run._start_batch_thread", side_effect=_fake_start),
-        patch("api.v1.endpoints.batches.run.BatchRunner") as runner_cls,
-        patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False),
-        patch("api.v1.endpoints.batches.run._claim_batch_execution", return_value=("lease-1", True)),
-    ):
-        runner = MagicMock()
-        state = MagicMock()
-        state.to_dict.return_value = {"run_id": "r1", "completed": 0}
-        runner.run.return_value = state
-        runner_cls.return_value = runner
-
-        resp = client.post(
-            "/api/v1/batch/run",
-            json={"stock_codes": ["000001"], "analysis_mode": "buy_criteria"},
-        )
-
-    assert resp.status_code == 202
-    assert resp.json()["template_name"] == "买入判断筛选"
-    assert captured["started"] is True
+    assert resp.status_code == 422
 
 
 def test_trigger_run_template_mode_requires_existing_template(client):
@@ -113,7 +91,7 @@ def test_trigger_run_rejects_when_batch_already_running(client):
     with patch("api.v1.endpoints.batches.run._is_batch_running", return_value=True):
         resp = client.post(
             "/api/v1/batch/run",
-            json={"stock_codes": ["000001"], "analysis_mode": "buy_criteria"},
+            json={"stock_codes": ["000001"], "template_id": "t1"},
         )
     assert resp.status_code == 409
 

@@ -8,7 +8,7 @@ for _name, _value in vars(_models).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
-__all__ = ['StockDaily', 'StockMeta', 'DataMaintenanceJob', 'NewsIntel', 'FundamentalSnapshot', 'AnalysisHistory', 'BuyCriteriaRecord', 'MarketMainlineReport', 'ChatConversation', 'ChatMessage']
+__all__ = ['StockDaily', 'StockMeta', 'DataMaintenanceJob', 'NewsIntel', 'FundamentalSnapshot', 'AnalysisHistory', 'MarketMainlineReport', 'ChatConversation', 'ChatMessage']
 
 class StockDaily(Base):
     """
@@ -269,47 +269,6 @@ class AnalysisHistory(Base):
             "secondary_buy": self.secondary_buy,
             "stop_loss": self.stop_loss,
             "take_profit": self.take_profit,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-        }
-
-class BuyCriteriaRecord(Base):
-    """买入判断分析结果记录"""
-
-    __tablename__ = "buy_criteria_records"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(String(10), nullable=False, index=True)
-    trade_date = Column(Date, nullable=False, index=True)
-    stock_name = Column(String(50))
-    final_decision = Column(String(10), nullable=False)
-    passed_count = Column(Integer)
-    failed_count = Column(Integer)
-    not_evaluated_count = Column(Integer)
-    stopped_at = Column(String(30))
-    summary = Column(Text)
-    results_json = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.now, index=True)
-
-    __table_args__ = (
-        UniqueConstraint("symbol", "trade_date", name="uq_buy_criteria_symbol_date"),
-        Index("ix_buy_criteria_date", "trade_date"),
-    )
-
-    def to_dict(self) -> Dict[str, Any]:
-        import json as _json
-
-        return {
-            "id": self.id,
-            "symbol": self.symbol,
-            "trade_date": self.trade_date.isoformat() if self.trade_date else None,
-            "stock_name": self.stock_name,
-            "final_decision": self.final_decision,
-            "passed_count": self.passed_count,
-            "failed_count": self.failed_count,
-            "not_evaluated_count": self.not_evaluated_count,
-            "stopped_at": self.stopped_at,
-            "summary": self.summary,
-            "results": _json.loads(self.results_json),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

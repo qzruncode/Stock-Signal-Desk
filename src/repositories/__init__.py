@@ -8,8 +8,4 @@
 1. 导出所有 Repository 类
 """
 
-from src.repositories.analysis_repo import AnalysisRepository
-
-__all__ = [
-    "AnalysisRepository",
-]
+__all__: list[str] = []

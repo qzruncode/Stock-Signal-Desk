@@ -90,7 +90,6 @@ TOOL_MODULES: tuple[str, ...] = (
     "manage_watchlist",
     "manage_watchlist_groups",
     # Persisted records and single external operations
-    "get_analysis_status",
     "search_analysis_history",
     "read_analysis_report",
     "delete_analysis_history",
