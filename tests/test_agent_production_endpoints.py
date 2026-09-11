@@ -164,6 +164,13 @@ def test_approval_endpoint_accepts_once_then_returns_conflict() -> None:
         def release_agent_run_lease(self, *_args, **_kwargs):
             return True
 
+        def try_acquire_agent_resource(self, **_kwargs):
+            return "lease-approval"
+
+        def release_agent_resource(self, lease_id, **_kwargs):
+            assert lease_id == "lease-approval"
+            return True
+
     class FakeRun:
         def __init__(self) -> None:
             self.started = False

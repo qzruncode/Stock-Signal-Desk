@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from src.tools.get_peer_comparison import _dimension_result
+from market_data_service.providers.get_peer_comparison import _dimension_result
 
 
 def test_valuation_peer_normalizer_handles_missing_ev_ebitda() -> None:

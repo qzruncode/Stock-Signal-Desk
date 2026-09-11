@@ -6,16 +6,6 @@ from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
 
 
-def get_announcements(
-    symbol: str,
-    days: int = 30,
-    type: str = "all",
-    limit: int = 30,
-    use_cache: bool = True,
-) -> dict[str, Any]:
-    return read_source("announcements.get_announcements", locals())
-
-
 def read_company_announcements_akshare(
     symbol: str, days: int = 30, limit: int = 30, *, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -51,6 +41,5 @@ TOOLS = (
 )
 __all__ = [
     "TOOLS",
-    "get_announcements",
     "read_company_announcements_akshare",
 ]

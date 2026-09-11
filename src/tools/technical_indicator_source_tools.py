@@ -21,7 +21,6 @@ from src.tools._kline import (
     _fetch_kline_tencent,
     _kline_data_time,
     _kline_is_stale,
-    _normalize_kline_df,
 )
 from src.tools._trading_calendar import latest_completed_trade_day
 from src.tools.kline_gateway import read_reliable_kline

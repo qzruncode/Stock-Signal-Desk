@@ -6,10 +6,8 @@ from typing import Any
 from market_data_service.providers.market_index_catalog import A_SHARE_INDEX_MAP
 from market_data_service.providers.common import cached_call
 from market_data_service.providers._macro_common import (
-    get_db,
     latest_date,
     number,
-    ordered,
 )
 
 INDEX_MAP = A_SHARE_INDEX_MAP
@@ -93,124 +91,6 @@ def _spot_record(
         "change_amount": number(row.get("涨跌额")),
         "pct_chg": number(row.get("涨跌幅")),
         "record_type": "realtime_snapshot",
-    }
-
-
-def _merge_snapshot(
-    history: list[dict[str, Any]], snapshot: dict[str, Any] | None, days: int
-) -> list[dict[str, Any]]:
-    if not snapshot:
-        return history[-days:]
-    by_date = {str(item.get("date")): dict(item) for item in history}
-    existing = by_date.get(snapshot["date"])
-    if existing:
-        by_date[snapshot["date"]] = {**existing, **snapshot}
-    else:
-        previous = history[-1] if history else None
-        previous_close = number(previous.get("close")) if previous else None
-        quoted_previous = number(snapshot.get("previous_close"))
-        if (
-            previous_close is not None
-            and quoted_previous is not None
-            and (
-                abs(previous_close - quoted_previous)
-                <= max(0.01, abs(previous_close) * 1e-05)
-            )
-        ):
-            by_date[snapshot["date"]] = snapshot
-    return ordered(list(by_date.values()), "date")[-days:]
-
-
-def get_index_data(index_code: str = "000001", days: int = 20) -> dict[str, Any]:
-    index_code = str(index_code or "").strip()
-    days = int(days)
-    if index_code not in INDEX_MAP:
-        raise ValueError(f"不支持的指数代码: {index_code}")
-    if not 5 <= days <= 250:
-        raise ValueError("days 必须在 5 到 250 之间")
-    errors: list[str] = []
-    warnings: list[str] = []
-    daily_cached = spot_cached = False
-    daily = spot = None
-    try:
-        daily, daily_cached = cached_call(
-            f"index-daily:{index_code}",
-            lambda: _daily_frame(index_code),
-            ttl_seconds=900,
-        )
-    except Exception as exc:
-        errors.append(f"新浪指数日线: {exc}")
-    try:
-        spot, spot_cached = cached_call(
-            "index-spot-sina", _spot_frame, ttl_seconds=30, attempts=1
-        )
-    except Exception as exc:
-        warnings.append(f"新浪指数快照不可用: {exc}")
-    history = _daily_records(daily, days)
-    snapshot = _spot_record(spot, index_code, _expected_session_date(datetime.now()))
-    fallback_used = False
-    if history:
-        history = _merge_snapshot(history, snapshot, days)
-        try:
-            get_db().save_macro_index_daily(
-                index_code, history, data_source="AKShare/新浪"
-            )
-        except Exception as exc:
-            warnings.append(f"指数本地缓存写入失败: {exc}")
-    else:
-        fallback_used = True
-        try:
-            history = ordered(
-                get_db().get_macro_index_daily(index_code, limit=days) or [], "date"
-            )[-days:]
-        except Exception as exc:
-            errors.append(f"指数本地缓存: {exc}")
-            history = []
-    latest = history[-1] if history else {}
-    data_date = latest_date(history, "date")
-    expected = _expected_session_date(datetime.now())
-    success = bool(history)
-    if success and data_date and expected and (data_date.isoformat() < expected):
-        warnings.append(
-            f"最新指数记录为 {data_date.isoformat()}，尚未取得预期交易日 {expected} 数据"
-        )
-    retrieved_at = datetime.now().astimezone().isoformat()
-    return {
-        "index_code": index_code,
-        "index_name": INDEX_MAP[index_code][0],
-        "days": days,
-        "latest": latest,
-        "history": history,
-        "history_count": len(history),
-        "units": {
-            "price": "index_point",
-            "volume": "source_reported",
-            "amount": "CNY",
-            "pct_chg": "%",
-        },
-        "source": "AKShare/新浪指数日线+实时快照"
-        if not fallback_used
-        else "本地历史缓存",
-        "source_chain": [
-            "AKShare stock_zh_index_daily",
-            "AKShare stock_zh_index_spot_sina",
-        ]
-        if not fallback_used
-        else ["本地指数日线缓存"],
-        "success": success,
-        "partial": success and bool(errors or warnings),
-        "data_time": data_date.isoformat() if data_date else None,
-        "retrieved_at": retrieved_at,
-        "is_stale": expected is not None and data_date.isoformat() < expected
-        if data_date
-        else None,
-        "freshness_unknown": data_date is None,
-        "fallback_used": fallback_used,
-        "fallback_recommended": not success,
-        "errors": errors[:10],
-        "warnings": warnings[:10],
-        "_cached": bool(daily_cached and spot_cached) if not fallback_used else True,
-        "_fetched_at": retrieved_at,
     }
 
 

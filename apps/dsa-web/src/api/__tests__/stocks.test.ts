@@ -40,14 +40,14 @@ describe('stocksApi.listAll', () => {
       1,
       '/api/v1/stocks',
       expect.objectContaining({
-        params: { search: '平安', market: 'sh', page: 1, page_size: 500, count: true },
+        params: { search: '平安', market: 'sh', page: 1, page_size: 500 },
       }),
     );
     expect(mockGet).toHaveBeenNthCalledWith(
       2,
       '/api/v1/stocks',
       expect.objectContaining({
-        params: { search: '平安', market: 'sh', page: 2, page_size: 500, count: true },
+        params: { search: '平安', market: 'sh', page: 2, page_size: 500 },
       }),
     );
   });

@@ -44,6 +44,7 @@ function checkSourceLineBudgets() {
   const files = selected ?? walk(srcRoot, (path) => (
     /\.(ts|tsx)$/.test(path)
     && !path.includes('/__tests__/')
+    && !/\.(test|spec)\.(ts|tsx)$/.test(path)
     && !path.endsWith('.d.ts')
   ));
 

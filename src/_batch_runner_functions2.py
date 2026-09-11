@@ -168,7 +168,6 @@ def _save_batch_run_start(
             results_json="[]",
             stock_codes_json=json.dumps(stock_codes, ensure_ascii=False),
             status="running",
-            analysis_mode="template",
         )
         with db.get_session() as session:
             session.add(record)

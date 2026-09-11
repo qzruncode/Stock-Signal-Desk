@@ -21,9 +21,3 @@ def get_financial_section(
             "local_identity": local_identity,
         },
     )
-
-
-def fetch_core_indicators(symbol, periods):
-    return read_source(
-        "financials.fetch_core_indicators", {"symbol": symbol, "periods": periods}
-    )["data"]

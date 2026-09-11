@@ -7,7 +7,6 @@ import pandas as pd
 import requests
 from market_data_service.providers.common import cached_call
 from market_data_service.providers._macro_common import (
-    get_db,
     latest_date,
     number,
     ordered,
@@ -98,45 +97,6 @@ def _series_from_frame(
     return ordered(rows, "date")[-limit:]
 
 
-def _same_date_spread(frame: Any, country: str) -> tuple[float | None, str | None]:
-    if frame is None or frame.empty:
-        return (None, None)
-    col10, col2 = (_COLUMNS[country]["10y"], _COLUMNS[country]["2y"])
-    if any((column not in frame.columns for column in ("日期", col10, col2))):
-        return (None, None)
-    rows = []
-    for _, row in frame.iterrows():
-        y10, y2 = (number(row.get(col10)), number(row.get(col2)))
-        if y10 is not None and y2 is not None:
-            rows.append((str(row.get("日期") or "")[:10], y10 - y2))
-    if not rows:
-        return (None, None)
-    rows.sort(key=lambda item: item[0])
-    return (round(rows[-1][1], 4), rows[-1][0])
-
-
-def _cached_spread(country: str) -> tuple[float | None, str | None]:
-    db = get_db()
-    tens = {
-        row["date"]: row.get("value")
-        for row in db.get_bond_yield_daily(country, "10y", limit=60) or []
-    }
-    twos = {
-        row["date"]: row.get("value")
-        for row in db.get_bond_yield_daily(country, "2y", limit=60) or []
-    }
-    dates = sorted(set(tens) & set(twos))
-    if not dates:
-        return (None, None)
-    date_key = dates[-1]
-    y10, y2 = (number(tens[date_key]), number(twos[date_key]))
-    return (
-        (round(y10 - y2, 4), date_key)
-        if y10 is not None and y2 is not None
-        else (None, None)
-    )
-
-
 def read_bond_yield_eastmoney(
     country: str = "cn", term: str = "10y", days: int = 30, *, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -191,84 +151,4 @@ def read_bond_yield_eastmoney(
         "fallback_used": False,
         "_cached": cached,
         "_fetched_at": now.isoformat(),
-    }
-
-
-def get_bond_yield(
-    country: str = "cn", term: str = "10y", days: int = 30
-) -> dict[str, Any]:
-    country = str(country or "").strip().lower()
-    term = str(term or "").strip().lower()
-    days = int(days)
-    if country not in COUNTRIES:
-        raise ValueError(f"不支持的国家: {country}")
-    if term not in TERMS:
-        raise ValueError(f"不支持的期限: {term}")
-    if not 5 <= days <= 250:
-        raise ValueError("days 必须在 5 到 250 之间")
-    errors: list[str] = []
-    warnings: list[str] = []
-    frame = None
-    cached = False
-    try:
-        frame, cached = cached_call(
-            "bond-zh-us-rate", _fetch_frame, ttl_seconds=6 * 3600, attempts=1
-        )
-    except Exception as exc:
-        errors.append(f"中美国债收益率: {exc}")
-    history = _series_from_frame(frame, country, term, days)
-    spread, spread_date = _same_date_spread(frame, country)
-    fallback_used = False
-    if history:
-        try:
-            db = get_db()
-            for curve_term in TERMS:
-                curve = _series_from_frame(frame, country, curve_term, max(days, 60))
-                if curve:
-                    db.save_bond_yield_daily(country, curve_term, curve)
-        except Exception as exc:
-            warnings.append(f"债券本地缓存写入失败: {exc}")
-    else:
-        fallback_used = True
-        try:
-            history = ordered(
-                get_db().get_bond_yield_daily(country, term, limit=days) or [], "date"
-            )[-days:]
-            spread, spread_date = _cached_spread(country)
-        except Exception as exc:
-            errors.append(f"债券本地缓存: {exc}")
-            history = []
-    data_date = latest_date(history, "date")
-    success = bool(history)
-    stale = data_date < datetime.now().date() - timedelta(days=7) if data_date else None
-    latest = history[-1] if history else {}
-    retrieved_at = datetime.now().astimezone().isoformat()
-    return {
-        "country": country,
-        "country_name": COUNTRIES[country],
-        "term": term,
-        "term_label": TERMS[term],
-        "latest": latest,
-        "latest_yield": latest.get("value"),
-        "history": history,
-        "history_count": len(history),
-        "spread_10y_minus_2y": spread,
-        "spread": spread,
-        "spread_date": spread_date,
-        "units": {"yield": "%", "spread": "percentage_point"},
-        "source": "AKShare/东方财富中美国债收益率"
-        if not fallback_used
-        else "本地债券历史缓存",
-        "success": success,
-        "partial": success and bool(errors or warnings),
-        "data_time": data_date.isoformat() if data_date else None,
-        "retrieved_at": retrieved_at,
-        "is_stale": stale,
-        "freshness_unknown": data_date is None,
-        "fallback_used": fallback_used,
-        "fallback_recommended": not success or stale is True,
-        "errors": errors[:10],
-        "warnings": warnings[:10],
-        "_cached": cached if not fallback_used else True,
-        "_fetched_at": retrieved_at,
     }

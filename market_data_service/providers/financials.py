@@ -1,4 +1,4 @@
-"""``get_financials`` — core financial indicators with explicit period basis."""
+"""Core financial indicators and the internal enrichment source."""
 
 from __future__ import annotations
 from contextvars import copy_context
@@ -161,12 +161,7 @@ def get_financials(
 def read_core_financial_indicators_ths(
     symbol: str, periods: int = 6, *, use_cache: bool = True
 ) -> dict[str, Any]:
-    """Read the reported THS indicator table without merging other statements.
-
-    ``get_financials`` deliberately remains available to old HTTP services as
-    their convenience merger.  It is not model-callable: a planning model must
-    choose this source or one of the three statement reads explicitly.
-    """
+    """Read the reported THS indicator table without merging other statements."""
     code = bare_local_symbol(symbol)
     if not re.fullmatch("\\d{6}", code):
         raise ValueError("symbol 必须能解析为 6 位股票代码")

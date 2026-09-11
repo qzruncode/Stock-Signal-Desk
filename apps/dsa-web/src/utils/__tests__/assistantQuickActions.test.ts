@@ -46,7 +46,6 @@ describe('assistant intent examples', () => {
       'run_batch_analysis',
       'filter_watchlist_by_theme',
       'evaluate_multi_stock_buy_criteria',
-      'get_market_regime',
     ]) {
       expect(serialized).not.toContain(removed);
     }

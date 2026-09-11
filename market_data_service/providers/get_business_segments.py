@@ -1,10 +1,4 @@
-"""Reported business-composition rows from the Eastmoney disclosure source.
-
-``get_business_segments`` remains a compatibility helper for older HTTP
-consumers which expect a precomputed summary.  The Agent registry exposes
-``read_business_segments_eastmoney`` instead: it returns normalized disclosure
-rows only, leaving concentration, ranking and interpretation to the model.
-"""
+"""Reported business-composition rows from the Eastmoney disclosure source."""
 
 from __future__ import annotations
 import math
@@ -108,42 +102,8 @@ def _expected_min_report_date(today: date) -> date:
     return date(today.year, 6, 30)
 
 
-def _summary(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for item in items:
-        groups.setdefault((item["report_date"], item["category"]), []).append(item)
-    summaries = []
-    for (report_date, category), rows in sorted(groups.items(), reverse=True):
-        ranked = sorted(
-            rows, key=lambda row: row.get("revenue") or float("-inf"), reverse=True
-        )
-        positive_profit = sorted(
-            rows, key=lambda row: row.get("gross_profit") or float("-inf"), reverse=True
-        )
-        shares = [row.get("revenue_share_pct") for row in ranked]
-        summaries.append(
-            {
-                "report_date": report_date,
-                "flow_basis": _flow_basis(report_date),
-                "category": category,
-                "segment_count": len(rows),
-                "largest_revenue_segment": ranked[0]["segment_name"]
-                if ranked
-                else None,
-                "largest_revenue_share_pct": shares[0] if shares else None,
-                "top3_revenue_share_pct": round(
-                    sum((value for value in shares[:3] if value is not None)), 6
-                ),
-                "largest_gross_profit_segment": positive_profit[0]["segment_name"]
-                if positive_profit
-                else None,
-            }
-        )
-    return summaries
-
-
 def _empty(
-    code: str, category: str, message: str, *, fetched_at: str, include_summary: bool
+    code: str, category: str, message: str, *, fetched_at: str
 ) -> dict[str, Any]:
     payload = {
         "symbol": code,
@@ -167,8 +127,6 @@ def _empty(
         "_cached": False,
         "_fetched_at": fetched_at,
     }
-    if include_summary:
-        payload["summaries"] = []
     return payload
 
 
@@ -177,7 +135,6 @@ def _read_business_segments(
     category: str = "all",
     periods: int = 2,
     *,
-    include_summary: bool,
     local_identity: bool = False,
 ) -> dict[str, Any]:
     code = bare_local_symbol(symbol) if local_identity else bare_symbol(symbol)
@@ -201,7 +158,6 @@ def _read_business_segments(
             category,
             f"主营构成数据获取失败: {exc}",
             fetched_at=now.isoformat(),
-            include_summary=include_summary,
         )
     normalized = [
         item
@@ -245,21 +201,7 @@ def _read_business_segments(
         "_cached": cached,
         "_fetched_at": now.isoformat(),
     }
-    if include_summary:
-        payload["summaries"] = _summary(selected)
     return payload
-
-
-def get_business_segments(
-    symbol: str, category: str = "all", periods: int = 2
-) -> dict[str, Any]:
-    """Legacy convenience read with local concentration summaries.
-
-    This remains intentionally outside the model tool catalog.  Existing HTTP
-    callers can retain their contract while the Agent receives the raw
-    normalized disclosure rows through ``read_business_segments_eastmoney``.
-    """
-    return _read_business_segments(symbol, category, periods, include_summary=True)
 
 
 def read_business_segments_eastmoney(
@@ -267,5 +209,5 @@ def read_business_segments_eastmoney(
 ) -> dict[str, Any]:
     """Read one source's normalized business-segment disclosure rows only."""
     return _read_business_segments(
-        symbol, category, periods, include_summary=False, local_identity=True
+        symbol, category, periods, local_identity=True
     )

@@ -18,7 +18,6 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Text,
-    LargeBinary,
 )
 from sqlalchemy.orm import declarative_base
 

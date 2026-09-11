@@ -2,25 +2,14 @@
 
 from __future__ import annotations
 from typing import Any
-from functools import partial
 from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
-
-
-def fetch_indicator_records(indicator: str) -> list[dict[str, Any]]:
-    return read_source("get_macro_indicator.fetch_indicator_records", locals())["data"]
 
 
 def read_macro_indicator_akshare(
     indicator: str, periods: int = 12, *, use_cache: bool = True
 ) -> dict[str, Any]:
     return read_source("get_macro_indicator.read_macro_indicator_akshare", locals())
-
-
-def get_macro_indicator(
-    indicator: str, periods: int = 12, *, months: int | None = None
-) -> dict[str, Any]:
-    return read_source("get_macro_indicator.get_macro_indicator", locals())
 
 
 INDICATORS: dict[str, dict[str, Any]] = {
@@ -65,12 +54,7 @@ TOOLS = (
         category="macro",
     ),
 )
-INDICATOR_FETCHERS = {
-    indicator: partial(fetch_indicator_records, indicator) for indicator in INDICATORS
-}
 __all__ = [
-    "INDICATOR_FETCHERS",
     "TOOLS",
-    "get_macro_indicator",
     "read_macro_indicator_akshare",
 ]

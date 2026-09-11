@@ -1,16 +1,13 @@
-"""``get_peer_comparison`` — normalized industry-relative company evidence."""
+"""Normalized industry-relative company evidence by one dimension."""
 
 from __future__ import annotations
-from contextvars import copy_context
 import math
 import re
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Any, Callable
 import httpx
 from market_data_service.providers.common import (
     bare_local_symbol,
-    bare_symbol,
     cached_call,
     exchange_prefix,
 )
@@ -296,86 +293,6 @@ def _dimension_result(
         if dimension == "scale"
         else "target + industry median/average + provider top-ranked peer sample",
         "success": target is not None,
-    }
-
-
-def get_peer_comparison(symbol: str, dimension: str = "all") -> dict[str, Any]:
-    """Legacy multi-dimension convenience view for non-Agent callers only."""
-    code = bare_symbol(symbol)
-    if not re.fullmatch("\\d{6}", code):
-        raise ValueError("symbol 必须能解析为 6 位股票代码")
-    if dimension not in {"all", *_REPORTS}:
-        raise ValueError(
-            "dimension 必须是 all、growth、valuation、profitability 或 scale"
-        )
-    requested = list(_REPORTS) if dimension == "all" else [dimension]
-    errors: list[str] = []
-    cache_detail: dict[str, bool] = {}
-    raw: dict[str, list[dict[str, Any]]] = {}
-    with ThreadPoolExecutor(max_workers=len(requested)) as pool:
-        futures = {
-            key: pool.submit(
-                copy_context().run,
-                cached_call,
-                f"peer:v2:{code}:{key}",
-                lambda key=key: _request_rows(code, key),
-                ttl_seconds=2 * 3600,
-                attempts=2,
-            )
-            for key in requested
-        }
-        for key, future in futures.items():
-            try:
-                rows, cached = future.result()
-                raw[key] = rows
-                cache_detail[key] = cached
-            except Exception as exc:
-                raw[key] = []
-                cache_detail[key] = False
-                errors.append(f"{_LABELS[key]}: {exc}")
-    dimensions = {
-        key: _dimension_result(code, key, raw[key])
-        if raw[key]
-        else {
-            "label": _LABELS[key],
-            "success": False,
-            "target": None,
-            "top_peers": [],
-            "sample_size": 0,
-        }
-        for key in requested
-    }
-    success = any((item.get("success") for item in dimensions.values()))
-    report_dates = [
-        item.get("report_date")
-        for item in dimensions.values()
-        if item.get("report_date")
-    ]
-    now = datetime.now().astimezone()
-    data_time = max(report_dates) if report_dates else None
-    expected_annual = (
-        date(now.year - 1, 12, 31) if now.month >= 5 else date(now.year - 2, 12, 31)
-    )
-    return {
-        "symbol": code,
-        "dimension": dimension,
-        "dimensions": dimensions,
-        "amount_unit": "元",
-        "ratio_unit": "% 或 倍，详见字段名后缀与 ranking.metric",
-        "source": "东方财富同行比较公开接口",
-        "source_url": f"https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html?type=web&code={exchange_prefix(code, upper=True)}#/thbj",
-        "success": success,
-        "partial": success and bool(errors),
-        "errors": errors,
-        "data_time": data_time,
-        "freshness_unknown": success and data_time is None,
-        "is_stale": datetime.fromisoformat(data_time).date() < expected_annual
-        if data_time
-        else None,
-        "fallback_used": False,
-        "cache_detail": cache_detail,
-        "_cached": bool(cache_detail) and all(cache_detail.values()),
-        "_fetched_at": now.isoformat(),
     }
 
 

@@ -6,12 +6,6 @@ from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
 
 
-def get_shareholder_structure(
-    symbol: str, *, use_cache: bool = True, include_structured: bool = False
-) -> dict[str, Any]:
-    return read_source("get_shareholder_structure.get_shareholder_structure", locals())
-
-
 def read_shareholder_f10_profile_eastmoney(
     symbol: str, *, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -76,7 +70,6 @@ TOOLS = (
 )
 __all__ = [
     "TOOLS",
-    "get_shareholder_structure",
     "read_institutional_holdings_eastmoney",
     "read_major_shareholder_changes_ths",
     "read_shareholder_f10_profile_eastmoney",

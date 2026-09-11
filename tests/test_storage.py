@@ -3,20 +3,13 @@ import unittest
 import sys
 import os
 import tempfile
-import threading
-import sqlite3
-from datetime import date
 from unittest.mock import patch
-
-import pandas as pd
-from sqlalchemy import and_, select
-from sqlalchemy.sql import func
 
 # Ensure src module can be imported
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import Config
-from src.storage import DatabaseManager, StockDaily
+from src.storage import DatabaseManager
 
 
 class TestStorage(unittest.TestCase):
@@ -86,29 +79,6 @@ class TestStorage(unittest.TestCase):
 
         DatabaseManager.reset_instance()
 
-    def test_tool_cache_persists_typed_akshare_values_in_database(self):
-        from src.tools._akshare import cached_call
-
-        DatabaseManager.reset_instance()
-        db = DatabaseManager(db_url="sqlite:///:memory:")
-        calls = []
-
-        def fetch():
-            calls.append(1)
-            return pd.DataFrame([{"code": "600519", "value": 1.0}])
-
-        try:
-            with patch.object(DatabaseManager, "get_instance", return_value=db):
-                first, first_cached = cached_call("test:persistent-frame", fetch, ttl_seconds=60)
-                second, second_cached = cached_call("test:persistent-frame", fetch, ttl_seconds=60)
-
-            self.assertFalse(first_cached)
-            self.assertTrue(second_cached)
-            self.assertEqual(len(calls), 1)
-            pd.testing.assert_frame_equal(first, second)
-        finally:
-            DatabaseManager.reset_instance()
-
     def test_get_chat_sessions_can_include_legacy_exact_session_id(self):
         DatabaseManager.reset_instance()
         db = DatabaseManager(db_url="sqlite:///:memory:")
@@ -173,70 +143,6 @@ class TestStorage(unittest.TestCase):
             self.assertTrue(any(call.args == ("BEGIN IMMEDIATE",) for call in mock_exec.call_args_list))
         finally:
             DatabaseManager.reset_instance()
-
-    def test_save_daily_data_sqlite_concurrent_same_code_date_counts_only_new_rows(self):
-        DatabaseManager.reset_instance()
-        temp_dir = tempfile.TemporaryDirectory()
-        db_path = os.path.join(temp_dir.name, "sqlite_daily_concurrency.db")
-        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
-
-        results = []
-        results_lock = threading.Lock()
-        start_barrier = threading.Barrier(2)
-
-        def worker() -> None:
-            start_barrier.wait()
-            count = db.save_daily_data(
-                pd.DataFrame(
-                    [
-                        {
-                            "date": date(2026, 4, 1),
-                            "open": 10,
-                            "high": 11,
-                            "low": 9,
-                            "close": 10.5,
-                            "volume": 100,
-                            "amount": 1050,
-                            "pct_chg": 1.2,
-                            "ma5": 10.1,
-                            "ma10": 10.2,
-                            "ma20": 10.3,
-                            "volume_ratio": 1.0,
-                        }
-                    ]
-                ),
-                code="600519",
-                data_source="test",
-            )
-            with results_lock:
-                results.append(count)
-
-        threads = [threading.Thread(target=worker) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-        try:
-            self.assertCountEqual(results, [1, 0])
-
-            with db.get_session() as session:
-                total = session.execute(
-                    select(func.count())
-                    .select_from(StockDaily)
-                    .where(
-                        and_(
-                            StockDaily.code == "600519",
-                            StockDaily.date == date(2026, 4, 1),
-                        )
-                    )
-                ).scalar()
-
-            self.assertEqual(total, 1)
-        finally:
-            temp_dir.cleanup()
-            DatabaseManager.reset_instance()
-
 
 if __name__ == "__main__":
     unittest.main()

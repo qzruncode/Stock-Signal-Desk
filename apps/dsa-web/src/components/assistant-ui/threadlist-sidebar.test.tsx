@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { ThreadListSidebar } from './threadlist-sidebar';
@@ -79,7 +79,7 @@ describe('ThreadListSidebar', () => {
       </MemoryRouter>,
     );
 
-    screen.getByRole('button', { name: '清除全部会话历史' }).click();
+    fireEvent.click(screen.getByRole('button', { name: '清除全部会话历史' }));
     expect(onClearAll).toHaveBeenCalledOnce();
   });
 
@@ -117,9 +117,9 @@ describe('ThreadListSidebar', () => {
       </MemoryRouter>,
     );
 
-    screen.getByRole('button', { name: '批量管理' }).click();
-    (await screen.findByRole('button', { name: '选择对话：市场主线' })).click();
-    (await screen.findByRole('button', { name: '删除选中（1）' })).click();
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择对话：市场主线' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除选中（1）' }));
 
     await waitFor(() => {
       expect(onBatchDelete).toHaveBeenCalledWith(['conversation-1']);
@@ -151,9 +151,9 @@ describe('ThreadListSidebar', () => {
       </MemoryRouter>,
     );
 
-    screen.getByRole('button', { name: '批量管理' }).click();
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }));
     await screen.findByText('未选择，删除按钮将清除全部');
-    screen.getByRole('button', { name: '清除全部会话历史' }).click();
+    fireEvent.click(screen.getByRole('button', { name: '清除全部会话历史' }));
 
     expect(onClearAll).toHaveBeenCalledOnce();
   });

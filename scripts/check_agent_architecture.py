@@ -49,8 +49,6 @@ BANNED_REGISTERED_TOOLS = frozenset(
         "get_multi_stock_snapshot",
         "get_multi_stock_financials",
         "get_multi_stock_decision_evidence",
-        "prepare_market_mainline_snapshot",
-        "evaluate_market_mainline_gate",
         "evaluate_multi_stock_buy_criteria",
         "analyze_stock_catalysts",
         "search_financial_news",

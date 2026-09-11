@@ -1,21 +1,18 @@
 """``get_consensus_estimates`` — normalized sell-side consensus evidence."""
 
 from __future__ import annotations
-from contextvars import copy_context
 import math
 import re
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any
 import akshare as ak
 from market_data_service.providers.common import (
     bare_local_symbol,
-    bare_symbol,
     cached_call,
     frame_records,
 )
 
-DESCRIPTION = "获取券商一致盈利预测，返回未来年度 EPS 与净利润的覆盖机构数、最低/均值/最高值、近期机构明细，以及收入、利润增速和 ROE 等预测；区分一致预期与单篇研报，并标明净利润金额单位为亿元。"
+DESCRIPTION = "按明确指标读取同花顺一致盈利预测、机构预测明细或财务预测明细；每个读取只返回对应来源记录，不在 provider 内混合其他预测表。"
 _INDICATORS = {"eps": "预测年报每股收益", "net_profit": "预测年报净利润"}
 _DETAIL_INDICATORS = {
     "institutions": "业绩预测详表-机构",
@@ -84,22 +81,6 @@ def _normalize_summary(rows: list[dict[str, Any]], metric: str) -> list[dict[str
             }
         )
     return sorted(items, key=lambda item: item["year"])
-
-
-def _merge_estimates(metrics: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
-    by_year: dict[int, dict[str, Any]] = {}
-    for metric, rows in metrics.items():
-        for row in rows:
-            item = by_year.setdefault(
-                row["year"], {"year": row["year"], "coverage_count": 0}
-            )
-            item[metric] = {
-                key: value
-                for key, value in row.items()
-                if key not in {"year", "coverage_count"}
-            }
-            item["coverage_count"] = max(item["coverage_count"], row["coverage_count"])
-    return [by_year[year] for year in sorted(by_year)]
 
 
 def _normalize_institutions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -183,111 +164,6 @@ def _normalize_financial_metrics(
         if status == "forecast"
     ]
     return (actuals, forecasts)
-
-
-def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
-    """Legacy bundled consensus view for non-Agent callers only."""
-    code = bare_symbol(symbol)
-    if not re.fullmatch("\\d{6}", code):
-        raise ValueError("symbol 必须能解析为 6 位股票代码")
-    if metric not in {"all", "eps", "net_profit"}:
-        raise ValueError("metric 必须是 all、eps 或 net_profit")
-    requested = list(_INDICATORS) if metric == "all" else [metric]
-    now = datetime.now().astimezone()
-    raw: dict[str, list[dict[str, Any]]] = {}
-    cache_detail: dict[str, bool] = {}
-    errors: list[str] = []
-    warnings: list[str] = []
-    completed_summary_queries: set[str] = set()
-    calls = {name: lambda name=name: _forecast(code, name) for name in requested}
-    if metric == "all":
-        calls.update(
-            {name: lambda name=name: _detail(code, name) for name in _DETAIL_INDICATORS}
-        )
-    with ThreadPoolExecutor(max_workers=len(calls)) as pool:
-        futures = {
-            name: pool.submit(copy_context().run, fn) for name, fn in calls.items()
-        }
-        for name, future in futures.items():
-            try:
-                rows, cached = future.result()
-                raw[name] = rows
-                cache_detail[name] = cached
-                if name in requested:
-                    completed_summary_queries.add(name)
-                if name in requested and (not rows):
-                    warnings.append(f"{name} 无机构一致预测覆盖")
-                elif name not in requested and (not rows):
-                    warnings.append(f"{name} 明细不可用")
-            except Exception as exc:
-                raw[name] = []
-                cache_detail[name] = False
-                if name in requested:
-                    errors.append(f"{name}: {exc}")
-                else:
-                    warnings.append(f"{name}: {exc}")
-    metrics = {name: _normalize_summary(raw.get(name, []), name) for name in requested}
-    estimates = _merge_estimates(metrics)
-    institutions = _normalize_institutions(raw.get("institutions", []))
-    actuals, financial_forecasts = _normalize_financial_metrics(
-        raw.get("financial_metrics", [])
-    )
-    report_dates = [
-        item["report_date"] for item in institutions if item.get("report_date")
-    ]
-    latest_report_date = max(report_dates) if report_dates else None
-    source_query_complete = all(
-        (name in completed_summary_queries for name in requested)
-    )
-    coverage_status = (
-        "covered"
-        if estimates
-        else "no_sell_side_coverage"
-        if source_query_complete
-        else "source_unavailable"
-    )
-    success = (
-        bool(estimates or institutions or financial_forecasts) or source_query_complete
-    )
-    freshness_unknown = latest_report_date is None
-    stale = (
-        datetime.fromisoformat(latest_report_date).date()
-        < now.date() - timedelta(days=180)
-        if latest_report_date
-        else None
-    )
-    return {
-        "symbol": code,
-        "metric": metric,
-        "estimates": estimates,
-        "metrics": metrics,
-        "institutions": institutions[:20],
-        "institution_item_count": len(institutions),
-        "latest_institution_report_date": latest_report_date,
-        "actuals": actuals,
-        "financial_forecasts": financial_forecasts,
-        "coverage_available": bool(estimates),
-        "coverage_status": coverage_status,
-        "source_query_complete": source_query_complete,
-        "coverage_count_latest": estimates[0].get("coverage_count") if estimates else 0,
-        "eps_unit": "元/股",
-        "net_profit_unit": "亿元",
-        "amount_unit_note": "同花顺净利润一致预期原始表以亿元展示，不转换为元。",
-        "forecast_warning": "一致预期是机构预测汇总，不是公司业绩承诺；应结合预测发布日期和实际财报验证。",
-        "source": "同花顺盈利预测/AKShare",
-        "source_url": f"https://basic.10jqka.com.cn/new/{code}/worth.html",
-        "success": success,
-        "partial": success and bool(errors),
-        "errors": errors,
-        "warnings": warnings,
-        "data_time": latest_report_date,
-        "freshness_unknown": freshness_unknown,
-        "is_stale": stale,
-        "fallback_used": False,
-        "cache_detail": cache_detail,
-        "_cached": bool(cache_detail) and all(cache_detail.values()),
-        "_fetched_at": now.isoformat(),
-    }
 
 
 def _validated_code(symbol: str) -> str:

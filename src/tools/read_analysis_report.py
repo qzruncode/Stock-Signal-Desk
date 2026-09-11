@@ -1,10 +1,4 @@
-"""Atomic reads over one persisted analysis record.
-
-The legacy ``read_analysis_report`` helper remains for non-Agent callers that
-still need a bundled view.  The model-visible exports deliberately separate
-the structured report, Markdown body, and linked-news collection: each is one
-persisted-resource query rather than an implicit report-reading workflow.
-"""
+"""Atomic reads over one persisted analysis record."""
 
 from __future__ import annotations
 
@@ -61,25 +55,6 @@ def read_analysis_report_linked_news(record_id: str, limit: int = 20) -> dict[st
     )
 
 
-def read_analysis_report(
-    record_id: str,
-    include_markdown: bool = True,
-    include_news: bool = True,
-) -> dict[str, Any]:
-    """Legacy bundled read for non-Agent API compatibility only."""
-    summary = read_analysis_report_summary(record_id)
-    markdown = read_analysis_report_markdown(record_id) if include_markdown else {}
-    linked_news = read_analysis_report_linked_news(record_id) if include_news else {}
-    return envelope(
-        record_id=record_id,
-        report=summary.get("report"),
-        markdown=markdown.get("markdown"),
-        markdown_length=int(markdown.get("markdown_length") or 0),
-        linked_news=list(linked_news.get("linked_news") or []),
-        linked_news_count=int(linked_news.get("linked_news_count") or 0),
-    )
-
-
 TOOLS = (
     ToolSpec(
         name="read_analysis_report_summary",
@@ -119,7 +94,6 @@ TOOLS = (
 
 __all__ = [
     "TOOLS",
-    "read_analysis_report",
     "read_analysis_report_linked_news",
     "read_analysis_report_markdown",
     "read_analysis_report_summary",

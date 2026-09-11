@@ -2,7 +2,8 @@ import { render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import type { ChatConversationDetail } from '../../api/agent';
-import { ChatRuntimeBridge, toRuntimeMessages } from './ChatRuntimeBridge';
+import { ChatRuntimeBridge } from './ChatRuntimeBridge';
+import { toRuntimeMessages } from './ChatRuntimeBridgeUtils';
 
 vi.mock('@assistant-ui/react', () => ({
   useThread: vi.fn(),

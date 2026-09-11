@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared, business-correct market snapshot for market Agent tools.
+"""Source readers for atomic market observations.
 
 The snapshot deliberately keeps each metric tied to a source with the same
 business meaning:
@@ -10,41 +10,23 @@ business meaning:
 * Major indices and Shanghai/Shenzhen turnover: Sina real-time index quotes.
 * Limit-up, limit-down and failed-limit pools: the matching AKShare Eastmoney
   pool APIs for the expected trading day.
-* Consecutive index direction: Shanghai Composite daily history, including a
-  live virtual close while the current trading day is not in daily history.
-
-Industry board counts are never used as stock counts.  Likewise, unsupported
-"60-day high/low" values and undisclosed northbound net-buy values are not
-manufactured from unrelated fields.
+The Agent consumes these readers independently. They do not compose a market
+status, breadth conclusion, or other derived judgement.
 """
 
 from __future__ import annotations
 
-import json
-import logging
 import re
-import threading
-from datetime import date, datetime, time
-from typing import Any, Callable
+from datetime import datetime, time
+from typing import Any
 
 import httpx
-from market_data_service.calendar import (
-    _fallback_trade_day,
-    _fetch_trade_dates,
-    expected_trade_day,
-    is_trading_time,
-)
 
-logger = logging.getLogger(__name__)
-
-_CACHE_PREFIX = "market_snapshot:v1"
 _LEGU_URL = "https://legulegu.com/stockdata/market-activity"
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 )
-_lock = threading.Lock()
-
 _INDEX_CODES = {
     "shanghai_composite": "sh000001",
     "shenzhen_component": "sz399001",
@@ -63,11 +45,6 @@ def _safe_float(value: Any) -> float | None:
     if number != number:  # NaN
         return None
     return number
-
-
-def _safe_int(value: Any) -> int | None:
-    number = _safe_float(value)
-    return int(number) if number is not None else None
 
 
 def _iso_local(value: datetime) -> str:
@@ -235,393 +212,9 @@ def _fetch_index_spot() -> dict[str, Any]:
     }
 
 
-def _fetch_index_daily() -> list[dict[str, Any]]:
-    import akshare as ak
-
-    frame = ak.stock_zh_index_daily(symbol="sh000001")
-    if frame is None or frame.empty:
-        raise RuntimeError("上证指数日线为空")
-    records: list[dict[str, Any]] = []
-    for _, row in frame.tail(40).iterrows():
-        records.append(
-            {
-                "date": str(row.get("date") or "")[:10],
-                "open": _safe_float(row.get("open")),
-                "high": _safe_float(row.get("high")),
-                "low": _safe_float(row.get("low")),
-                "close": _safe_float(row.get("close")),
-            }
-        )
-    return records
-
-
 def _fetch_pool(function_name: str, trade_day: str) -> dict[str, Any]:
     import akshare as ak
 
     function = getattr(ak, function_name)
     frame = function(date=trade_day)
     return {"count": 0 if frame is None else len(frame), "source": function_name}
-
-
-def _consecutive_direction(
-    daily: list[dict[str, Any]],
-    current_index: dict[str, Any] | None,
-    trade_day: date,
-) -> tuple[int | None, int | None]:
-    closes: list[tuple[date, float]] = []
-    for row in daily:
-        value = _safe_float(row.get("close"))
-        try:
-            row_date = date.fromisoformat(str(row.get("date"))[:10])
-        except ValueError:
-            continue
-        if value is not None:
-            closes.append((row_date, value))
-    closes.sort(key=lambda item: item[0])
-    current_price = _safe_float((current_index or {}).get("price"))
-    if current_price is not None and (not closes or closes[-1][0] < trade_day):
-        closes.append((trade_day, current_price))
-    if len(closes) < 2:
-        return None, None
-
-    last_change = closes[-1][1] - closes[-2][1]
-    if last_change == 0:
-        return 0, 0
-    direction = 1 if last_change > 0 else -1
-    count = 0
-    for index in range(len(closes) - 1, 0, -1):
-        change = closes[index][1] - closes[index - 1][1]
-        if change == 0 or (1 if change > 0 else -1) != direction:
-            break
-        count += 1
-    return (count, 0) if direction > 0 else (0, count)
-
-
-def _call_named(name: str, function: Callable[[], Any]) -> tuple[str, Any, str | None]:
-    try:
-        return name, function(), None
-    except Exception as exc:
-        return name, None, f"{name}: {type(exc).__name__}: {exc}"
-
-
-def fetch_market_snapshot(now: datetime | None = None) -> dict[str, Any]:
-    now = now or datetime.now().astimezone()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=datetime.now().astimezone().tzinfo)
-    errors: list[str] = []
-    warnings: list[str] = []
-    fallback_used = False
-
-    try:
-        trade_dates = _fetch_trade_dates()
-        trade_day = expected_trade_day(now, trade_dates)
-    except Exception as exc:
-        trade_day = _fallback_trade_day(now)
-        errors.append(f"交易日历: {type(exc).__name__}: {exc}")
-        fallback_used = True
-    trade_day_text = trade_day.strftime("%Y%m%d")
-
-    jobs: dict[str, Callable[[], Any]] = {
-        "breadth": _fetch_legu_activity,
-        "index_spot": _fetch_index_spot,
-        "index_daily": _fetch_index_daily,
-        "limit_up_pool": lambda: _fetch_pool("stock_zt_pool_em", trade_day_text),
-        "limit_down_pool": lambda: _fetch_pool("stock_zt_pool_dtgc_em", trade_day_text),
-        "broken_pool": lambda: _fetch_pool("stock_zt_pool_zbgc_em", trade_day_text),
-    }
-    fetched: dict[str, Any] = {}
-    # Several AKShare endpoints initialize libmini_racer/V8 process-global
-    # state.  Concurrent first-use can abort the interpreter instead of raising
-    # a Python exception, so initialize/fetch these sources sequentially.
-    for job_name, function in jobs.items():
-        name, value, error = _call_named(job_name, function)
-        if error:
-            errors.append(error)
-        else:
-            fetched[name] = value
-
-    breadth = fetched.get("breadth")
-    if breadth is None:
-        fallback_used = True
-        try:
-            breadth = _fetch_sina_a_breadth()
-            warnings.append("乐咕乐股市场活跃度不可用，已使用较慢的新浪全A实时行情")
-        except Exception as exc:
-            errors.append(f"breadth_fallback: {type(exc).__name__}: {exc}")
-            breadth = {}
-
-    index_spot = fetched.get("index_spot") or {}
-    indices = index_spot.get("indices") or {}
-    daily = fetched.get("index_daily") or []
-    current_sh = indices.get("shanghai_composite")
-    consecutive_up_days, consecutive_down_days = _consecutive_direction(
-        daily, current_sh, trade_day
-    )
-
-    limit_up_pool = fetched.get("limit_up_pool")
-    limit_down_pool = fetched.get("limit_down_pool")
-    broken_pool = fetched.get("broken_pool")
-    limit_up_count = (limit_up_pool or {}).get("count")
-    limit_down_count = (limit_down_pool or {}).get("count")
-    broken_board_count = (broken_pool or {}).get("count")
-    if limit_up_count is None:
-        limit_up_count = breadth.get("legu_limit_up_count")
-        fallback_used = True
-    if limit_down_count is None:
-        limit_down_count = breadth.get("legu_limit_down_count")
-        fallback_used = True
-
-    broken_board_rate = None
-    if limit_up_count is not None and broken_board_count is not None:
-        attempted = limit_up_count + broken_board_count
-        broken_board_rate = (
-            round(broken_board_count / attempted * 100, 2) if attempted else 0.0
-        )
-
-    up_count = breadth.get("up_count")
-    down_count = breadth.get("down_count")
-    flat_count = breadth.get("flat_count")
-    active_count = sum(
-        value for value in (up_count, down_count, flat_count) if value is not None
-    )
-    advance_decline_ratio = None
-    advance_rate_pct = None
-    decline_rate_pct = None
-    if up_count is not None and down_count is not None:
-        advance_decline_ratio = round(up_count / down_count, 3) if down_count else None
-    if active_count:
-        advance_rate_pct = round((up_count or 0) / active_count * 100, 2)
-        decline_rate_pct = round((down_count or 0) / active_count * 100, 2)
-
-    data_time = breadth.get("data_time")
-    parsed_data_time = _parse_datetime(data_time)
-    is_stale: bool | None = (
-        parsed_data_time.date() < trade_day if parsed_data_time is not None else None
-    )
-    if (
-        parsed_data_time is not None
-        and parsed_data_time.date() == trade_day
-        and is_trading_time(now)
-        and (now - parsed_data_time).total_seconds() > 15 * 60
-    ):
-        is_stale = True
-    if parsed_data_time is not None and parsed_data_time.date() > trade_day:
-        is_stale = False
-
-    sources = [
-        value
-        for value in (
-            breadth.get("source"),
-            index_spot.get("source"),
-            "东方财富涨跌停池" if limit_up_pool or limit_down_pool else None,
-            "东方财富炸板池" if broken_pool else None,
-            "新浪上证指数日线" if daily else None,
-        )
-        if value
-    ]
-    fetched_at = _iso_local(now)
-    return {
-        "market_date": trade_day.isoformat(),
-        "is_trading_time": is_trading_time(now) and trade_day == now.date(),
-        "up_count": up_count,
-        "down_count": down_count,
-        "flat_count": flat_count,
-        "halt_count": breadth.get("halt_count"),
-        "advance_decline_ratio": advance_decline_ratio,
-        "advance_rate_pct": advance_rate_pct,
-        "decline_rate_pct": decline_rate_pct,
-        "market_activity_pct": breadth.get("market_activity_pct"),
-        "real_limit_up_count": breadth.get("real_limit_up_count"),
-        "real_limit_down_count": breadth.get("real_limit_down_count"),
-        "limit_up_count": limit_up_count,
-        "limit_down_count": limit_down_count,
-        "broken_board_count": broken_board_count,
-        "broken_board_rate": broken_board_rate,
-        "consecutive_up_days": consecutive_up_days,
-        "consecutive_down_days": consecutive_down_days,
-        "total_amount": index_spot.get("total_amount"),
-        "total_amount_unit": index_spot.get("total_amount_unit") or "亿元",
-        "turnover_scope": index_spot.get("turnover_scope") or "沪深市场",
-        "indices": indices,
-        "sh_index": current_sh,
-        "breadth_scope": breadth.get("breadth_scope"),
-        "breadth_source": breadth.get("source"),
-        # Northbound buy/sell/net-buy turnover is no longer publicly available
-        # in real time.  Keep an explicit compatibility field, never a false 0.
-        "north_flow": None,
-        "north_flow_available": False,
-        "north_flow_note": "北向实时买入、卖出及净买入金额已停止披露，不能将接口中的 0 解释为净流入为零",
-        "source": " + ".join(dict.fromkeys(sources)) or "未知",
-        "errors": errors,
-        "warnings": warnings,
-        "data_time": data_time,
-        "is_stale": is_stale,
-        "freshness_unknown": parsed_data_time is None,
-        "fallback_used": fallback_used,
-        "_fetched_at": fetched_at,
-        "_cached": False,
-    }
-
-
-def _cache_key(now: datetime) -> str:
-    return f"{_CACHE_PREFIX}:{now.strftime('%Y%m%d')}"
-
-
-def _cache_get(now: datetime) -> dict[str, Any] | None:
-    try:
-        from market_data_service.storage import DatabaseManager
-
-        raw = DatabaseManager.get_instance().get_kline_snapshot(_cache_key(now))
-        if not raw:
-            return None
-        result = json.loads(raw) if isinstance(raw, str) else raw
-        if isinstance(result, dict):
-            fetched_at = _parse_datetime(result.get("_fetched_at"))
-            if fetched_at is not None:
-                result["_fetched_at"] = _iso_local(fetched_at)
-        return result
-    except Exception:
-        logger.warning("读取市场快照缓存失败", exc_info=True)
-        return None
-
-
-def _cache_put(now: datetime, data: dict[str, Any]) -> None:
-    try:
-        from market_data_service.storage import DatabaseManager
-
-        DatabaseManager.get_instance().save_kline_snapshot(
-            _cache_key(now), json.dumps(data, ensure_ascii=False)
-        )
-    except Exception:
-        logger.warning("写入市场快照缓存失败", exc_info=True)
-
-
-def _cache_ttl(now: datetime) -> int:
-    if is_trading_time(now):
-        return 60
-    if now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30):
-        return 180
-    if now.weekday() < 5 and time(15, 30) < now.time() <= time(18, 0):
-        return 900
-    return 6 * 60 * 60
-
-
-def _cache_is_fresh(cached: dict[str, Any], now: datetime) -> bool:
-    fetched_at = _parse_datetime(cached.get("_fetched_at"))
-    if fetched_at is None or cached.get("is_stale") is not False:
-        return False
-    current = now if now.tzinfo is not None else now.replace(tzinfo=fetched_at.tzinfo)
-    return (current - fetched_at).total_seconds() <= _cache_ttl(now)
-
-
-def get_market_snapshot(
-    *, force: bool = False, now: datetime | None = None
-) -> dict[str, Any]:
-    now = now or datetime.now().astimezone()
-    stale_cached = None if force else _cache_get(now)
-    if stale_cached and _cache_is_fresh(stale_cached, now):
-        result = dict(stale_cached)
-        result["_cached"] = True
-        return result
-
-    with _lock:
-        if not force:
-            current_cached = _cache_get(now)
-            if current_cached and _cache_is_fresh(current_cached, now):
-                result = dict(current_cached)
-                result["_cached"] = True
-                return result
-        fresh = fetch_market_snapshot(now)
-        usable = fresh.get("up_count") is not None or bool(fresh.get("indices"))
-        if usable:
-            _cache_put(now, fresh)
-            return fresh
-        if stale_cached:
-            result = dict(stale_cached)
-            result["_cached"] = True
-            result["is_stale"] = True
-            result["fallback_used"] = True
-            result.setdefault("warnings", []).append(
-                "实时市场快照获取失败，返回最近一次缓存"
-            )
-            result.setdefault("errors", []).extend(fresh.get("errors") or [])
-            return result
-        return fresh
-
-
-def market_status_view(snapshot: dict[str, Any]) -> dict[str, Any]:
-    fields = (
-        "market_date",
-        "is_trading_time",
-        "up_count",
-        "down_count",
-        "flat_count",
-        "halt_count",
-        "limit_up_count",
-        "limit_down_count",
-        "total_amount",
-        "total_amount_unit",
-        "turnover_scope",
-        "indices",
-        "sh_index",
-        "breadth_scope",
-        "breadth_source",
-        "north_flow",
-        "north_flow_available",
-        "north_flow_note",
-        "source",
-        "errors",
-        "warnings",
-        "data_time",
-        "is_stale",
-        "fallback_used",
-        "_fetched_at",
-        "_cached",
-    )
-    result = {key: snapshot.get(key) for key in fields}
-    result["success"] = snapshot.get("up_count") is not None or bool(
-        snapshot.get("indices")
-    )
-    result["partial"] = result["success"] and bool(snapshot.get("errors"))
-    return result
-
-
-def market_breadth_view(snapshot: dict[str, Any]) -> dict[str, Any]:
-    fields = (
-        "market_date",
-        "up_count",
-        "down_count",
-        "flat_count",
-        "halt_count",
-        "advance_decline_ratio",
-        "advance_rate_pct",
-        "decline_rate_pct",
-        "market_activity_pct",
-        "limit_up_count",
-        "limit_down_count",
-        "real_limit_up_count",
-        "real_limit_down_count",
-        "broken_board_count",
-        "broken_board_rate",
-        "consecutive_up_days",
-        "consecutive_down_days",
-        "total_amount",
-        "total_amount_unit",
-        "turnover_scope",
-        "breadth_scope",
-        "breadth_source",
-        "source",
-        "errors",
-        "warnings",
-        "data_time",
-        "is_stale",
-        "fallback_used",
-        "_fetched_at",
-        "_cached",
-    )
-    result = {key: snapshot.get(key) for key in fields}
-    result["success"] = (
-        snapshot.get("up_count") is not None and snapshot.get("down_count") is not None
-    )
-    result["partial"] = result["success"] and bool(snapshot.get("errors"))
-    return result

@@ -7,5 +7,11 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/setupTests.ts',
+    // Keep the full jsdom suite from starving settings views of CPU while
+    // preserving parallelism between two independent workers.
+    maxWorkers: 2,
+    // A few settings flows perform several mocked async UI transitions and
+    // need more than ten seconds when the full jsdom suite shares two workers.
+    testTimeout: 20_000,
   },
 });

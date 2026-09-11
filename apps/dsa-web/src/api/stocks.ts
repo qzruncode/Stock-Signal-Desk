@@ -29,7 +29,6 @@ export interface StocksListParams {
   page_size?: number;
   search?: string;
   market?: string;
-  count?: boolean;
   signal?: AbortSignal;
 }
 
@@ -43,13 +42,12 @@ export const stocksApi = {
     return response.data;
   },
 
-  async listAll(params?: Omit<StocksListParams, 'page' | 'page_size' | 'count'>): Promise<StockMetaItem[]> {
+  async listAll(params?: Omit<StocksListParams, 'page' | 'page_size'>): Promise<StockMetaItem[]> {
     const pageSize = 500;
     const firstPage = await stocksApi.list({
       ...params,
       page: 1,
       page_size: pageSize,
-      count: true,
     });
     const items = [...firstPage.items];
 
@@ -58,7 +56,6 @@ export const stocksApi = {
         ...params,
         page,
         page_size: pageSize,
-        count: true,
       });
       items.push(...nextPage.items);
     }

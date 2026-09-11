@@ -117,9 +117,10 @@ export const CheckpointHistoryDrawer: FC<CheckpointHistoryDrawerProps> = ({
       if (requestSequence.current !== requestId) return;
       setError(toApiErrorMessage(requestError, 'Checkpoint 历史加载失败，请稍后重试'));
     } finally {
-      if (requestSequence.current !== requestId) return;
-      setIsLoading(false);
-      setIsLoadingMore(false);
+      if (requestSequence.current === requestId) {
+        setIsLoading(false);
+        setIsLoadingMore(false);
+      }
     }
   }, [conversationId]);
 

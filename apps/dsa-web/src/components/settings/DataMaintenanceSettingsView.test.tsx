@@ -44,7 +44,7 @@ function push(items: DatasetSummary[], id = '1001-0', jobs: SyncJob[] = []) {
   Stream.instances.at(-1)!.emit('change', { datasets: items, jobs, coverage: {}, service: overview.service, checked_at: overview.checked_at }, id);
 }
 async function ready() {
-  await waitFor(() => expect(screen.getByRole('button', { name: '同步主数据', exact: true })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole('button', { name: '同步主数据' })).toBeEnabled());
 }
 beforeEach(() => {
   vi.resetAllMocks();
@@ -87,10 +87,10 @@ describe('restored compact data maintenance', () => {
     vi.mocked(api.sync).mockResolvedValue({ ...job, dataset, mode, status: 'queued' });
     show();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: label, exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: label }));
     await waitFor(() => expect(api.sync).toHaveBeenCalledWith(dataset, mode));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole('button', { name: label, exact: true })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: label })).toBeDisabled());
   });
 
   it('loads missing codes only on expansion and submits missing mode independently of pagination', async () => {
@@ -106,7 +106,7 @@ describe('restored compact data maintenance', () => {
     fireEvent.click(screen.getByRole('button', { name: '下一页' }));
     expect(await screen.findByText('000021')).toBeInTheDocument();
     expect(api.coverage).toHaveBeenLastCalledWith('kline', { page: 2, status: 'missing', search: '' });
-    fireEvent.click(screen.getByRole('button', { name: '补齐缺失 K 线', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '补齐缺失 K 线' }));
     await waitFor(() => expect(api.sync).toHaveBeenCalledWith('kline', 'missing'));
   });
 
@@ -129,8 +129,8 @@ describe('restored compact data maintenance', () => {
     vi.mocked(api.jobs).mockResolvedValue({ items: [{ ...job, id: 'full-job', status: 'success' }], total: 1 });
     show();
     await ready();
-    expect(within(screen.getByRole('article', { name: '缺失 K 线', exact: true })).getByText('执行中')).toBeInTheDocument();
-    expect(within(screen.getByRole('article', { name: '全市场 K 线', exact: true })).getByText('已完成')).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: '缺失 K 线' })).getByText('执行中')).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: '全市场 K 线' })).getByText('已完成')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '同步全市场 K 线' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '补齐缺失 K 线' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '同步最新财报' })).toBeEnabled();

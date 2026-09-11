@@ -106,7 +106,10 @@ class SystemConfigServiceTestCase(unittest.TestCase):
     def test_model_connection_reports_missing_required_values_without_calling_provider(self) -> None:
         import litellm
 
-        with patch.object(litellm, "completion") as mock_completion:
+        with patch.dict(
+            os.environ,
+            {key: "" for key in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL")},
+        ), patch.object(litellm, "completion") as mock_completion:
             result = self.service.test_model_connection(items=[])
 
         self.assertFalse(result["success"])

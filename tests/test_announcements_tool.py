@@ -5,15 +5,12 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.tools.get_announcements import get_announcements
+from market_data_service.providers.announcements import (
+    read_company_announcements_akshare,
+)
 
 
-def _uncached(key, fn, **kwargs):
-    del key, kwargs
-    return fn(), False
-
-
-def test_announcements_preserve_source_types_without_semantic_filtering() -> None:
+def test_announcement_source_preserves_source_types_without_semantic_filtering() -> None:
     frame = pd.DataFrame(
         [
             {
@@ -34,73 +31,29 @@ def test_announcements_preserve_source_types_without_semantic_filtering() -> Non
             },
         ]
     )
-    with (
-        patch("src.tools.get_announcements.cached_call", side_effect=_uncached),
-        patch("src.tools.get_announcements._fetch_akshare", return_value=frame),
+    with patch(
+        "market_data_service.providers.announcements._fetch_akshare",
+        return_value=frame,
     ):
-        all_items = get_announcements("600519", type="all")
+        result = read_company_announcements_akshare("600519", use_cache=False)
 
-    assert [item["notice_type"] for item in all_items["items"]] == [
+    assert [item["notice_type"] for item in result["items"]] == [
         "回购事项进展",
         "股东增持股份",
     ]
-    assert all(item["semantic_status"] == "model_required" for item in all_items["items"])
-    assert all_items["source"] == "AKShare/东方财富公司公告"
-    assert all_items["success"] is True
+    assert all(item["semantic_status"] == "model_required" for item in result["items"])
+    assert result["source"] == "AKShare/东方财富公司公告"
+    assert result["success"] is True
 
 
-def test_announcements_empty_window_is_a_successful_zero_result() -> None:
-    with (
-        patch("src.tools.get_announcements.cached_call", side_effect=_uncached),
-        patch("src.tools.get_announcements._fetch_akshare", return_value=pd.DataFrame()),
+def test_announcement_source_returns_a_valid_empty_result() -> None:
+    with patch(
+        "market_data_service.providers.announcements._fetch_akshare",
+        return_value=pd.DataFrame(),
     ):
-        result = get_announcements("000001", days=7)
+        result = read_company_announcements_akshare("000001", days=7, use_cache=False)
 
     assert result["success"] is True
     assert result["has_announcements"] is False
-    assert result["fallback_attempted"] is False
     assert result["item_count"] == 0
-
-
-def test_announcements_primary_failure_uses_exchange_rss_with_real_filter_shape() -> None:
-    rss_rows = [
-        {
-            "代码": "000001",
-            "名称": "平安银行",
-            "公告标题": "平安银行董事会决议公告",
-            "公告类型": "交易所公告",
-            "公告日期": "2026-07-15",
-            "网址": "https://example.com/notice",
-        }
-    ]
-    with (
-        patch("src.tools.get_announcements.cached_call", side_effect=RuntimeError("upstream down")),
-        patch(
-            "src.tools.get_announcements._fetch_exchange_rss",
-            return_value=(rss_rows, "/szse/disclosure/listed/notice/:query?", []),
-        ),
-    ):
-        result = get_announcements("000001")
-
-    assert result["success"] is True
-    assert result["fallback_attempted"] is True
-    assert result["fallback_used"] is True
-    assert result["source"] == "RSSHub/交易所官方披露"
-    assert result["items"][0]["url"] == "https://example.com/notice"
-
-
-def test_announcements_empty_successful_rss_fallback_is_valid_zero_result() -> None:
-    with (
-        patch("src.tools.get_announcements.cached_call", side_effect=RuntimeError("upstream down")),
-        patch(
-            "src.tools.get_announcements._fetch_exchange_rss",
-            return_value=([], "/szse/disclosure/listed/notice/:query?", []),
-        ),
-    ):
-        result = get_announcements("000001")
-
-    assert result["success"] is True
-    assert result["fallback_attempted"] is True
-    assert result["fallback_used"] is False
-    assert result["item_count"] == 0
-    assert result["source"] == "RSSHub/交易所官方披露"
+    assert result["freshness_unknown"] is True

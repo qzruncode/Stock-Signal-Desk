@@ -51,17 +51,6 @@ def remove_watchlist_items(symbols: str) -> dict[str, Any]:
     return _result("remove", _resolve_codes(symbols))
 
 
-def manage_watchlist(action: str, symbols: str = "") -> dict[str, Any]:
-    """Legacy multiplexed adapter retained for non-Agent callers only."""
-    if action == "list":
-        return list_watchlist()
-    if action == "add":
-        return add_watchlist_items(symbols)
-    if action == "remove":
-        return remove_watchlist_items(symbols)
-    raise ValueError("action 必须是 list、add 或 remove")
-
-
 TOOLS = (
     ToolSpec(
         name="list_watchlist",
@@ -99,6 +88,5 @@ __all__ = [
     "TOOLS",
     "add_watchlist_items",
     "list_watchlist",
-    "manage_watchlist",
     "remove_watchlist_items",
 ]

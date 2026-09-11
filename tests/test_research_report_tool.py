@@ -5,15 +5,12 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.tools.get_research_report import get_research_report
+from market_data_service.providers.research_reports import (
+    read_company_research_reports_akshare,
+)
 
 
-def _uncached(key, fn, **kwargs):
-    del key, kwargs
-    return fn(), False
-
-
-def test_research_report_discovers_forecast_years_from_actual_columns() -> None:
+def test_research_source_discovers_forecast_years_from_actual_columns() -> None:
     frame = pd.DataFrame(
         [
             {
@@ -33,21 +30,21 @@ def test_research_report_discovers_forecast_years_from_actual_columns() -> None:
             }
         ]
     )
-    with (
-        patch("src.tools.get_research_report.cached_call", side_effect=_uncached),
-        patch("src.tools.get_research_report._fetch_akshare", return_value=frame),
+    with patch(
+        "market_data_service.providers.research_reports._fetch_akshare",
+        return_value=frame,
     ):
-        result = get_research_report("600519")
+        result = read_company_research_reports_akshare("600519", use_cache=False)
 
     forecasts = result["items"][0]["profit_forecasts"]
     assert [item["year"] for item in forecasts] == [2027, 2029]
     assert forecasts[0]["eps_unit"] == "元/股"
     assert forecasts[0]["pe_unit"] == "倍"
-    assert result["source_chain"] == ["AKShare/东方财富个股研报"]
-    assert result["analysis"]["forecast_years"] == [2027, 2029]
+    assert result["source"] == "AKShare/东方财富个股研报"
+    assert result["content_access"]["content_read"] is False
 
 
-def test_no_recent_research_report_is_valid_zero_result() -> None:
+def test_research_source_returns_a_valid_empty_result_for_an_old_window() -> None:
     frame = pd.DataFrame(
         [
             {
@@ -58,55 +55,15 @@ def test_no_recent_research_report_is_valid_zero_result() -> None:
             }
         ]
     )
-    with (
-        patch("src.tools.get_research_report.cached_call", side_effect=_uncached),
-        patch("src.tools.get_research_report._fetch_akshare", return_value=frame),
+    with patch(
+        "market_data_service.providers.research_reports._fetch_akshare",
+        return_value=frame,
     ):
-        result = get_research_report("920000", days=365)
+        result = read_company_research_reports_akshare(
+            "920000", days=365, use_cache=False
+        )
 
     assert result["success"] is True
     assert result["has_reports"] is False
-    assert result["fallback_attempted"] is False
-    assert result["warnings"]
-
-
-def test_research_report_uses_rss_only_when_structured_source_failed() -> None:
-    rss_item = {
-        "symbol": "300850",
-        "name": "新强联",
-        "title": "RSS 研报",
-        "org": "测试机构",
-        "rating": None,
-        "industry": None,
-        "publish_date": date.today().isoformat(),
-        "url": "https://example.com/rss-report",
-        "summary": "研报摘要",
-        "profit_forecasts": [],
-        "monthly_report_count": None,
-        "source": "RSSHub/东方财富个股研报",
-        "source_type": "rss_research_report",
-    }
-    with (
-        patch("src.tools.get_research_report.cached_call", side_effect=RuntimeError("down")),
-        patch("src.tools.get_research_report._fetch_rss_fallback", return_value=([rss_item], [])),
-    ):
-        result = get_research_report("300850")
-
-    assert result["success"] is True
-    assert result["fallback_attempted"] is True
-    assert result["fallback_used"] is True
-    assert result["items"][0]["url"] == "https://example.com/rss-report"
-
-
-def test_research_report_empty_successful_rss_fallback_is_valid_zero_result() -> None:
-    with (
-        patch("src.tools.get_research_report.cached_call", side_effect=RuntimeError("down")),
-        patch("src.tools.get_research_report._fetch_rss_fallback", return_value=([], [])),
-    ):
-        result = get_research_report("300850")
-
-    assert result["success"] is True
-    assert result["fallback_attempted"] is True
-    assert result["fallback_used"] is False
     assert result["item_count"] == 0
-    assert result["source"] == "RSSHub/东方财富个股研报"
+    assert result["freshness_unknown"] is True

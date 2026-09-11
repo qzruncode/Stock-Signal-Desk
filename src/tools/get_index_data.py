@@ -7,10 +7,6 @@ from src.market_index_catalog import A_SHARE_INDEX_MAP
 from src.tools.base import ToolSpec, object_schema
 
 
-def get_index_data(index_code: str = "000001", days: int = 20) -> dict[str, Any]:
-    return read_source("get_index_data.get_index_data", locals())
-
-
 def read_index_daily_history_sina(
     index_code: str = "000001", days: int = 20, *, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -64,7 +60,6 @@ TOOLS = (
 )
 __all__ = [
     "TOOLS",
-    "get_index_data",
     "read_index_daily_history_sina",
     "read_index_quote_sina",
 ]

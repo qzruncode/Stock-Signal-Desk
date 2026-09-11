@@ -687,20 +687,6 @@ class ToolSpec:
         }
 
 
-def effect_by_argument(
-    field_name: str,
-    side_effect_values: Iterable[str],
-) -> ToolEffectResolver:
-    """Build a generic per-call effect resolver for mixed read/write tools."""
-    normalized = frozenset(str(value).strip().lower() for value in side_effect_values)
-
-    def resolve(arguments: Mapping[str, Any]) -> ToolEffect:
-        value = str(arguments.get(field_name) or "").strip().lower()
-        return "side_effect" if value in normalized else "read"
-
-    return resolve
-
-
 class TypedToolResult(BaseModel):
     """Closed result base for tools migrated to an exact output contract."""
 

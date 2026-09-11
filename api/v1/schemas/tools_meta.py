@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tool registry metadata API schemas.
 
-只读反射 src.tools.registry.ToolRegistry 中的 ToolDef，供前端 /setting 页展示。
+只读反射 src.tools.registry.ToolRegistry 中的 ToolSpec，供前端 /setting 页展示。
 """
 
 from __future__ import annotations

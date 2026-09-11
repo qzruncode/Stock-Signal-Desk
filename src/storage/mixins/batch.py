@@ -121,5 +121,4 @@ class BatchMixin:
             "results_json": row.results_json,
             "stock_codes_json": row.stock_codes_json,
             "status": row.status,
-            "analysis_mode": row.analysis_mode or "template",
         }

@@ -6,10 +6,6 @@ from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
 
 
-def get_peer_comparison(symbol: str, dimension: str = "all") -> dict[str, Any]:
-    return read_source("get_peer_comparison.get_peer_comparison", locals())
-
-
 def read_peer_comparison_dimension_eastmoney(
     symbol: str, dimension: str, *, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -38,4 +34,4 @@ TOOLS = (
         web_fallback=True,
     ),
 )
-__all__ = ["TOOLS", "get_peer_comparison", "read_peer_comparison_dimension_eastmoney"]
+__all__ = ["TOOLS", "read_peer_comparison_dimension_eastmoney"]

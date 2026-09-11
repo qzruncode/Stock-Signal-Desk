@@ -13,7 +13,6 @@ import pandas as pd
 from market_data_service.data_provider.utils import is_bse_code
 from market_data_service.providers.common import (
     bare_local_symbol,
-    bare_symbol,
     cached_call,
 )
 from market_data_service.calendar import is_trading_time, latest_completed_trade_day
@@ -195,37 +194,6 @@ def _fetch_current_flow(code: str, market: str) -> dict[str, Any] | None:
     return item
 
 
-def _fetch_flow_with_current(code: str, market: str) -> pd.DataFrame:
-    history_error: str | None = None
-    history_transport: str | None = None
-    try:
-        history = _fetch_eastmoney_direct(code, market)
-        history_transport = str(history.attrs.get("transport") or "http")
-    except Exception as exc:
-        history_error = str(exc)
-        history = pd.DataFrame(columns=["date", *_NUMERIC_FIELDS])
-    current: dict[str, Any] | None = None
-    try:
-        current = _fetch_current_flow(code, market)
-    except Exception:
-        current = None
-    if current:
-        current_date = current["date"]
-        history = history[history["date"] != current_date]
-        history = pd.concat([history, pd.DataFrame([current])], ignore_index=True)
-    if history.empty:
-        raise RuntimeError(history_error or "东方财富没有返回个股资金流")
-    history = (
-        history.sort_values("date")
-        .drop_duplicates("date", keep="last")
-        .reset_index(drop=True)
-    )
-    history.attrs["history_transport"] = history_transport or "unavailable"
-    if history_error:
-        history.attrs["history_error"] = history_error
-    return history
-
-
 def _json_number(value: Any) -> float | None:
     try:
         number = float(value)
@@ -253,30 +221,6 @@ def _record(row: dict[str, Any], now: datetime) -> dict[str, Any]:
     return result
 
 
-def _window_summary(items: list[dict[str, Any]], window: int) -> dict[str, Any]:
-    bucket = items[-window:]
-    amounts = [
-        item.get("main_net_inflow")
-        for item in bucket
-        if item.get("main_net_inflow") is not None
-    ]
-    ratios = [
-        item.get("main_net_inflow_pct")
-        for item in bucket
-        if item.get("main_net_inflow_pct") is not None
-    ]
-    return {
-        "requested_trading_days": window,
-        "observations": len(amounts),
-        "complete_window": len(amounts) >= window,
-        "main_net_inflow": sum(amounts) if amounts else None,
-        "average_main_net_inflow": sum(amounts) / len(amounts) if amounts else None,
-        "average_main_net_inflow_pct": sum(ratios) / len(ratios) if ratios else None,
-        "positive_days": sum((1 for value in amounts if value > 0)),
-        "negative_days": sum((1 for value in amounts if value < 0)),
-    }
-
-
 def _is_stale(
     latest_date: date | None, now: datetime
 ) -> tuple[bool | None, str | None]:
@@ -286,89 +230,6 @@ def _is_stale(
     if latest_date < expected:
         return (True, f"最新资金流日期 {latest_date} 早于应有交易日 {expected}")
     return (False, None)
-
-
-def get_stock_capital_flow(symbol: str, days: int = 20) -> dict[str, Any]:
-    code = bare_symbol(symbol)
-    if not re.fullmatch("\\d{6}", code):
-        raise ValueError("symbol 必须能解析为 6 位股票代码")
-    market = _market_for(code)
-    limit = max(1, min(int(days), 100))
-    now = datetime.now().astimezone()
-    ttl = 75 if is_trading_time(now) else 30 * 60
-    errors: list[str] = []
-    try:
-        frame, cached = cached_call(
-            f"stock_capital_flow:v2:{market}:{code}",
-            lambda: _fetch_flow_with_current(code, market),
-            ttl_seconds=ttl,
-            attempts=1,
-        )
-    except Exception as exc:
-        frame, cached = (None, False)
-        errors.append(str(exc))
-    raw_records = (
-        frame.to_dict(orient="records")
-        if isinstance(frame, pd.DataFrame) and (not frame.empty)
-        else []
-    )
-    if isinstance(frame, pd.DataFrame) and frame.attrs.get("history_error"):
-        errors.append(
-            f"历史资金流降级失败，仅返回实时交易日: {frame.attrs['history_error']}"
-        )
-    source_transport = (
-        str(frame.attrs.get("history_transport") or "unknown")
-        if isinstance(frame, pd.DataFrame)
-        else "unavailable"
-    )
-    all_items = [_record(row, now) for row in raw_records]
-    items = all_items[-limit:]
-    latest = items[-1] if items else None
-    latest_date = datetime.fromisoformat(latest["date"]).date() if latest else None
-    stale, warning = _is_stale(latest_date, now)
-    warnings = [warning] if warning else []
-    windows = {
-        f"{window}d": _window_summary(all_items, window) for window in (5, 10, 20)
-    }
-    summary: dict[str, Any] = {"windows": windows}
-    for window in (5, 10, 20):
-        window_data = windows[f"{window}d"]
-        summary[f"main_net_inflow_{window}d"] = window_data["main_net_inflow"]
-        summary[f"positive_days_{window}d"] = window_data["positive_days"]
-        summary[f"observations_{window}d"] = window_data["observations"]
-    success = bool(items)
-    return {
-        "symbol": code,
-        "market": market,
-        "days": limit,
-        "latest": latest,
-        "summary": summary,
-        "items": items,
-        "item_count": len(items),
-        "available_history_count": len(all_items),
-        "amount_unit": "元",
-        "ratio_unit": "%",
-        "price_unit": "人民币元",
-        "main_flow_definition": "主力净流入=超大单净流入+大单净流入（东方财富口径）",
-        "interpretation_warning": "资金流按成交单大小估算，不等同于机构账户真实买卖或持仓变化",
-        "source": "东方财富个股资金流（AKShare 同源公开接口）",
-        "source_url": "https://data.eastmoney.com/zjlx/detail.html",
-        "source_transport": f"{source_transport}+realtime_http"
-        if success
-        else source_transport,
-        "success": success,
-        "errors": errors,
-        "warnings": warnings,
-        "data_time": latest.get("data_time") or latest.get("date") if latest else None,
-        "source_data_time_granularity": "timestamp"
-        if latest and latest.get("data_time")
-        else "trading_date",
-        "is_stale": stale if success else None,
-        "freshness_unknown": stale is None,
-        "fallback_used": source_transport in {"scrapling_dynamic", "unavailable"},
-        "_cached": cached,
-        "_fetched_at": now.isoformat(),
-    }
 
 
 def read_stock_capital_flow_history_eastmoney(

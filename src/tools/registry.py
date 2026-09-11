@@ -23,9 +23,6 @@ from src.tools.base import (
     enforce_result_contract,
 )
 
-ToolDef = ToolSpec  # compatibility for existing API metadata imports
-
-
 def _snake_case(value: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
 
@@ -330,4 +327,4 @@ class ToolRegistry:
             return tool.result_model.model_validate(payload).model_dump(mode="python")
         return payload
 
-__all__ = ["TOOL_MODULES", "ToolDef", "ToolRegistry", "normalize_tool_arguments"]
+__all__ = ["TOOL_MODULES", "ToolRegistry", "normalize_tool_arguments"]

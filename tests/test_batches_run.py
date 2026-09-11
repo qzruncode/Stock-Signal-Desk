@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Batches run endpoint tests — trigger, current status, pause/resume/stop.
 
-Covers api.v1.endpoints.batches.run route-level behavior:
-- trigger_batch_run: empty stock list, template mode, removed mode, conflict
+覆蓋 api.v1.endpoints.batches.run 路由行为：
+- trigger_batch_run: empty stock list, template mode, conflict
 - get_current_batch_status: idle / running / finished states
 - pause/resume/stop: 404 when no running control
 - get_batch_run_detail: 404 when missing
@@ -59,15 +59,6 @@ def test_trigger_run_rejects_empty_stock_list(client):
         resp = client.post("/api/v1/batch/run", json={"stock_codes": [], "template_id": ""})
 
     assert resp.status_code == 400
-
-
-def test_trigger_run_rejects_removed_buy_criteria_mode(client):
-    resp = client.post(
-        "/api/v1/batch/run",
-        json={"stock_codes": ["000001"], "analysis_mode": "buy_criteria"},
-    )
-
-    assert resp.status_code == 422
 
 
 def test_trigger_run_template_mode_requires_existing_template(client):
@@ -308,7 +299,6 @@ def test_get_run_detail_returns_run_item(client):
         "results_json": "{}",
         "stock_codes_json": "[]",
         "status": "completed",
-        "analysis_mode": "template",
     }
     with patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
         db = MagicMock()

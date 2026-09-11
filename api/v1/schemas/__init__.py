@@ -15,12 +15,6 @@ from api.v1.schemas.common import (
     SuccessResponse,
 )
 from api.v1.schemas.history import (
-    HistoryItem,
-    HistoryListResponse,
-    DeleteHistoryRequest,
-    DeleteHistoryResponse,
-    NewsIntelItem,
-    NewsIntelResponse,
     AnalysisReport,
     ReportMeta,
     ReportSummary,
@@ -49,13 +43,7 @@ __all__ = [
     "HealthResponse",
     "ErrorResponse",
     "SuccessResponse",
-    # history
-    "HistoryItem",
-    "HistoryListResponse",
-    "DeleteHistoryRequest",
-    "DeleteHistoryResponse",
-    "NewsIntelItem",
-    "NewsIntelResponse",
+    # persisted analysis report projection
     "AnalysisReport",
     "ReportMeta",
     "ReportSummary",

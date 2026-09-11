@@ -12,8 +12,8 @@ def test_old_rows_survive_replayable_additive_migration(tmp_path):
         connection.execute(text('CREATE TABLE alert_rules (id INTEGER PRIMARY KEY, name VARCHAR(64), source VARCHAR(16))'))
         connection.execute(text("INSERT INTO alert_rules (id, name) VALUES (1, 'old-rule')"))
         connection.execute(text('CREATE TABLE alert_triggers (id INTEGER PRIMARY KEY)'))
-    ensure_compatible_schema(engine, True)
-    ensure_compatible_schema(engine, True)
+    ensure_compatible_schema(engine)
+    ensure_compatible_schema(engine)
     assert get_schema_version(engine) == SCHEMA_VERSION
     assert 'usage_json' in {column['name'] for column in inspect(engine).get_columns('agent_runs')}
     with engine.connect() as connection:

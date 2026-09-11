@@ -6,11 +6,9 @@ from __future__ import annotations
 import unittest
 import inspect
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
 from src.tools.registry import TOOL_MODULES, ToolRegistry
 from src.tools.base import ToolSpec, enforce_result_contract, object_schema
 
@@ -181,46 +179,30 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
                 executor=lambda **_kwargs: {"success": True},
             )
 
-    def test_atomic_company_profile_read_uses_local_identity_without_provider_fallback(self) -> None:
+    def test_atomic_company_profile_read_uses_the_declared_source_operation(self) -> None:
         registry = ToolRegistry()
 
-        with (
-            patch(
-                "src.services.name_to_code_resolver.resolve_local_name_to_code",
-                return_value="600519",
-            ) as local_resolver,
-            patch(
-                "src.services.name_to_code_resolver.resolve_name_to_code",
-                side_effect=AssertionError("atomic source reads must not call the legacy resolver"),
-            ),
-            patch(
-                "src.tools.get_stock_info.cached_call",
-                side_effect=lambda _key, loader, **_kwargs: (loader(), False),
-            ),
-            patch("src.tools.get_stock_info._fetch_cninfo", return_value={"A股简称": "贵州茅台"}),
-        ):
+        with patch(
+            "src.tools.get_stock_info.read_source",
+            return_value={
+                "symbol": "600519",
+                "short_name": "贵州茅台",
+                "success": True,
+            },
+        ) as read:
             result = registry.execute(
                 "read_company_profile_cninfo",
-                {"symbol": "贵州茅台"},
+                {"symbol": "600519"},
             )
 
-        local_resolver.assert_called_once_with("贵州茅台")
+        read.assert_called_once_with(
+            "get_stock_info.read_company_profile_cninfo",
+            {"symbol": "600519", "use_cache": True},
+        )
         self.assertEqual(result["symbol"], "600519")
         self.assertEqual(result["short_name"], "贵州茅台")
 
     def test_direct_realtime_quote_resolves_one_symbol_without_fallback(self) -> None:
-        calls: list[str] = []
-
-        def fake_quote(symbol: str) -> UnifiedRealtimeQuote:
-            calls.append(symbol)
-            return UnifiedRealtimeQuote(
-                code=symbol,
-                name="贵州茅台",
-                source=RealtimeSource.EASTMONEY_PUSH,
-                trade_time="2026-08-08T14:30:00+08:00",
-                price=1500.0,
-            )
-
         registry = ToolRegistry()
 
         def resolver(value: str) -> str:
@@ -235,17 +217,23 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
                 "src.services.name_to_code_resolver.resolve_name_to_code",
                 side_effect=AssertionError("atomic source reads must not call the legacy resolver"),
             ),
-            patch.dict(
-                "src.tools.realtime_quote_source_tools._SOURCES",
-                {"eastmoney_push": ("测试来源", "test_quote", fake_quote)},
-            ),
+            patch(
+                "src.tools.realtime_quote_source_tools.read_source",
+                return_value={
+                    "success": True,
+                    "items": [{"code": "600519"}],
+                    "fallback_used": False,
+                },
+            ) as read,
         ):
             result = registry.execute(
                 "read_realtime_quote",
                 {"source_id": "eastmoney_push", "symbol": "贵州茅台"},
             )
 
-        self.assertEqual(calls, ["600519"])
+        read.assert_called_once_with(
+            "quotes", {"symbol": "600519", "source_id": "eastmoney_push"}
+        )
         self.assertEqual(result["items"][0]["code"], "600519")
         self.assertFalse(result["fallback_used"])
         local_resolver.assert_called_once_with("贵州茅台")
@@ -279,14 +267,6 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertNotIn("search_web_news", names)
         self.assertNotIn("search_web_price_fallback", names)
         self.assertNotIn("fetch_web_content", names)
-
-    def test_llm_dependent_tools_are_not_registered(self) -> None:
-        registry = ToolRegistry()
-        names = set(registry.get_tool_names())
-
-        self.assertNotIn("get_market_mainline_report", names)
-        self.assertNotIn("get_stock_business", names)
-        self.assertNotIn("get_buy_criteria_analysis", names)
 
     def test_redundant_derived_tools_are_not_registered(self) -> None:
         registry = ToolRegistry()
@@ -433,17 +413,13 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         """The Agent must never infer acquisition success from an arbitrary payload shape."""
         registry = ToolRegistry()
 
-        def fake_quote(symbol: str) -> UnifiedRealtimeQuote:
-            return UnifiedRealtimeQuote(
-                code=symbol,
-                source=RealtimeSource.EASTMONEY_PUSH,
-                trade_time="2026-07-16T14:30:00+08:00",
-                price=1500.0,
-            )
-
-        with patch.dict(
-            "src.tools.realtime_quote_source_tools._SOURCES",
-            {"eastmoney_push": ("测试来源", "test_quote", fake_quote)},
+        with patch(
+            "src.tools.realtime_quote_source_tools.read_source",
+            return_value={
+                "success": True,
+                "items": [{"code": "600519"}],
+                "fallback_used": False,
+            },
         ):
             quote = registry.execute(
                 "read_realtime_quote",

@@ -8,7 +8,7 @@ for _name, _value in vars(_models).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
-__all__ = ['PortfolioCorporateAction', 'PortfolioPosition', 'PortfolioPositionLot', 'PortfolioDailySnapshot', 'PortfolioFxRate', 'ConversationMessage', 'LLMUsage', 'AlertRuleRecord', 'AlertTriggerRecord', 'AlertNotificationRecord', 'BatchRun', 'BatchSchedule', 'QuoteSnapshot', 'KlineSnapshot', 'RssCache', 'ToolCache', 'MacroIndexDaily', 'BondYieldDaily', 'MacroIndicator', 'WatchlistGroup', 'AgentPromptTemplate', 'WatchlistGroupNameConflict']
+__all__ = ['PortfolioCorporateAction', 'PortfolioPosition', 'PortfolioPositionLot', 'PortfolioDailySnapshot', 'PortfolioFxRate', 'ConversationMessage', 'LLMUsage', 'AlertRuleRecord', 'AlertTriggerRecord', 'AlertNotificationRecord', 'BatchRun', 'BatchSchedule', 'WatchlistGroup', 'AgentPromptTemplate', 'WatchlistGroupNameConflict']
 
 class PortfolioCorporateAction(Base):
     """Corporate actions."""
@@ -237,7 +237,6 @@ class BatchRun(Base):
     results_json = Column(Text, default="[]")
     stock_codes_json = Column(Text, default="[]")
     status = Column(String(32), nullable=False, default="completed")
-    analysis_mode = Column(String(32), default="template")
 
     __table_args__ = (Index("ix_batch_runs_started", "started_at"),)
 
@@ -252,121 +251,6 @@ class BatchSchedule(Base):
     template_id = Column(String(64))
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-class QuoteSnapshot(Base):
-    """实时行情缓存快照"""
-
-    __tablename__ = "quote_snapshot"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(16), nullable=False, unique=True, index=True)
-    data = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-class KlineSnapshot(Base):
-    """K线数据缓存快照"""
-
-    __tablename__ = "kline_snapshot"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(16), nullable=False, unique=True, index=True)
-    data = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-class RssCache(Base):
-    """RSS feed / namespace blob 缓存（key→JSON text）。
-
-    与 kline_snapshot 解耦：RSS 缓存键长且体积大（namespace blob ~3.3MB），
-    混在 kline 表里排查困难，独立成表便于运维与将来按 TTL 清理。
-    """
-
-    __tablename__ = "rss_cache"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    cache_key = Column(String(255), nullable=False, unique=True, index=True)
-    data = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-class ToolCache(Base):
-    """Persistent cache for typed tool/AKShare results.
-
-    Payloads are trusted application-generated serialized values (including
-    pandas DataFrames), so a binary column is used instead of lossy JSON.
-    """
-
-    __tablename__ = "tool_cache"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    cache_key = Column(String(255), nullable=False, unique=True, index=True)
-    payload = Column(LargeBinary, nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-class MacroIndexDaily(Base):
-    """大盘指数日线数据"""
-
-    __tablename__ = "macro_index_daily"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    index_code = Column(String(10), nullable=False, index=True)
-    date = Column(Date, nullable=False, index=True)
-    open = Column(Float)
-    high = Column(Float)
-    low = Column(Float)
-    close = Column(Float)
-    volume = Column(Float)
-    amount = Column(Float)
-    pct_chg = Column(Float)
-    change_amount = Column(Float)
-    data_source = Column(String(50))
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-    __table_args__ = (
-        UniqueConstraint("index_code", "date", name="uix_macro_index_date"),
-        Index("ix_macro_index_date", "index_code", "date"),
-    )
-
-class BondYieldDaily(Base):
-    """国债收益率日线数据"""
-
-    __tablename__ = "bond_yield_daily"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    country = Column(String(5), nullable=False, index=True)
-    term = Column(String(5), nullable=False, index=True)
-    date = Column(Date, nullable=False, index=True)
-    yield_value = Column(Float, nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-    __table_args__ = (
-        UniqueConstraint("country", "term", "date", name="uix_bond_country_term_date"),
-        Index("ix_bond_country_term_date", "country", "term", "date"),
-    )
-
-class MacroIndicator(Base):
-    """宏观经济指标数据"""
-
-    __tablename__ = "macro_indicator"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    indicator = Column(String(20), nullable=False, index=True)
-    period = Column(String(20), nullable=False, index=True)
-    value = Column(Float)
-    yoy = Column(Float)
-    mom = Column(Float)
-    extra_json = Column(Text)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-    __table_args__ = (
-        UniqueConstraint("indicator", "period", name="uix_macro_indicator_period"),
-        Index("ix_macro_indicator_indicator_period", "indicator", "period"),
-    )
 
 class WatchlistGroup(Base):
     """自选股自定义分组"""

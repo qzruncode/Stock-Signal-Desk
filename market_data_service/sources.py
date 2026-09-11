@@ -28,9 +28,6 @@ def registry():
         financial_data,
         financials,
         financial_period,
-        news,
-        announcements,
-        research_reports,
         rss_reader,
     )
 
@@ -41,7 +38,6 @@ def registry():
         "financials": ("financials", provider.financials),
         "news": ("news", provider.news),
         "announcements": ("announcements", provider.announcements),
-        "financials.get_financials": ("financials", financials.get_financials),
         "financials.read_core_financial_indicators_ths": (
             "financials",
             financials.read_core_financial_indicators_ths,
@@ -54,31 +50,9 @@ def registry():
             "financials",
             financial_data.get_financial_section,
         ),
-        "financials.fetch_core_indicators": (
-            "financials",
-            financial_data.fetch_core_indicators,
-        ),
         "financials.fetch_period": (
             "financials",
             financial_period.fetch_financial_period_snapshot,
-        ),
-        "news.search_news": ("news", news.search_news),
-        "news.read_company_news_akshare": ("news", news.read_company_news_akshare),
-        "announcements.get_announcements": (
-            "announcements",
-            announcements.get_announcements,
-        ),
-        "announcements.read_company_announcements_akshare": (
-            "announcements",
-            announcements.read_company_announcements_akshare,
-        ),
-        "research_reports.get_research_report": (
-            "announcements",
-            research_reports.get_research_report,
-        ),
-        "research_reports.read_company_research_reports_akshare": (
-            "announcements",
-            research_reports.read_company_research_reports_akshare,
         ),
         "rss.read_feed": ("rss", rss_reader.read_feed),
         "rss.read_item": ("rss", rss_reader.read_item),
@@ -87,20 +61,7 @@ def registry():
     from market_data_service.providers.operation_catalog import OPERATIONS
     from market_data_service.providers.rss_operations import RSS_OPERATIONS
     from market_data_service.providers.rss_transport import fetch_xml, fetch_json
-    from market_data_service.providers.evidence import get_company_evidence
-    from market_data_service.providers.theme_candidates import read_theme_candidates
-    from market_data_service.providers import company_views
 
-    result["company.evidence"] = "financials", get_company_evidence
-    result["market.theme_candidates"] = "market", read_theme_candidates
-    for name in (
-        "fetch_business_intro",
-        "fetch_business_composition",
-        "fetch_profit_forecast",
-        "fetch_financial_summary",
-        "fetch_recent_events",
-    ):
-        result["company." + name] = "financials", getattr(company_views, "_" + name)
     for operation, (dataset, module, name) in OPERATIONS.items():
         result[operation] = (
             dataset,
@@ -390,13 +351,6 @@ def _refresh_source(request_key):
             payload = validate_call(config=ConfigDict(arbitrary_types_allowed=True))(
                 fn
             )(**arguments)
-        if operation.startswith("company.fetch_"):
-            payload = {
-                "success": bool(payload),
-                "data": json_value(payload),
-                "source": "AKShare",
-                "data_time_applicable": False,
-            }
         if operation == "financials.fetch_period":
             payload = {
                 "success": bool(payload),
@@ -404,17 +358,6 @@ def _refresh_source(request_key):
                 "source": "Eastmoney",
                 "data_time": arguments["period"],
             }
-        if operation.startswith("industry.") and isinstance(payload, dict):
-            payload = {
-                **payload,
-                "success": payload.get("source_ok") is True,
-                "data_time_applicable": False,
-                "data_time_note": "来源未提供统一数据时点；checked_at 表示本次查询时间，不代表市场成交时间。",
-            }
-            if not payload["success"]:
-                payload["errors"] = payload.get("errors") or [
-                    payload.get("error") or "行业数据源暂不可用"
-                ]
         if not isinstance(payload, dict):
             payload = {
                 "success": True,

@@ -8,10 +8,8 @@ than manufacturing flow rankings from unrelated fields.
 """
 
 from __future__ import annotations
-from contextvars import copy_context
 import math
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 import httpx
@@ -204,38 +202,6 @@ def _normalize_source_rows(
     return records
 
 
-def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
-    params = _source_params(type, period)
-    first, total = _request_page(params, 1)
-    pages = max(1, math.ceil(total / 100))
-    raw_rows = list(first)
-    if pages > 1:
-        with ThreadPoolExecutor(max_workers=min(4, pages - 1)) as pool:
-            futures = {
-                pool.submit(copy_context().run, _request_page, params, page): page
-                for page in range(2, pages + 1)
-            }
-            page_rows: dict[int, list[dict[str, Any]]] = {}
-            for future in as_completed(futures):
-                page = futures[future]
-                rows, _ = future.result()
-                page_rows[page] = rows
-        for page in range(2, pages + 1):
-            raw_rows.extend(page_rows.get(page, []))
-    records = _normalize_source_rows(raw_rows, period)
-    records.sort(
-        key=lambda item: (
-            item.get("main_net_inflow")
-            if item.get("main_net_inflow") is not None
-            else -math.inf
-        ),
-        reverse=True,
-    )
-    for rank, record in enumerate(records, 1):
-        record["main_flow_rank"] = rank
-    return records
-
-
 def _fetch_source_page(type: str, period: str, max_items: int) -> list[dict[str, Any]]:
     """Read one provider page and preserve the provider's response order."""
     rows, _ = _request_page(_source_params(type, period, page_size=max_items), 1)
@@ -262,71 +228,6 @@ def _freshness(data_time: str | None, now: datetime) -> tuple[bool | None, str |
     ):
         return (True, "盘中板块资金流超过 15 分钟未更新")
     return (False, None)
-
-
-def get_sector_flow(
-    type: str = "industry", top_n: int = 10, period: str = "today"
-) -> dict[str, Any]:
-    type = str(type).strip().lower()
-    period = str(period).strip().lower()
-    if type not in {"industry", "concept"}:
-        raise ValueError("type 仅支持 industry 或 concept")
-    if period not in _PERIODS:
-        raise ValueError("period 仅支持 today、5d 或 10d")
-    top_n = max(1, min(int(top_n), 30))
-    now = datetime.now().astimezone()
-    ttl = 75 if is_trading_time(now) else 30 * 60
-    errors: list[str] = []
-    try:
-        records, cached = cached_call(
-            f"sector_flow:v2:{type}:{period}",
-            lambda: _fetch_all(type, period),
-            ttl_seconds=ttl,
-            attempts=1,
-        )
-    except Exception as exc:
-        records, cached = ([], False)
-        errors.append(str(exc))
-    valid = [record for record in records if record.get("main_net_inflow") is not None]
-    inflow = [record for record in valid if record["main_net_inflow"] > 0]
-    outflow = sorted(
-        [record for record in valid if record["main_net_inflow"] < 0],
-        key=lambda item: item["main_net_inflow"],
-    )
-    data_times = [
-        str(record["data_time"]) for record in records if record.get("data_time")
-    ]
-    data_time = max(data_times) if data_times else None
-    is_stale, warning = _freshness(data_time, now)
-    warnings = [warning] if warning else []
-    if records and (not valid):
-        errors.append("上游返回了板块行情，但没有有效主力净流入字段")
-    success = bool(valid)
-    return {
-        "type": type,
-        "period": period,
-        "period_label": _PERIODS[period]["label"],
-        "top_n": top_n,
-        "sector_count": len(records),
-        "inflow_top": inflow[:top_n],
-        "outflow_top": outflow[:top_n],
-        "records": records,
-        "amount_unit": "元",
-        "ratio_unit": "%",
-        "price_unit": "人民币元",
-        "main_flow_definition": "主力净流入=超大单净流入+大单净流入（东方财富口径）",
-        "source": "东方财富板块资金流（AKShare 同源公开接口）",
-        "source_url": "https://data.eastmoney.com/bkzj/",
-        "success": success,
-        "errors": errors if not success else errors,
-        "warnings": warnings,
-        "data_time": data_time,
-        "is_stale": is_stale if success else None,
-        "freshness_unknown": is_stale is None,
-        "fallback_used": False,
-        "_cached": cached,
-        "_fetched_at": now.isoformat(),
-    }
 
 
 def read_sector_flow_eastmoney(

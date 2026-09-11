@@ -23,15 +23,12 @@ from src.storage.migrations import (
 )
 from src.storage.mixins import (
     NewsMixin,
-    QuoteKlineMixin,
     MacroMixin,
     AnalysisMixin,
     ChatMixin,
     BatchMixin,
     WatchlistMixin,
     AgentPromptMixin,
-    RssCacheMixin,
-    ToolCacheMixin,
     AgentArtifactMixin,
     AgentRunTraceMixin,
     AgentRuntimeMixin,
@@ -47,15 +44,12 @@ T = TypeVar("T")
 class DatabaseManager(
     AgentUsageMixin,
     NewsMixin,
-    QuoteKlineMixin,
     MacroMixin,
     AnalysisMixin,
     ChatMixin,
     BatchMixin,
     WatchlistMixin,
     AgentPromptMixin,
-    RssCacheMixin,
-    ToolCacheMixin,
     AgentArtifactMixin,
     AgentRunTraceMixin,
     AgentRuntimeMixin,
@@ -282,7 +276,7 @@ class DatabaseManager(
             else not production
         )
         if auto_migrate:
-            ensure_compatible_schema(self._engine, self._is_sqlite_engine)
+            ensure_compatible_schema(self._engine)
         else:
             # Production rollout owns migration ordering. Application workers
             # only verify the schema, so multiple replicas never race DDL.
@@ -333,9 +327,6 @@ class DatabaseManager(
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA cache_size=-4000")
             cursor.close()
-
-    def _ensure_compatible_schema(self) -> None:
-        ensure_compatible_schema(self._engine, self._is_sqlite_engine)
 
     def _is_file_sqlite_database(self) -> bool:
         from pathlib import Path

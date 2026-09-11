@@ -32,7 +32,6 @@ CONTENT_READER_TOOLS = frozenset(
     {
         "read_web_source",
         "read_text_document",
-        "read_financial_article",
         "read_rss_item",
         "read_registered_rss_item",
     }

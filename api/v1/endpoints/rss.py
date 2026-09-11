@@ -5,8 +5,7 @@ from src.services.market_data_client import read_source
 RSS 订阅源端点
 ===================================
 
-通过 RSSHub 聚合财经资讯，作为 search_news 的补充数据源。
-不修改原有数据获取逻辑，独立提供 RSS 能力。
+通过 RSSHub 聚合财经资讯，提供独立的 RSS 订阅、目录和正文读取能力。
 """
 import logging
 import re

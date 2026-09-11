@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 from datetime import datetime
-from functools import partial
 from typing import Any, Callable
 from market_data_service.providers.common import cached_call
 from market_data_service.providers._macro_common import (
     expected_indicator_period,
-    get_db,
     latest_date,
     number,
     ordered,
@@ -118,41 +116,6 @@ def _normalize(frame: Any, indicator: str) -> list[dict[str, Any]]:
     return ordered(rows, "period")
 
 
-def fetch_indicator_records(indicator: str) -> list[dict[str, Any]]:
-    """Compatibility hook for non-Agent consumers needing normalized rows."""
-    return _normalize(_fetcher(indicator)(), indicator)
-
-
-INDICATOR_FETCHERS = {
-    indicator: partial(fetch_indicator_records, indicator) for indicator in INDICATORS
-}
-
-
-def _trend(records: list[dict[str, Any]]) -> dict[str, Any]:
-    metric = (
-        "yoy_pct"
-        if sum((row.get("yoy_pct") is not None for row in records[-5:])) >= 2
-        else "value"
-    )
-    values = [number(row.get(metric)) for row in records[-5:]]
-    values = [value for value in values if value is not None]
-    if len(values) < 2:
-        return {
-            "direction": None,
-            "semantic_status": "model_required",
-            "metric": metric,
-            "change": None,
-        }
-    change = values[-1] - values[0]
-    return {
-        "direction": None,
-        "semantic_status": "model_required",
-        "metric": metric,
-        "change": round(change, 4),
-        "window_observations": len(values),
-    }
-
-
 def read_macro_indicator_akshare(
     indicator: str, periods: int = 12, *, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -218,85 +181,4 @@ def read_macro_indicator_akshare(
         "fallback_used": False,
         "_cached": cached,
         "_fetched_at": now.isoformat(),
-    }
-
-
-def get_macro_indicator(
-    indicator: str, periods: int = 12, *, months: int | None = None
-) -> dict[str, Any]:
-    indicator = str(indicator or "").strip()
-    indicator = indicator if indicator == "社融" else indicator.upper()
-    if indicator not in INDICATORS:
-        raise ValueError(f"不支持的宏观指标: {indicator}")
-    if months is not None:
-        periods = months
-    periods = int(periods)
-    if not 3 <= periods <= 120:
-        raise ValueError("periods 必须在 3 到 120 之间")
-    errors: list[str] = []
-    warnings: list[str] = []
-    frame = None
-    cached = False
-    try:
-        frame, cached = cached_call(
-            f"macro-indicator:{indicator}", _fetcher(indicator), ttl_seconds=6 * 3600
-        )
-    except Exception as exc:
-        errors.append(f"{indicator}: {exc}")
-    records = _normalize(frame, indicator)[-periods:]
-    fallback_used = False
-    if records:
-        try:
-            get_db().save_macro_indicator(indicator, records)
-        except Exception as exc:
-            warnings.append(f"宏观指标本地缓存写入失败: {exc}")
-    else:
-        fallback_used = True
-        try:
-            records = ordered(
-                get_db().get_macro_indicator(indicator, limit=periods) or [], "period"
-            )[-periods:]
-            for row in records:
-                if "yoy_pct" not in row:
-                    row["yoy_pct"] = row.get("yoy")
-                if "mom_pct" not in row:
-                    row["mom_pct"] = row.get("mom")
-        except Exception as exc:
-            errors.append(f"宏观指标本地缓存: {exc}")
-            records = []
-    actual = latest_date(records, "period")
-    expected = expected_indicator_period(indicator)
-    stale = actual < expected if actual else None
-    if stale and actual:
-        warnings.append(
-            f"{indicator} 最新期间为 {actual.isoformat()}，正常发布日历下预期至少为 {expected.isoformat()}"
-        )
-    success = bool(records)
-    latest = records[-1] if records else {}
-    retrieved_at = datetime.now().astimezone().isoformat()
-    return {
-        "indicator": indicator,
-        "indicator_name": INDICATORS[indicator]["name"],
-        "frequency": INDICATORS[indicator]["frequency"],
-        "unit": INDICATORS[indicator]["unit"],
-        "latest": latest,
-        "history": records,
-        "history_count": len(records),
-        "trend": _trend(records),
-        "expected_latest_period_end": expected.isoformat(),
-        "source": "AKShare/东方财富宏观数据"
-        if not fallback_used
-        else "本地宏观指标缓存",
-        "success": success,
-        "partial": success and bool(errors or warnings),
-        "data_time": actual.isoformat() if actual else None,
-        "retrieved_at": retrieved_at,
-        "is_stale": stale,
-        "freshness_unknown": actual is None,
-        "fallback_used": fallback_used,
-        "fallback_recommended": not success or stale is True,
-        "errors": errors[:10],
-        "warnings": warnings[:10],
-        "_cached": cached if not fallback_used else True,
-        "_fetched_at": retrieved_at,
     }

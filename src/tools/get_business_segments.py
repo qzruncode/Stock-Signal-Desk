@@ -6,12 +6,6 @@ from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
 
 
-def get_business_segments(
-    symbol: str, category: str = "all", periods: int = 2
-) -> dict[str, Any]:
-    return read_source("get_business_segments.get_business_segments", locals())
-
-
 def read_business_segments_eastmoney(
     symbol: str, category: str = "all", periods: int = 2
 ) -> dict[str, Any]:
@@ -51,4 +45,4 @@ TOOLS = (
         category="financials",
     ),
 )
-__all__ = ["TOOLS", "get_business_segments", "read_business_segments_eastmoney"]
+__all__ = ["TOOLS", "read_business_segments_eastmoney"]

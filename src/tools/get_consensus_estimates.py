@@ -6,10 +6,6 @@ from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
 
 
-def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
-    return read_source("get_consensus_estimates.get_consensus_estimates", locals())
-
-
 def read_consensus_metric_ths(symbol: str, metric: str) -> dict[str, Any]:
     return read_source("get_consensus_estimates.read_consensus_metric_ths", locals())
 
@@ -67,7 +63,6 @@ TOOLS = (
 )
 __all__ = [
     "TOOLS",
-    "get_consensus_estimates",
     "read_consensus_financial_estimates_ths",
     "read_consensus_institution_forecasts_ths",
     "read_consensus_metric_ths",

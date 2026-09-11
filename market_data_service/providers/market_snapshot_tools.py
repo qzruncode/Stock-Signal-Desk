@@ -1,8 +1,7 @@
 """Source-level market observations for the LangGraph tool catalog.
 
-The legacy market snapshot remains an API convenience view outside the Agent.
-The Agent gets these direct reads instead, so it can choose which evidence is
-needed and never receives a pre-composed market judgement as one tool result.
+These operations expose independent market evidence so the Agent can choose
+what it needs without receiving a pre-composed market judgement as one result.
 """
 
 from __future__ import annotations

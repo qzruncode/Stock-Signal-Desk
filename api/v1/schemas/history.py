@@ -5,110 +5,13 @@
 ===================================
 
 职责：
-1. 定义历史记录列表和详情模型
-2. 定义分析报告完整模型
+1. 定义持久化分析报告的结构化投影
+2. 为 Agent 的历史报告读取工具提供统一的数据模型
 """
 
-from typing import Optional, List, Any
+from typing import Optional, Any
 
 from pydantic import BaseModel, ConfigDict, Field
-
-
-class HistoryItem(BaseModel):
-    """历史记录摘要（列表展示用）"""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "id": 1234,
-                "query_id": "abc123",
-                "stock_code": "600519",
-                "stock_name": "贵州茅台",
-                "report_type": "detailed",
-                "sentiment_score": 75,
-                "operation_advice": "持有",
-                "created_at": "2024-01-01T12:00:00",
-            }
-        }
-    )
-
-    id: Optional[int] = Field(None, description="分析历史记录主键 ID")
-    query_id: str = Field(..., description="分析记录关联 query_id（批量分析时重复）")
-    stock_code: str = Field(..., description="股票代码")
-    stock_name: Optional[str] = Field(None, description="股票名称")
-    report_type: Optional[str] = Field(None, description="报告类型")
-    sentiment_score: Optional[int] = Field(
-        None,
-        description="情绪评分（历史数据可能超出 0-100 范围，读取时不做约束）",
-    )
-    operation_advice: Optional[str] = Field(None, description="操作建议")
-    created_at: Optional[str] = Field(None, description="创建时间")
-
-
-class HistoryListResponse(BaseModel):
-    """历史记录列表响应"""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "total": 100,
-                "page": 1,
-                "limit": 20,
-                "items": [],
-            }
-        }
-    )
-
-    total: int = Field(..., description="总记录数")
-    page: int = Field(..., description="当前页码")
-    limit: int = Field(..., description="每页数量")
-    items: List[HistoryItem] = Field(default_factory=list, description="记录列表")
-
-
-class DeleteHistoryRequest(BaseModel):
-    """删除历史记录请求"""
-
-    record_ids: List[int] = Field(default_factory=list, description="要删除的历史记录主键 ID 列表")
-
-
-class DeleteHistoryResponse(BaseModel):
-    """删除历史记录响应"""
-
-    deleted: int = Field(..., description="实际删除的历史记录数量")
-
-
-class NewsIntelItem(BaseModel):
-    """新闻情报条目"""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "title": "公司发布业绩快报，营收同比增长 20%",
-                "snippet": "公司公告显示，季度营收同比增长 20%...",
-                "url": "https://example.com/news/123",
-            }
-        }
-    )
-
-    title: str = Field(..., description="新闻标题")
-    snippet: str = Field("", description="新闻摘要（最多200字）")
-    url: str = Field(..., description="新闻链接")
-
-
-class NewsIntelResponse(BaseModel):
-    """新闻情报响应"""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "total": 2,
-                "items": [],
-            }
-        }
-    )
-
-    total: int = Field(..., description="新闻条数")
-    items: List[NewsIntelItem] = Field(default_factory=list, description="新闻列表")
 
 
 class ReportMeta(BaseModel):
@@ -199,17 +102,3 @@ class AnalysisReport(BaseModel):
     strategy: Optional[ReportStrategy] = Field(None, description="策略点位区")
     details: Optional[ReportDetails] = Field(None, description="详情区")
     conversation: Optional[Any] = Field(None, description="对话记录（prompt + response），仅 conversation 模式")
-
-
-class MarkdownReportResponse(BaseModel):
-    """Markdown 格式报告响应"""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "content": "# 📊 贵州茅台 (600519) 分析报告\n\n> 分析日期：**2024-01-01**\n\n...",
-            }
-        }
-    )
-
-    content: str = Field(..., description="Markdown 格式的完整报告内容")

@@ -115,12 +115,6 @@ def fixture_data():
                 "errors": [],
                 "source": "fixture",
             },
-            "macro.get_index_data": {
-                "success": True,
-                "data": [{"date": last, "close": 3000}],
-                "source": "fixture",
-                "data_time": last,
-            },
         },
     }
 

@@ -6,16 +6,13 @@ full-market historical control-change table as the current controller.
 """
 
 from __future__ import annotations
-from contextvars import copy_context
 import math
 import re
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Any
 import httpx
 from market_data_service.providers.common import (
     bare_local_symbol,
-    bare_symbol,
     cached_call,
     exchange_prefix,
     frame_records,
@@ -99,38 +96,6 @@ def _fetch_holder_change_frame(code: str):
     import akshare as ak
 
     return ak.stock_shareholder_change_ths(symbol=code)
-
-
-def _disclosure_complete_date(report_date: date) -> date:
-    """Conservative statutory completion date for a regular A-share report."""
-    if (report_date.month, report_date.day) == (3, 31):
-        return date(report_date.year, 4, 30)
-    if (report_date.month, report_date.day) == (6, 30):
-        return date(report_date.year, 8, 31)
-    if (report_date.month, report_date.day) == (9, 30):
-        return date(report_date.year, 10, 31)
-    if (report_date.month, report_date.day) == (12, 31):
-        return date(report_date.year + 1, 4, 30)
-    return report_date
-
-
-def _select_completed_report_date(
-    values: list[Any], as_of: date
-) -> tuple[str | None, str | None]:
-    dates = sorted(
-        {
-            parsed
-            for value in values
-            if (text := _date_text(value))
-            and (parsed := datetime.fromisoformat(text).date())
-        },
-        reverse=True,
-    )
-    newest = dates[0].isoformat() if dates else None
-    selected = next(
-        (item for item in dates if _disclosure_complete_date(item) <= as_of), None
-    )
-    return (selected.isoformat() if selected else None, newest)
 
 
 def _expected_latest_report_date(as_of: date) -> date:
@@ -302,216 +267,6 @@ def _normalize_holder_changes(frame: Any) -> list[dict[str, Any]]:
         )
     items.sort(key=lambda item: item.get("announcement_date") or "", reverse=True)
     return items[:20]
-
-
-def get_shareholder_structure(
-    symbol: str, *, use_cache: bool = True, include_structured: bool = False
-) -> dict[str, Any]:
-    """Legacy merged shareholder view for non-Agent callers only."""
-    code = bare_symbol(symbol)
-    if not re.fullmatch("\\d{6}", code):
-        raise ValueError("symbol 必须能解析为 6 位股票代码")
-    as_of = _today()
-    errors: list[str] = []
-    warnings: list[str] = []
-    cache_detail = {"profile": False, "institution": False, "holder_changes": False}
-    profile: dict[str, Any] = {}
-    change_frame = None
-
-    def profile_task():
-        if not use_cache:
-            return (_fetch_f10_profile(code), False)
-        return cached_call(
-            f"shareholders:f10:{code}",
-            lambda: _fetch_f10_profile(code),
-            ttl_seconds=6 * 3600,
-        )
-
-    def changes_task():
-        if not use_cache:
-            return (_fetch_holder_change_frame(code), False)
-        return cached_call(
-            f"shareholders:changes:{code}",
-            lambda: _fetch_holder_change_frame(code),
-            ttl_seconds=6 * 3600,
-        )
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {
-            "profile": pool.submit(copy_context().run, profile_task),
-            "holder_changes": pool.submit(copy_context().run, changes_task),
-        }
-        for section, future in futures.items():
-            try:
-                value, was_cached = future.result()
-                cache_detail[section] = was_cached
-                if section == "profile":
-                    profile = value
-                else:
-                    change_frame = value
-            except Exception as exc:
-                errors.append(f"{section}: {type(exc).__name__}: {exc}")
-    holder_count = _normalize_holder_count(profile)
-    top_holders, top_holders_report_date = _normalize_top_holders(profile)
-    controller = _normalize_controller(profile)
-    holder_changes = _normalize_holder_changes(change_frame)
-    institution_dates = [
-        row.get("REPORT_DATE")
-        for row in profile.get("jgcc_date") or []
-        if isinstance(row, dict)
-    ]
-    institution_date, newest_institution_date = _select_completed_report_date(
-        institution_dates, as_of
-    )
-    institution_payload: dict[str, Any] = {}
-    if institution_date:
-        try:
-            if use_cache:
-                institution_payload, cache_detail["institution"] = cached_call(
-                    f"shareholders:institution:{code}:{institution_date}",
-                    lambda: _fetch_institution_report(code, institution_date),
-                    ttl_seconds=12 * 3600,
-                )
-            else:
-                institution_payload = _fetch_institution_report(code, institution_date)
-        except Exception as exc:
-            errors.append(f"institution: {type(exc).__name__}: {exc}")
-    institution = _normalize_institution(institution_payload, institution_date)
-    structured_ownership: dict[str, Any] = {}
-    try:
-        if not include_structured:
-            raise LookupError("structured ownership not requested")
-        from market_data_service.providers.evidence import get_company_evidence
-
-        structured_result = get_company_evidence(
-            code, sections=("ownership",), days=730
-        )
-        structured_ownership = (structured_result.get("sections") or {}).get(
-            "ownership"
-        ) or {}
-        errors.extend(
-            (
-                f"structured_ownership: {error}"
-                for error in structured_ownership.get("errors") or []
-            )
-        )
-        warnings.extend(
-            (str(warning) for warning in structured_ownership.get("warnings") or [])
-        )
-    except LookupError:
-        pass
-    except Exception as exc:
-        errors.append(f"structured_ownership: {type(exc).__name__}: {str(exc)[:400]}")
-    if (
-        newest_institution_date
-        and institution_date
-        and (newest_institution_date > institution_date)
-    ):
-        warnings.append(
-            f"机构持仓跳过仍在披露中的 {newest_institution_date}，采用已完成披露期 {institution_date}"
-        )
-    if controller.get("available"):
-        warnings.append(str(controller["date_note"]))
-    holder_report_date = holder_count.get("report_date") or top_holders_report_date
-    dated_values = [
-        holder_report_date,
-        top_holders_report_date,
-        institution_date,
-        *(item.get("announcement_date") for item in holder_changes),
-    ]
-    data_time = max((value for value in dated_values if value), default=None)
-    expected_report_date = _expected_latest_report_date(as_of)
-    is_stale = (
-        holder_report_date < expected_report_date.isoformat()
-        if holder_report_date
-        else None
-    )
-    core_sections = {
-        "holder_count": bool(holder_count),
-        "top_holders": bool(top_holders),
-        "institution_holding": institution.get("available") is True,
-    }
-    success = any(core_sections.values())
-    return {
-        "symbol": code,
-        "holder_count": holder_count,
-        "top_holders_report_date": top_holders_report_date,
-        "top_holders": top_holders,
-        "top_holder_item_count": len(top_holders),
-        "institution_holding": institution,
-        "institution_holding_ratio": institution.get("percent_of_total_shares"),
-        "institution_holding_ratio_basis": "percent_of_total_shares",
-        "actual_controller": controller,
-        "holder_changes": holder_changes,
-        "holder_change_item_count": len(holder_changes),
-        "structured_ownership": structured_ownership if include_structured else None,
-        "equity_pledges": (
-            (structured_ownership.get("datasets") or {}).get("equity_pledges") or {}
-        ).get("items")
-        or [],
-        "restricted_releases": (
-            (structured_ownership.get("datasets") or {}).get("restricted_releases")
-            or {}
-        ).get("items")
-        or [],
-        "northbound_holding_history": (
-            (structured_ownership.get("datasets") or {}).get(
-                "northbound_holding_history"
-            )
-            or {}
-        ).get("items")
-        or [],
-        "units": {
-            "shares": "股",
-            "ratio": "%",
-            "market_value": "元",
-            "average_price": "元/股",
-        },
-        "source": "东方财富F10股东研究 + AKShare结构化股权与持仓证据"
-        if include_structured
-        else "东方财富F10股东研究 + AKShare同花顺重要股东增减持",
-        "sources": [
-            "东方财富F10股东研究",
-            "AKShare.stock_shareholder_change_ths",
-            *(
-                ["AKShare股权质押/限售解禁/沪深港通个股持仓/增减持/控制权"]
-                if include_structured
-                else []
-            ),
-        ],
-        "source_urls": [
-            f"{_SOURCE_URL}?type=web&code={exchange_prefix(code, upper=True)}",
-            f"https://basic.10jqka.com.cn/new/{code}/event.html",
-        ],
-        "source_scope": {
-            "profile": "单股当前F10档案",
-            "institution": "最近已完成披露报告期的机构持仓合计与分类",
-            "holder_changes": "同花顺公司大事中的单股重要股东持股变动",
-        },
-        "section_availability": core_sections
-        | {
-            "actual_controller": controller.get("available") is True,
-            "holder_changes": change_frame is not None,
-            **(
-                {"structured_ownership": structured_ownership.get("success") is True}
-                if include_structured
-                else {}
-            ),
-        },
-        "success": success,
-        "partial": success and (not all(core_sections.values()) or bool(errors)),
-        "errors": errors,
-        "warnings": warnings,
-        "data_time": data_time,
-        "holder_report_date": holder_report_date,
-        "expected_latest_report_date": expected_report_date.isoformat(),
-        "freshness_unknown": holder_report_date is None,
-        "is_stale": is_stale,
-        "fallback_used": False,
-        "cache_detail": cache_detail,
-        "_cached": all(cache_detail.values()),
-        "_fetched_at": datetime.now().astimezone().isoformat(),
-    }
 
 
 def _validated_code(symbol: str) -> str:

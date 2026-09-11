@@ -12,12 +12,6 @@ def read_bond_yield_eastmoney(
     return read_source("get_bond_yield.read_bond_yield_eastmoney", locals())
 
 
-def get_bond_yield(
-    country: str = "cn", term: str = "10y", days: int = 30
-) -> dict[str, Any]:
-    return read_source("get_bond_yield.get_bond_yield", locals())
-
-
 COUNTRIES = {"cn": "中国", "us": "美国"}
 TERMS = {"2y": "2年", "5y": "5年", "10y": "10年", "30y": "30年"}
 TOOLS = (
@@ -42,6 +36,5 @@ TOOLS = (
 )
 __all__ = [
     "TOOLS",
-    "get_bond_yield",
     "read_bond_yield_eastmoney",
 ]

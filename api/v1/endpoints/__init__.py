@@ -9,11 +9,13 @@ API v1 Endpoints 模块初始化
 """
 
 __all__ = [
+    "agent",
     "auth",
-    "history",
+    "batches",
+    "data_service",
     "indicator_screening",
-    "industry_cycle",
-    "stock_info",
+    "rss",
+    "stocks",
     "system_config",
     "watchlist",
 ]

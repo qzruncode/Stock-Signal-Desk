@@ -4,10 +4,9 @@ from datetime import date
 
 import pandas as pd
 
-from src.tools._macro_common import expected_indicator_period
-from src.tools.get_bond_yield import _fetch_frame, _same_date_spread, read_bond_yield_eastmoney
-from src.tools.get_index_data import _merge_snapshot
-from src.tools.get_macro_indicator import read_macro_indicator_akshare
+from market_data_service.providers._macro_common import expected_indicator_period
+from market_data_service.providers.get_bond_yield import _fetch_frame, read_bond_yield_eastmoney
+from market_data_service.providers.get_macro_indicator import read_macro_indicator_akshare
 
 
 def test_indicator_release_calendar_does_not_expect_unreleased_periods():
@@ -27,41 +26,6 @@ def test_indicator_release_calendar_does_not_expect_unreleased_periods():
     assert expected_indicator_period("GDP", date(2026, 7, 20)) == date(2026, 6, 30)
     assert expected_indicator_period("GDP", date(2026, 1, 10)) == date(2025, 9, 30)
     assert expected_indicator_period("GDP", date(2026, 1, 20)) == date(2025, 12, 31)
-
-
-def test_index_snapshot_only_appends_when_previous_close_connects_to_daily_series():
-    history = [
-        {"date": "2026-07-14", "close": 98.0, "record_type": "daily_close"},
-        {"date": "2026-07-15", "close": 100.0, "record_type": "daily_close"},
-    ]
-    connected = {
-        "date": "2026-07-16",
-        "close": 101.0,
-        "previous_close": 100.0,
-        "record_type": "realtime_snapshot",
-    }
-    stale_or_unrelated = {**connected, "previous_close": 95.0}
-
-    merged = _merge_snapshot(history, connected, 5)
-    rejected = _merge_snapshot(history, stale_or_unrelated, 5)
-
-    assert [row["date"] for row in merged] == ["2026-07-14", "2026-07-15", "2026-07-16"]
-    assert merged[-1]["record_type"] == "realtime_snapshot"
-    assert rejected == history
-
-
-def test_bond_curve_spread_uses_one_common_observation_date():
-    frame = pd.DataFrame(
-        [
-            {"日期": "2026-07-14", "中国国债收益率10年": 2.0, "中国国债收益率2年": 1.0},
-            {"日期": "2026-07-15", "中国国债收益率10年": 2.1, "中国国债收益率2年": None},
-        ]
-    )
-
-    spread, spread_date = _same_date_spread(frame, "cn")
-
-    assert spread == 1.0
-    assert spread_date == "2026-07-14"
 
 
 def test_bond_yield_fetches_only_recent_page_with_explicit_timeout(monkeypatch):
@@ -94,7 +58,7 @@ def test_bond_yield_fetches_only_recent_page_with_explicit_timeout(monkeypatch):
         calls.append((url, kwargs))
         return Response()
 
-    monkeypatch.setattr("src.tools.get_bond_yield.requests.get", fake_get)
+    monkeypatch.setattr("market_data_service.providers.get_bond_yield.requests.get", fake_get)
 
     frame = _fetch_frame()
 
@@ -119,7 +83,7 @@ def test_agent_bond_read_has_no_curve_spread_or_local_fallback(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "src.tools.get_bond_yield.cached_call",
+        "market_data_service.providers.get_bond_yield.cached_call",
         lambda _key, _call, **_kwargs: (frame, False),
     )
 
@@ -140,7 +104,7 @@ def test_agent_macro_read_has_no_trend_or_local_fallback(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "src.tools.get_macro_indicator.cached_call",
+        "market_data_service.providers.get_macro_indicator.cached_call",
         lambda _key, _call, **_kwargs: (frame, False),
     )
 

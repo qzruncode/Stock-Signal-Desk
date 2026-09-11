@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.tools.get_shareholder_structure import (
-    _expected_latest_report_date,
-    _select_completed_report_date,
-    get_shareholder_structure,
+from market_data_service.providers.get_shareholder_structure import (
+    read_institutional_holdings_eastmoney,
+    read_major_shareholder_changes_ths,
+    read_shareholder_f10_profile_eastmoney,
 )
 
 
@@ -76,17 +76,45 @@ def _institution() -> dict:
     }
 
 
-def test_institution_period_skips_incomplete_interim_reporting() -> None:
-    selected, newest = _select_completed_report_date(
-        ["2026-06-30", "2026-03-31", "2025-12-31"],
-        date(2026, 7, 16),
-    )
-    assert newest == "2026-06-30"
-    assert selected == "2026-03-31"
-    assert _expected_latest_report_date(date(2026, 7, 16)) == date(2026, 3, 31)
+def test_f10_profile_read_returns_dated_single_stock_evidence() -> None:
+    with (
+        patch(
+            "market_data_service.providers.get_shareholder_structure._fetch_f10_profile",
+            return_value=_profile(),
+        ),
+        patch(
+            "market_data_service.providers.get_shareholder_structure._today",
+            return_value=date(2026, 7, 16),
+        ),
+    ):
+        result = read_shareholder_f10_profile_eastmoney("600519", use_cache=False)
+
+    assert result["success"] is True
+    assert result["holder_count"]["holder_count"] == 243159
+    assert result["holder_count"]["change_count"] == -12733
+    assert result["top_holders"][0]["holding_shares"] == 681282935
+    assert result["top_holders"][0]["change_direction"] == "增持"
+    assert result["actual_controller"]["name"] == "贵州省国资委"
+    assert result["is_stale"] is False
 
 
-def test_tool_uses_true_institution_aggregate_and_dated_single_stock_profile() -> None:
+def test_institution_read_uses_the_explicit_disclosure_period() -> None:
+    with patch(
+        "market_data_service.providers.get_shareholder_structure._fetch_institution_report",
+        return_value=_institution(),
+    ) as institution:
+        result = read_institutional_holdings_eastmoney(
+            "600519", "2026-03-31", use_cache=False
+        )
+
+    institution.assert_called_once_with("600519", "2026-03-31")
+    assert result["success"] is True
+    assert result["institution_holding"]["percent_of_total_shares"] == 72.55418236
+    assert result["institution_holding"]["institution_count"] == 1379
+    assert result["institution_holding"]["breakdown"][0]["institution_type"] == "基金"
+
+
+def test_major_shareholder_change_read_preserves_signed_change() -> None:
     changes = pd.DataFrame(
         [
             {
@@ -100,47 +128,33 @@ def test_tool_uses_true_institution_aggregate_and_dated_single_stock_profile() -
             }
         ]
     )
-    with (
-        patch("src.tools.get_shareholder_structure._fetch_f10_profile", return_value=_profile()),
-        patch(
-            "src.tools.get_shareholder_structure._fetch_institution_report", return_value=_institution()
-        ) as institution,
-        patch("src.tools.get_shareholder_structure._fetch_holder_change_frame", return_value=changes),
-        patch("src.tools.get_shareholder_structure._today", return_value=date(2026, 7, 16)),
+    with patch(
+        "market_data_service.providers.get_shareholder_structure._fetch_holder_change_frame",
+        return_value=changes,
     ):
-        result = get_shareholder_structure("600519", use_cache=False)
+        result = read_major_shareholder_changes_ths("600519", use_cache=False)
 
-    institution.assert_called_once_with("600519", "2026-03-31")
     assert result["success"] is True
-    assert result["is_stale"] is False
-    assert result["holder_count"]["holder_count"] == 243159
-    assert result["holder_count"]["change_count"] == -12733
-    assert result["top_holders"][0]["holding_shares"] == 681282935
-    assert result["top_holders"][0]["change_direction"] == "增持"
-    assert result["institution_holding_ratio"] == 72.55418236
-    assert result["institution_holding_ratio_basis"] == "percent_of_total_shares"
-    assert result["institution_holding"]["institution_count"] == 1379
-    assert result["institution_holding"]["breakdown"][0]["institution_type"] == "基金"
-    assert result["actual_controller"]["name"] == "贵州省国资委"
     assert result["holder_changes"][0]["change_direction"] == "减持"
     assert result["holder_changes"][0]["change_shares"] == 15000
     assert result["holder_changes"][0]["signed_change_shares"] == -15000
-    assert result["fallback_used"] is False
-    assert any("跳过仍在披露中" in warning for warning in result["warnings"])
 
 
 def test_no_controller_is_available_without_using_historical_market_wide_fallback() -> None:
     profile = _profile()
     profile["sjkzr"] = [{"SECURITY_CODE": "600519", "HOLDER_NAME": None, "HOLD_RATIO": None}]
     with (
-        patch("src.tools.get_shareholder_structure._fetch_f10_profile", return_value=profile),
-        patch("src.tools.get_shareholder_structure._fetch_institution_report", return_value=_institution()),
-        patch("src.tools.get_shareholder_structure._fetch_holder_change_frame", return_value=pd.DataFrame()),
-        patch("src.tools.get_shareholder_structure._today", return_value=date(2026, 7, 16)),
+        patch(
+            "market_data_service.providers.get_shareholder_structure._fetch_f10_profile",
+            return_value=profile,
+        ),
+        patch(
+            "market_data_service.providers.get_shareholder_structure._today",
+            return_value=date(2026, 7, 16),
+        ),
     ):
-        result = get_shareholder_structure("600519", use_cache=False)
+        result = read_shareholder_f10_profile_eastmoney("600519", use_cache=False)
 
     assert result["actual_controller"]["available"] is False
     assert result["actual_controller"]["name"] is None
-    assert result["partial"] is False
-    assert not any("stock_hold_control_cninfo" in source for source in result["sources"])
+    assert result["freshness_unknown"] is False

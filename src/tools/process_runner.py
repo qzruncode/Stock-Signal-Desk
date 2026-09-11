@@ -26,7 +26,6 @@ ISOLATED_TOOL_NAMES = frozenset(
         "read_market_limit_up_pool_eastmoney",
         "read_market_limit_down_pool_eastmoney",
         "read_market_broken_board_pool_eastmoney",
-        "get_sector_list",
         "read_sector_flow_eastmoney",
         "read_index_daily_history_sina",
         "read_index_quote_sina",

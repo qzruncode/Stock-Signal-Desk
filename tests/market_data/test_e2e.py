@@ -138,11 +138,6 @@ def test_01_automatic_bootstrap_and_database_isolation(stack):
 def test_02_business_http_contracts_and_rich_rss(stack):
     data, business, _, _ = stack
     response = business.post(
-        "/api/v1/stocks/fundamental-filter", json={"codes": ["000001"]}
-    )
-    assert response.status_code == 200, response.text
-    assert response.json()["data"]["000001"]["revenue_ttm"] == 200
-    response = business.post(
         "/api/v1/rss/feeds",
         json={"route_path": "/wallstreetcn/news/global", "limit": 10},
     )
@@ -160,7 +155,7 @@ def test_02_business_http_contracts_and_rich_rss(stack):
         and "attachment" in csv.headers["content-disposition"]
     )
     business_python(
-        'from src.tools._kline import get_kline; result = get_kline("000001", count=120); assert len(result["data"]) == 120 and result["data_service"]["status"] == "fresh"'
+        'from src.tools.source_operations import read_recent_kline; result = read_recent_kline("eastmoney", "000001", count=120); assert len(result["data"]) == 120 and result["data_service"]["status"] == "fresh"'
     )
 
 
@@ -342,7 +337,7 @@ def test_07_unavailable_service_fails_closed_in_business_tools(stack):
     control("stop", "e2e-api")
     try:
         business_python(
-            'from src.services.market_data_client import MarketDataError\nfrom src.tools._kline import get_kline\ntry:\n    get_kline("000001", count=30)\nexcept MarketDataError as exc:\n    assert "无法连接独立数据服务" in str(exc)\nelse:\n    raise AssertionError("Service unavailable but tool returned data")'
+            'from src.services.market_data_client import MarketDataError\nfrom src.tools.source_operations import read_recent_kline\ntry:\n    read_recent_kline("eastmoney", "000001", count=30)\nexcept MarketDataError as exc:\n    assert "无法连接独立数据服务" in str(exc)\nelse:\n    raise AssertionError("Service unavailable but tool returned data")'
         )
     finally:
         control("start", "e2e-api")

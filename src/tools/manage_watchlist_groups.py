@@ -239,31 +239,6 @@ def remove_watchlist_group_members(group: str, symbols: str) -> dict[str, Any]:
     )
 
 
-def manage_watchlist_groups(
-    action: str,
-    group: str = "",
-    symbols: str = "",
-    new_name: str = "",
-    confirmed: bool = False,
-) -> dict[str, Any]:
-    """Legacy multiplexed adapter retained for non-Agent callers only."""
-    if action == "list":
-        return list_watchlist_groups()
-    if action == "create":
-        return create_watchlist_group(group, symbols)
-    if action == "rename":
-        return rename_watchlist_group(group, new_name)
-    if action == "delete":
-        if not confirmed:
-            raise ValueError("删除自选分组前必须获得用户明确确认，并传 confirmed=true")
-        return delete_watchlist_group(group)
-    if action == "add":
-        return add_watchlist_group_members(group, symbols)
-    if action == "remove":
-        return remove_watchlist_group_members(group, symbols)
-    raise ValueError("action 必须是 list、create、rename、delete、add 或 remove")
-
-
 TOOLS = (
     ToolSpec(
         name="list_watchlist_groups",
@@ -362,7 +337,6 @@ __all__ = [
     "create_watchlist_group",
     "delete_watchlist_group",
     "list_watchlist_groups",
-    "manage_watchlist_groups",
     "remove_watchlist_group_members",
     "rename_watchlist_group",
 ]

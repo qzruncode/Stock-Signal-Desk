@@ -15,7 +15,6 @@ from src.storage.mixins.agent_run_trace import redact_agent_trace
 from src.storage.models import (
     AgentFinancialConclusion,
     AgentFinancialOutcome,
-    StockDaily,
 )
 
 

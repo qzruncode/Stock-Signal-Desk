@@ -13,22 +13,12 @@ from fastapi import APIRouter
 
 from api.v1.endpoints import (
     auth,
-    history,
     system_config,
     batches,
     stocks,
     watchlist,
-    quotes,
-    kline,
-    market_status,
-    sectors,
-    stock_info,
-    financials,
-    macro,
     agent,
     rss,
-    market_themes,
-    industry_cycle,
     indicator_screening,
     data_service,
 )
@@ -39,8 +29,6 @@ router.include_router(data_service.router, prefix="/data-service", tags=["DataSe
 
 router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 
-router.include_router(history.router, prefix="/history", tags=["History"])
-
 router.include_router(system_config.router, prefix="/system", tags=["SystemConfig"])
 
 
@@ -50,29 +38,11 @@ router.include_router(watchlist.router, prefix="/watchlist", tags=["Watchlist"])
 
 router.include_router(stocks.router, prefix="/stocks", tags=["Stocks"])
 
-router.include_router(quotes.router, prefix="/quotes", tags=["Quotes"])
-
-router.include_router(kline.router, prefix="/kline", tags=["KLine"])
-
-router.include_router(market_status.router, prefix="/market", tags=["Market"])
-
-router.include_router(sectors.router, prefix="/market", tags=["Market"])
-
-router.include_router(market_themes.router, prefix="/market", tags=["Market"])
-
-router.include_router(stock_info.router, prefix="/stocks", tags=["Stocks"])
-
-router.include_router(financials.router, prefix="/stocks", tags=["Stocks"])
-
-router.include_router(industry_cycle.router, prefix="/stocks", tags=["Stocks"])
-
 router.include_router(
     indicator_screening.router,
     prefix="/indicator-screening",
     tags=["IndicatorScreening"],
 )
-
-router.include_router(macro.router, prefix="/macro", tags=["Macro"])
 
 router.include_router(agent.router, prefix="", tags=["Agent"])
 

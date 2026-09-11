@@ -6,12 +6,6 @@ from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
 
 
-def get_valuation_ratios(
-    symbol: str, with_history: bool = True, *, use_cache: bool = True
-) -> dict[str, Any]:
-    return read_source("get_valuation_ratios.get_valuation_ratios", locals())
-
-
 def read_valuation_history_eastmoney(
     symbol: str, days: int = 250, *, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -114,7 +108,6 @@ TOOLS = (
 )
 __all__ = [
     "TOOLS",
-    "get_valuation_ratios",
     "read_dividend_history_eastmoney",
     "read_peer_valuation_eastmoney",
     "read_valuation_history_eastmoney",

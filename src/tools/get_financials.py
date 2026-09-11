@@ -6,12 +6,6 @@ from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
 
 
-def get_financials(
-    symbol: str, periods: int = 6, *, use_cache: bool = True
-) -> dict[str, Any]:
-    return read_source("financials.get_financials", locals())
-
-
 def read_core_financial_indicators_ths(
     symbol: str, periods: int = 6, *, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -42,4 +36,4 @@ TOOLS = (
         category="financials",
     ),
 )
-__all__ = ["TOOLS", "get_financials", "read_core_financial_indicators_ths"]
+__all__ = ["TOOLS", "read_core_financial_indicators_ths"]

@@ -9,7 +9,6 @@ export * from './Loading';
 export * from './Drawer';
 export * from './ScrollArea';
 export * from './ApiErrorAlert';
-export * from './ScoreGauge';
 export * from './Select';
 export * from './CompactSelect';
 export * from './FormControls';

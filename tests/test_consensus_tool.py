@@ -1,20 +1,38 @@
 # -*- coding: utf-8 -*-
-"""Contracts for normalized sell-side consensus data."""
+"""Contracts for the independent sell-side consensus source reads."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.tools.get_consensus_estimates import get_consensus_estimates
+from market_data_service.providers.get_consensus_estimates import (
+    read_consensus_financial_estimates_ths,
+    read_consensus_institution_forecasts_ths,
+    read_consensus_metric_ths,
+)
 
 
-def test_consensus_distinguishes_aggregate_and_individual_forecasts() -> None:
+def test_consensus_source_reads_keep_metric_and_detail_queries_separate() -> None:
     summaries = {
         "eps": [
-            {"年度": "2026", "预测机构数": 46, "最小值": 66.27, "均值": 68.83, "最大值": 77.85, "行业平均数": 8.57}
+            {
+                "年度": "2026",
+                "预测机构数": 46,
+                "最小值": 66.27,
+                "均值": 68.83,
+                "最大值": 77.85,
+                "行业平均数": 8.57,
+            }
         ],
         "net_profit": [
-            {"年度": "2026", "预测机构数": 46, "最小值": 829.86, "均值": 861.83, "最大值": 974.85, "行业平均数": 105.37}
+            {
+                "年度": "2026",
+                "预测机构数": 46,
+                "最小值": 829.86,
+                "均值": 861.83,
+                "最大值": 974.85,
+                "行业平均数": 105.37,
+            }
         ],
     }
     institution_rows = [
@@ -27,9 +45,21 @@ def test_consensus_distinguishes_aggregate_and_individual_forecasts() -> None:
         }
     ]
     financial_rows = [
-        {"预测指标": "营业收入(元)", "2025-实际值": "1688.38亿", "预测2026-平均": "1805.30亿"},
-        {"预测指标": "净利润增长率", "2025-实际值": "-4.53%", "预测2026-平均": "5.37%"},
-        {"预测指标": "净资产收益率", "2025-实际值": "32.53%", "预测2026-平均": "31.62%"},
+        {
+            "预测指标": "营业收入(元)",
+            "2025-实际值": "1688.38亿",
+            "预测2026-平均": "1805.30亿",
+        },
+        {
+            "预测指标": "净利润增长率",
+            "2025-实际值": "-4.53%",
+            "预测2026-平均": "5.37%",
+        },
+        {
+            "预测指标": "净资产收益率",
+            "2025-实际值": "32.53%",
+            "预测2026-平均": "31.62%",
+        },
     ]
 
     def fake_forecast(_, metric):
@@ -39,58 +69,43 @@ def test_consensus_distinguishes_aggregate_and_individual_forecasts() -> None:
         return (institution_rows if kind == "institutions" else financial_rows), False
 
     with (
-        patch("src.tools.get_consensus_estimates._forecast", side_effect=fake_forecast),
-        patch("src.tools.get_consensus_estimates._detail", side_effect=fake_detail),
+        patch(
+            "market_data_service.providers.get_consensus_estimates._forecast",
+            side_effect=fake_forecast,
+        ),
+        patch(
+            "market_data_service.providers.get_consensus_estimates._detail",
+            side_effect=fake_detail,
+        ),
     ):
-        result = get_consensus_estimates("600519")
+        eps = read_consensus_metric_ths("600519", metric="eps")
+        net_profit = read_consensus_metric_ths("600519", metric="net_profit")
+        institutions = read_consensus_institution_forecasts_ths("600519")
+        financials = read_consensus_financial_estimates_ths("600519")
 
-    assert result["success"] is True
-    assert result["coverage_available"] is True
-    assert result["estimates"][0]["coverage_count"] == 46
-    assert result["estimates"][0]["eps"]["mean"] == 68.83
-    assert result["estimates"][0]["eps"]["unit"] == "元/股"
-    assert result["estimates"][0]["net_profit"]["mean"] == 861.83
-    assert result["estimates"][0]["net_profit"]["unit"] == "亿元"
-    assert result["institutions"][0]["forecasts"][0]["net_profit_yi"] == 842.93
-    assert result["data_time"] == "2026-06-12"
-    assert result["actuals"][0]["revenue_yi"] == 1688.38
-    assert result["financial_forecasts"][0]["net_profit_growth_pct"] == 5.37
-    assert result["financial_forecasts"][0]["roe_pct"] == 31.62
+    assert eps["success"] is True
+    assert eps["estimates"][0]["coverage_count"] == 46
+    assert eps["estimates"][0]["mean"] == 68.83
+    assert eps["estimates"][0]["unit"] == "元/股"
+    assert net_profit["estimates"][0]["mean"] == 861.83
+    assert net_profit["estimates"][0]["unit"] == "亿元"
+    assert institutions["institutions"][0]["forecasts"][0]["net_profit_yi"] == 842.93
+    assert institutions["data_time"] == "2026-06-12"
+    assert financials["actuals"][0]["revenue_yi"] == 1688.38
+    assert financials["financial_forecasts"][0]["net_profit_growth_pct"] == 5.37
+    assert financials["financial_forecasts"][0]["roe_pct"] == 31.62
 
 
-def test_metric_specific_result_does_not_claim_net_profit_data() -> None:
+def test_metric_read_reports_no_coverage_without_claiming_other_metrics() -> None:
     with patch(
-        "src.tools.get_consensus_estimates._forecast",
-        return_value=(
-            [{"年度": "2026", "预测机构数": 3, "最小值": 1.0, "均值": 1.2, "最大值": 1.4, "行业平均数": 0.8}],
-            False,
-        ),
+        "market_data_service.providers.get_consensus_estimates._forecast",
+        return_value=([], True),
     ):
-        result = get_consensus_estimates("600519", metric="eps")
-
-    assert list(result["metrics"]) == ["eps"]
-    assert "net_profit" not in result["estimates"][0]
-    assert result["freshness_unknown"] is True
-
-
-def test_no_analyst_coverage_is_valid_negative_evidence() -> None:
-    with (
-        patch(
-            "src.tools.get_consensus_estimates._forecast",
-            return_value=([], True),
-        ),
-        patch(
-            "src.tools.get_consensus_estimates._detail",
-            side_effect=IndexError("no detail table"),
-        ),
-    ):
-        result = get_consensus_estimates("301368")
+        result = read_consensus_metric_ths("301368", metric="eps")
 
     assert result["success"] is True
     assert result["partial"] is False
     assert result["coverage_available"] is False
     assert result["coverage_status"] == "no_sell_side_coverage"
-    assert result["source_query_complete"] is True
-    assert result["coverage_count_latest"] == 0
     assert result["errors"] == []
     assert any("无机构一致预测覆盖" in warning for warning in result["warnings"])

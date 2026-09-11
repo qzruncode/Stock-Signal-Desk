@@ -7,7 +7,10 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.tools.search_news import _entity_mentions, search_news
+from market_data_service.providers.news import (
+    _entity_mentions,
+    read_company_news_akshare,
+)
 
 
 def test_entity_mentions_reports_exact_occurrence_without_relevance_score() -> None:
@@ -25,7 +28,7 @@ def test_entity_mentions_reports_exact_occurrence_without_relevance_score() -> N
     }
 
 
-def test_search_news_dedupes_sources_but_retains_unverified_results() -> None:
+def test_company_news_source_dedupes_records_but_retains_unverified_results() -> None:
     now = datetime.now().replace(microsecond=0).isoformat()
     direct = pd.DataFrame(
         [
@@ -45,34 +48,17 @@ def test_search_news_dedupes_sources_but_retains_unverified_results() -> None:
             },
         ]
     )
-    rss = {
-        "items": [
-            {
-                "title": "嘉益股份：控股股东拟增持",
-                "summary": "嘉益股份公告增持计划，增持金额不低于4000万元",
-                "published": now,
-                "source": "东方财富",
-                "link": "https://example.com/a?from=rss",
-            }
-        ],
-        "errors": [],
-        "_cached": False,
-    }
     with (
         patch(
-            "src.tools.search_news._stock_name",
+            "market_data_service.providers.news._stock_name",
             return_value="嘉益股份",
         ),
         patch(
-            "src.tools.search_news._fetch_direct",
+            "market_data_service.providers.news._fetch_direct",
             return_value=direct,
         ),
-        patch(
-            "src.tools.search_news._fetch_rss",
-            return_value=rss,
-        ),
     ):
-        result = search_news("301004", days=30, limit=20)
+        result = read_company_news_akshare("301004", days=30, limit=20, use_cache=False)
 
     assert result["success"] is True
     assert result["item_count"] == 2

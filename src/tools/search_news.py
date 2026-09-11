@@ -6,12 +6,6 @@ from src.services.market_data_client import read_source
 from src.tools.base import ToolSpec, object_schema
 
 
-def search_news(
-    symbol: str, days: int = 30, limit: int = 20, use_cache: bool = True
-) -> dict[str, Any]:
-    return read_source("news.search_news", locals())
-
-
 def read_company_news_akshare(
     symbol: str, days: int = 30, limit: int = 20, use_cache: bool = True
 ) -> dict[str, Any]:
@@ -55,4 +49,4 @@ TOOLS = (
         category="news_source",
     ),
 )
-__all__ = ["TOOLS", "read_company_news_akshare", "search_news"]
+__all__ = ["TOOLS", "read_company_news_akshare"]

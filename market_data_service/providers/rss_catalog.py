@@ -134,7 +134,7 @@ def _merge_param_hints(
                     if isinstance(o, dict) and o.get("value") is not None
                 ]
         if is_picker:
-            picker_hint = "需选择具体值，可通过 inspect_financial_source 获取可选项"
+            picker_hint = "需选择具体值，可通过来源目录查询可用参数"
             entry["hint"] = (
                 f"{entry['hint']}（{picker_hint}）" if entry["hint"] else picker_hint
             )

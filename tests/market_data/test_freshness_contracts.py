@@ -90,11 +90,6 @@ def test_request_ranges_types_and_closed_source_choices_are_validated_before_wor
         {"symbols": ["000001"], "start_date": "2026-02-02", "end_date": "2026-01-01"},
     ]:
         assert client.post("/v1/snapshots", json=payload).status_code == 422
-    operations = client.get("/v1/capabilities").json()["operations"]
-    theme = next(
-        item for item in operations if item["operation"] == "market.theme_candidates"
-    )
-    assert "local_universe" not in theme["arguments_schema"]["properties"]
 
 
 def test_security_endpoint_does_not_leak_unvalidated_financial_values(service):
@@ -105,19 +100,6 @@ def test_security_endpoint_does_not_leak_unvalidated_financial_values(service):
         "/v1/snapshots", json={"symbols": ["000001"], "datasets": ["securities"]}
     ).json()
     assert snapshot["items"]["000001"]["financials"] is None
-
-
-def test_fixture_registry_cannot_fall_through_to_a_live_provider(service):
-    _, _, _, _ = service
-    from market_data_service.sources import register_request, _refresh_source
-
-    key = register_request("financials.get_financials", {"symbol": "000001"})
-    with patch(
-        "market_data_service.providers.financials.get_financials",
-        side_effect=AssertionError("live source executed"),
-    ):
-        with pytest.raises(ValueError, match="live sources are disabled"):
-            _refresh_source(key)
 
 
 @pytest.mark.parametrize(

@@ -69,10 +69,7 @@ def _write_manifest(backup_path: Path, *, backend: str) -> Path:
 def migrate() -> dict[str, object]:
     engine = _engine()
     try:
-        ensure_compatible_schema(
-            engine,
-            engine.url.get_backend_name() == "sqlite",
-        )
+        ensure_compatible_schema(engine)
         assert_schema_compatible(engine)
         return {
             "ok": True,

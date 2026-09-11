@@ -33,11 +33,6 @@ def _regenerate_batch_report_for_run(run: dict) -> tuple[str, BatchRunState]:
     results = _parse_results_json(run.get("results_json"))
     if not results:
         raise HTTPException(status_code=400, detail="该跑批没有可用于汇总的单股结果")
-    if run.get("analysis_mode") == "buy_criteria":
-        raise HTTPException(
-            status_code=410,
-            detail="旧的买入判断跑批报告已停止重新生成",
-        )
 
     run_id = run.get("run_id") or ""
     state = BatchRunState(
@@ -109,10 +104,6 @@ def resume_incomplete_batches_on_startup() -> bool:
             stock_codes,
         )
         if len(existing_results) == 0 or len(existing_results) >= len(stock_codes):
-            continue
-
-        if run.get("analysis_mode") == "buy_criteria":
-            logger.warning("Skip auto-resume for removed buy-criteria batch %s", run.get("run_id"))
             continue
 
         from src.prompt_templates import get_prompt_template_store

@@ -68,10 +68,6 @@ class BatchRunItem(BaseModel):
     results_json: Optional[str] = None
     stock_codes_json: Optional[str] = None
     status: str = "completed"
-    analysis_mode: Optional[str] = Field(
-        "template",
-        description="历史记录中的模式标识；新建跑批固定为 template",
-    )
 
 
 class BatchRunListResponse(BaseModel):
@@ -242,12 +238,6 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
         raise HTTPException(status_code=404, detail="跑批记录不存在")
     if run.get("completed_at"):
         raise HTTPException(status_code=400, detail="跑批已完成，无需续跑")
-
-    if run.get("analysis_mode") == "buy_criteria":
-        raise HTTPException(
-            status_code=410,
-            detail="旧的买入判断跑批功能已移除，请使用提示词模板重新创建跑批",
-        )
 
     store = get_prompt_template_store()
     template_id = run.get("template_id") or ""

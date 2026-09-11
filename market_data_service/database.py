@@ -13,7 +13,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from market_data_service.models import (
-    StockDaily,
     ToolCache,
     KlineSnapshot,
     QuoteSnapshot,
@@ -183,50 +182,6 @@ class Database:
 
     def save_quote_snapshot(self, code, data):
         self._save_json_cache(QuoteSnapshot, "code", code, data)
-
-    def save_daily_data(self, frame, code, data_source="unknown"):
-        import pandas as pd
-
-        rows = []
-        fields = set(StockDaily.__table__.columns.keys()) - {"id", "created_at"}
-        for item in frame.to_dict("records"):
-            values = {
-                k: (None if pd.isna(v) else v) for k, v in item.items() if k in fields
-            }
-            values["date"] = pd.Timestamp(item["date"]).date()
-            values.update(code=code, data_source=data_source, updated_at=utcnow())
-            rows.append(values)
-        # All records use the same field set, including absent optional columns.
-        columns = set().union(*(set(item) for item in rows)) if rows else set()
-        rows = [{key: row.get(key) for key in columns} for row in rows]
-        with self.session_scope() as session:
-            self.upsert(session, StockDaily, rows, ["code", "date"])
-        return len(rows)
-
-    def get_latest_data(self, code, days=2):
-        with self.get_session() as session:
-            return list(
-                session.scalars(
-                    select(StockDaily)
-                    .where(StockDaily.code == code)
-                    .order_by(StockDaily.date.desc())
-                    .limit(days)
-                )
-            )
-
-    def get_data_range(self, code, start_date, end_date):
-        with self.get_session() as session:
-            return list(
-                session.scalars(
-                    select(StockDaily)
-                    .where(
-                        StockDaily.code == code,
-                        StockDaily.date >= start_date,
-                        StockDaily.date <= end_date,
-                    )
-                    .order_by(StockDaily.date)
-                )
-            )
 
     def save_macro_index_daily(self, index_code, records, data_source="新浪"):
         fields = {

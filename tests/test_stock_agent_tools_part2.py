@@ -4,36 +4,12 @@
 from __future__ import annotations
 
 import os
-import inspect
-from datetime import datetime
 from unittest.mock import Mock, patch
 
-import pandas as pd
 import pytest
 
-import src.tools.search_financial_news as financial_news_module
-import src.tools.search_research_library as research_library_module
 import src.tools.source_operations as source_operations
 
-from market_data_service.providers.get_consensus_estimates import (
-    get_consensus_estimates,
-)
-from market_data_service.providers.get_peer_comparison import get_peer_comparison
-from market_data_service.providers.get_sector_flow import (
-    _fetch_all as fetch_all_sector_flow,
-    get_sector_flow,
-)
-from market_data_service.providers.get_stock_capital_flow import (
-    _market_for,
-    get_stock_capital_flow,
-)
-from src.tools.get_monetary_policy_operations import _operation_item
-from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
-from src.tools.search_financial_news import (
-    _select_specs,
-    _subject_terms,
-    search_financial_news,
-)
 from src.tools.webfetch import (
     MAX_RESPONSE_SIZE,
     _accept_header_for,
@@ -54,68 +30,6 @@ from src.tools.websearch import (
 
 
 """Focused test slice 2; shared fixtures remain local to this slice."""
-
-
-def _catalog_route(
-    route_path: str,
-    name: str,
-    *,
-    namespace: str = "test",
-    params: list[dict] | None = None,
-) -> dict:
-    return {
-        "route_path": route_path,
-        "name": name,
-        "namespace": namespace,
-        "namespace_name": name,
-        "description": name,
-        "params": params or [],
-    }
-
-
-def test_peer_result_is_bounded_but_preserves_total_count() -> None:
-    rows = [
-        {
-            "CORRE_SECURITY_CODE": f"{index:06d}",
-            "CORRE_SECURITY_NAME": f"peer-{index}",
-            "TOTAL_COUNT": 30,
-            "PAIMING": index + 1,
-            "REPORT_DATE": "2025-12-31",
-            "PEG": index / 10,
-            "PE_TTM": 10 + index,
-            "PB_MRQ": 2 + index / 10,
-        }
-        for index in range(15)
-    ]
-    rows.append(
-        {
-            "CORRE_SECURITY_CODE": "600519",
-            "CORRE_SECURITY_NAME": "贵州茅台",
-            "TOTAL_COUNT": 30,
-            "PAIMING": 20,
-            "REPORT_DATE": "2025-12-31",
-            "PEG": 1.5,
-            "PE_TTM": 20,
-            "PB_MRQ": 5,
-        }
-    )
-    with (
-        patch(
-            "market_data_service.providers.get_peer_comparison._request_rows",
-            return_value=rows,
-        ),
-        patch(
-            "market_data_service.providers.get_peer_comparison.cached_call",
-            side_effect=lambda _, fn, **__: (fn(), False),
-        ),
-    ):
-        result = get_peer_comparison("600519", dimension="valuation")
-
-    bucket = result["dimensions"]["valuation"]
-    assert result["success"] is True
-    assert bucket["sample_size"] == 30
-    assert bucket["target_rank"] == 20
-    assert len(bucket["top_peers"]) == 10
 
 
 def test_websearch_is_generic_and_preserves_the_original_query() -> None:

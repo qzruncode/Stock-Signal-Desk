@@ -25,21 +25,6 @@ def object_value(value: Any, field: str) -> dict[str, Any]:
     raise ValueError(f"{field} 必须是对象")
 
 
-def array_value(value: Any, field: str) -> list[Any]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, list):
-        return list(value)
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"{field} 必须是 JSON 数组") from exc
-        if isinstance(parsed, list):
-            return parsed
-    raise ValueError(f"{field} 必须是数组")
-
-
 def ensure_rss_route(route_path: str) -> str:
     from api.v1.endpoints._rss_catalog import get_rss_catalog
 
@@ -48,11 +33,6 @@ def ensure_rss_route(route_path: str) -> str:
     if not any(isinstance(route, dict) and route.get("route_path") == path for route in routes):
         raise ValueError(f"RSSHub 路由不在助手已筛选来源目录中: {path}")
     return path
-
-
-def ensure_financial_route(route_path: str) -> str:
-    """Compatibility alias for the shared filtered finance catalog."""
-    return ensure_rss_route(route_path)
 
 
 def rss_item_ref(
@@ -75,23 +55,6 @@ def rss_item_ref(
         "title": str(item.get("title") or ""),
         "link": str(item.get("link") or ""),
         "content_hash": content_hash,
-    }
-
-
-def source_ref(route: dict[str, Any]) -> dict[str, Any]:
-    params = route.get("params")
-    if not isinstance(params, list):
-        params = []
-    return {
-        "route_path": str(route.get("route_path") or ""),
-        "namespace": str(route.get("namespace") or ""),
-        "name": str(route.get("name") or ""),
-        "categories": [str(value) for value in route.get("categories") or []],
-        "parameters": params,
-        "features": dict(route.get("features") or {}),
-        "readiness": str(route.get("readiness") or "available"),
-        "auto_recommended": bool(route.get("auto_recommended", True)),
-        "readiness_reason": route.get("readiness_reason"),
     }
 
 
@@ -149,14 +112,11 @@ def timestamp() -> str:
 
 
 __all__ = [
-    "array_value",
     "endpoint_value",
-    "ensure_financial_route",
     "ensure_rss_route",
     "html_text",
     "object_value",
     "rss_item_ref",
     "rss_options_schema",
-    "source_ref",
     "timestamp",
 ]

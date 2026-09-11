@@ -9,7 +9,6 @@ import httpx
 from market_data_service.data_provider.utils import is_bse_code
 from market_data_service.providers.common import (
     bare_local_symbol,
-    bare_symbol,
     cached_call,
     json_value,
 )
@@ -280,94 +279,6 @@ def _normalized_profile(
         if capital
         else None,
     }
-
-
-def get_stock_info(symbol: str, *, use_cache: bool = True) -> dict[str, Any]:
-    """Legacy bundled company view for non-Agent callers.
-
-    The Agent registry exports the two source-specific reads below instead of
-    this convenience merger.
-    """
-    code = bare_symbol(symbol)
-    if not re.fullmatch("\\d{6}", code):
-        raise ValueError("symbol 必须能解析为 6 位股票代码")
-    now = datetime.now().astimezone()
-    errors: list[str] = []
-    profile: dict[str, Any] = {}
-    capital: dict[str, Any] = {}
-    profile_cached = capital_cached = False
-    try:
-        if use_cache:
-            profile, profile_cached = cached_call(
-                f"stock_info:cninfo:v3:{code}",
-                lambda: _fetch_cninfo(code),
-                ttl_seconds=24 * 60 * 60,
-                attempts=2,
-            )
-        else:
-            profile = _fetch_cninfo(code)
-    except Exception as exc:
-        errors.append(f"巨潮资讯公司概况失败: {exc}")
-    try:
-        ttl = 120 if is_trading_time(now) else 30 * 60
-        if use_cache:
-            capital, capital_cached = cached_call(
-                f"stock_info:eastmoney:v3:{code}",
-                lambda: _fetch_eastmoney_capital(code),
-                ttl_seconds=ttl,
-                attempts=2,
-            )
-        else:
-            capital = _fetch_eastmoney_capital(code)
-    except Exception as exc:
-        errors.append(f"东方财富股本快照失败: {exc}")
-    data = _normalized_profile(code, profile, capital)
-    profile_available = bool(profile)
-    capital_available = bool(capital)
-    success = profile_available or capital_available
-    data.update(
-        {
-            "profile_available": profile_available,
-            "capital_snapshot_available": capital_available,
-            "sources": [
-                source
-                for source, available in (
-                    ("巨潮资讯/AKShare", profile_available),
-                    ("东方财富", capital_available),
-                )
-                if available
-            ],
-            "source": " + ".join(
-                [
-                    source
-                    for source, available in (
-                        ("巨潮资讯/AKShare", profile_available),
-                        ("东方财富", capital_available),
-                    )
-                    if available
-                ]
-            )
-            or "none",
-            "success": success,
-            "errors": errors,
-            "warnings": ["公司概况不完整"]
-            if success and (not profile_available)
-            else [],
-            "data_time": now.isoformat() if success else None,
-            "data_time_inferred": success,
-            "is_stale": False if success else None,
-            "freshness_unknown": not success,
-            "fallback_used": not profile_available and capital_available,
-            "_cached": profile_cached
-            and (capital_cached if capital_available else True),
-            "cache_detail": {
-                "profile": profile_cached,
-                "capital_snapshot": capital_cached,
-            },
-            "_fetched_at": now.isoformat(),
-        }
-    )
-    return data
 
 
 def read_company_profile_cninfo(

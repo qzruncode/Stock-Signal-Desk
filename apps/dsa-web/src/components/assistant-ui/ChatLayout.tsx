@@ -71,7 +71,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
   const [isDesktop, setIsDesktop] = useState(false);
   const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
   const [mobileSidebarState, setMobileSidebarState] = useState<'closed' | 'open' | 'closing'>('closed');
-  const [isCheckpointHistoryOpen, setIsCheckpointHistoryOpen] = useState(false);
+  const [checkpointHistoryConversationId, setCheckpointHistoryConversationId] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -102,10 +102,9 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
     return () => window.clearTimeout(timeout);
   }, [mobileSidebarState]);
 
-  useEffect(() => {
-    setIsCheckpointHistoryOpen(false);
-  }, [selectedConversationId]);
-
+  const isCheckpointHistoryOpen = Boolean(
+    selectedConversationId && checkpointHistoryConversationId === selectedConversationId,
+  );
   const mobileSidebarOpen = mobileSidebarState !== 'closed';
 
   return (
@@ -211,7 +210,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
             {selectedConversationId ? (
               <button
                 type="button"
-                onClick={() => setIsCheckpointHistoryOpen(true)}
+                onClick={() => setCheckpointHistoryConversationId(selectedConversationId)}
                 className={cn(
                   'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border',
                   'bg-card text-muted-foreground shadow-sm transition hover:border-primary/30 hover:text-foreground',
@@ -284,7 +283,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
       <CheckpointHistoryDrawer
         isOpen={isCheckpointHistoryOpen}
         conversationId={selectedConversationId}
-        onClose={() => setIsCheckpointHistoryOpen(false)}
+        onClose={() => setCheckpointHistoryConversationId(null)}
       />
     </div>
   );
