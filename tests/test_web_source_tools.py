@@ -9,6 +9,7 @@ from src.tools.web_source_tools import (
     read_web_firecrawl,
     read_web_http,
     read_web_patchright,
+    read_web_scrapling,
     search_web_exa,
     search_web_firecrawl_searxng,
 )
@@ -214,6 +215,35 @@ def test_patchright_reader_does_not_switch_to_http_or_firecrawl() -> None:
     assert result["fallback_used"] is False
     assert result["data_time"] == "2026-08-08T08:00:00+08:00"
     assert result["data_time_provenance"] == "source"
+
+
+def test_scrapling_reader_upgrades_http_reference_without_switching_provider() -> None:
+    raw = {
+        "provider": "scrapling",
+        "success": True,
+        "duration_ms": 31,
+        "content": "页面正文",
+        "attachments": None,
+        "final_url": "https://example.com/article",
+        "title": "文章",
+        "content_type": "text/html",
+        "extraction_method": "scrapling_http+article",
+    }
+    with (
+        patch("src.tools.web_source_tools._validate_public_url"),
+        patch("src.tools.web_source_tools._scrapling_fetch", return_value=raw) as scrapling,
+    ):
+        result = read_web_scrapling("http://example.com/article")
+
+    scrapling.assert_called_once_with(
+        "https://example.com/article",
+        "markdown",
+        30,
+        browser=False,
+    )
+    assert result["success"] is True
+    assert result["url"] == "http://example.com/article"
+    assert result["final_url"] == "https://example.com/article"
 
 
 def test_direct_reader_keeps_transport_time_out_of_data_time() -> None:

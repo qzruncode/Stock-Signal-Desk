@@ -3,7 +3,6 @@ import { cn } from '../../utils/cn';
 
 const entries = [
   ['/', '聊天'],
-  ['/research', '研究档案'],
   ['/stocks', '自选股'],
   ['/screening', '指标选股'],
   ['/sources', '财经来源'],

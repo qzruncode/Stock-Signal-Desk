@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
+from datetime import datetime
 
-from src.agent.langgraph_runtime.agent_tools import build_langchain_tools
+from src.agent.langgraph_runtime.agent_tools import (
+    NATIVE_TOOL_RESULT_MARKER,
+    _native_tool_result_envelope,
+    build_langchain_tools,
+)
 from src.agent.langgraph_runtime.catalog import ToolCatalog
 from src.tools.base import ToolSpec, object_schema
 from src.tools.registry import ToolRegistry
@@ -57,3 +62,15 @@ def test_prompt_context_does_not_remove_any_registered_operation() -> None:
     assert {tool.name for tool in build_langchain_tools(registry)} == set(
         registry.get_tool_names()
     )
+
+
+def test_native_tool_result_envelope_is_json_even_with_date_like_provider_values() -> None:
+    encoded = _native_tool_result_envelope(
+        {"success": True, "result": {"retrieved_at": datetime(2026, 9, 12, 8, 30)}},
+        {"evidence_id": "ev-test"},
+    )
+
+    payload = json.loads(encoded)
+
+    assert payload[NATIVE_TOOL_RESULT_MARKER] is True
+    assert payload["record"]["result"]["retrieved_at"] == "2026-09-12 08:30:00"

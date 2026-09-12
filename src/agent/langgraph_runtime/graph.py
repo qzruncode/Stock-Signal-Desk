@@ -20,6 +20,7 @@ from .memory import ConversationMemoryMiddleware
 from .middleware import (
     AgentPromptMiddleware,
     OperationPolicyMiddleware,
+    ReflectionMiddleware,
     TerminalPublicationMiddleware,
     ToolExecutionMiddleware,
 )
@@ -78,6 +79,7 @@ def build_agent_graph(
             AgentPromptMiddleware(),
             ContextEditingMiddleware(token_count_method="approximate"),
             ContextBudgetMiddleware(),
+            ReflectionMiddleware(),
             OperationPolicyMiddleware(),
             ToolExecutionMiddleware(),
             TerminalPublicationMiddleware(),

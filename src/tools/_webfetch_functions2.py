@@ -39,7 +39,15 @@ from src.tools.webfetch import (
     WEBFETCH_DESCRIPTION,
  )
 
-__all__ = ['_http_fetch', '_scrapling_fetch', '_firecrawl_fetch', '_attempt_view', 'fetch_url']
+__all__ = [
+    '_http_fetch',
+    '_scrapling_fetch',
+    '_firecrawl_fetch',
+    '_attempt_view',
+    '_https_upgrade_url',
+    '_scrapling_failure_kind',
+    'fetch_url',
+]
 
 def _http_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
     """OpenCode-compatible HTTP fetch with validation and document support."""
@@ -327,13 +335,14 @@ def _scrapling_fetch(url: str, fmt: str, timeout: int, *, browser: bool) -> dict
             failure_kind="runtime",
         )
     except Exception as exc:
+        error = str(exc)
         return _timed_result(
             provider,
             started,
             success=False,
             skipped=False,
-            error=str(exc),
-            failure_kind="transport",
+            error=error,
+            failure_kind=_scrapling_failure_kind(error),
         )
 
 def _firecrawl_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
@@ -423,6 +432,31 @@ def _attempt_view(result: dict[str, Any]) -> dict[str, Any]:
         and value is not None
     }
 
+
+def _https_upgrade_url(url: str) -> str | None:
+    """Return the HTTPS alias for a plain HTTP URL when it is safe to try."""
+    try:
+        parsed = urlparse(str(url or ""))
+        if parsed.scheme.lower() != "http" or not parsed.netloc or parsed.port is not None:
+            return None
+    except ValueError:
+        return None
+    return parsed._replace(scheme="https").geturl()
+
+
+def _scrapling_failure_kind(error: str) -> str:
+    """Classify local Scrapling TLS/runtime failures for fast provider fallback."""
+    text = str(error or "").lower()
+    runtime_markers = (
+        "invalid library",
+        "openssl_internal",
+        "boringssl",
+        "ssl_error_syscall",
+        "no active session available",
+        "curl: (35)",
+    )
+    return "provider_unavailable" if any(marker in text for marker in runtime_markers) else "transport"
+
 def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) -> dict[str, Any]:
     fmt = format or "markdown"
     if fmt not in {"markdown", "text", "html"}:
@@ -434,7 +468,11 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
     result: dict[str, Any] | None = None
     degraded_result: dict[str, Any] | None = None
 
-    def run(candidate: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    def run(
+        candidate: Callable[[], dict[str, Any]],
+        *,
+        attempted_url: str,
+    ) -> dict[str, Any]:
         current = candidate()
         unusable_document = _unusable_document_reason(
             str(current.get("content") or ""),
@@ -450,38 +488,57 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
                 "failure_kind": "content",
                 "content": "",
             }
-        attempts.append(_attempt_view(current))
+        attempt = _attempt_view(current)
+        attempt["url"] = attempted_url
+        attempts.append(attempt)
         return current
 
-    direct = run(lambda: _http_fetch(url, fmt, timeout_seconds))
+    direct = run(
+        lambda: _http_fetch(url, fmt, timeout_seconds),
+        attempted_url=url,
+    )
     if direct.get("success") and not direct.get("quality_warning"):
         result = direct
     elif direct.get("success"):
         degraded_result = direct
 
+    secure_url = _https_upgrade_url(url)
+    upgraded_direct: dict[str, Any] | None = None
+    if result is None and secure_url:
+        upgraded_direct = run(
+            lambda: _http_fetch(secure_url, fmt, timeout_seconds),
+            attempted_url=secure_url,
+        )
+        if upgraded_direct.get("success") and not upgraded_direct.get("quality_warning"):
+            result = upgraded_direct
+        elif upgraded_direct.get("success"):
+            degraded_result = upgraded_direct
+
     if result is None:
-        if direct.get("failure_kind") == "challenge":
+        strategy_result = upgraded_direct or direct
+        fallback_url = secure_url or url
+        if strategy_result.get("failure_kind") == "challenge":
             # Static HTTP and Firecrawl commonly reproduce the same encrypted
             # challenge.  A real browser is the useful next step.
             order: list[Callable[[], dict[str, Any]]] = [
-                lambda: _scrapling_fetch(url, fmt, timeout_seconds, browser=True),
-                lambda: _firecrawl_fetch(url, fmt, timeout_seconds),
-                lambda: _scrapling_fetch(url, fmt, timeout_seconds, browser=False),
+                lambda: _scrapling_fetch(fallback_url, fmt, timeout_seconds, browser=True),
+                lambda: _firecrawl_fetch(fallback_url, fmt, timeout_seconds),
+                lambda: _scrapling_fetch(fallback_url, fmt, timeout_seconds, browser=False),
             ]
-        elif direct.get("success"):
+        elif strategy_result.get("success"):
             order = [
-                lambda: _firecrawl_fetch(url, fmt, timeout_seconds),
-                lambda: _scrapling_fetch(url, fmt, timeout_seconds, browser=True),
-                lambda: _scrapling_fetch(url, fmt, timeout_seconds, browser=False),
+                lambda: _firecrawl_fetch(fallback_url, fmt, timeout_seconds),
+                lambda: _scrapling_fetch(fallback_url, fmt, timeout_seconds, browser=True),
+                lambda: _scrapling_fetch(fallback_url, fmt, timeout_seconds, browser=False),
             ]
         else:
             order = [
-                lambda: _scrapling_fetch(url, fmt, timeout_seconds, browser=False),
-                lambda: _scrapling_fetch(url, fmt, timeout_seconds, browser=True),
-                lambda: _firecrawl_fetch(url, fmt, timeout_seconds),
+                lambda: _scrapling_fetch(fallback_url, fmt, timeout_seconds, browser=False),
+                lambda: _scrapling_fetch(fallback_url, fmt, timeout_seconds, browser=True),
+                lambda: _firecrawl_fetch(fallback_url, fmt, timeout_seconds),
             ]
         for candidate in order:
-            current = run(candidate)
+            current = run(candidate, attempted_url=fallback_url)
             if current.get("success"):
                 if current.get("quality_warning"):
                     if (
@@ -531,7 +588,7 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
             "data_time_provenance": "unavailable",
             "data_time_note": "网页读取失败；抓取完成时间不作为数据时间。",
             "content_time": None,
-            "fallback_used": False,
+            "fallback_used": len(attempts) > 1,
             "is_stale": None,
             "freshness_unknown": True,
             "extraction_method": None,
@@ -564,11 +621,15 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
             else "网页未提供可识别的发布日期或更新时间；抓取完成时间不作为数据时间。"
         ),
         "content_time": result.get("content_time"),
-        "fallback_used": provider != "http",
+        "fallback_used": len(attempts) > 1 or provider != "http",
         "is_stale": None,
         "freshness_unknown": not bool(result.get("content_time")),
         "extraction_method": result.get("extraction_method"),
         "_truncated": False,
         "errors": [],
-        "warnings": [*failures, *quality_warnings],
+        # Failed providers are retained in ``attempts`` for diagnostics, but
+        # they are not warnings on a successful final read.  Exposing an
+        # intermediate error here made a valid fallback result look like a
+        # failed PDF/article parse to the model and to the run inspector.
+        "warnings": quality_warnings,
     }

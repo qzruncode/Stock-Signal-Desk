@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { stageDetails } from '../../components/assistant-ui/AgentReasoningUtils';
 import {
   agentStageEvents,
   agentStageLabel,
@@ -32,7 +33,9 @@ describe('generic Agent loop stage projection', () => {
     expect(latestAgentStageEvent(events)?.actionId).toBe('call-1');
     expect(agentStageLabel('model')).toBe('模型决策');
     expect(agentStageLabel('tool')).toBe('调用工具');
+    expect(agentStageLabel('content_access')).toBe('正文取证');
     expect(agentStageLabel('evidence')).toBe('关联证据');
+    expect(agentStageLabel('reflection')).toBe('语义复核');
     expect(agentStageLabel('approval')).toBe('等待审批');
     expect(agentStageLabel('publish')).toBe('发布回答');
   });
@@ -61,6 +64,78 @@ describe('generic Agent loop stage projection', () => {
 
     expect(reconcileTerminalStageEvents(events)).toEqual([
       expect.objectContaining({ stage: 'tool', status: 'completed', actionId: 'call-1' }),
+    ]);
+  });
+
+  it('coalesces repeated content-access recovery into one terminal stage', () => {
+    const events = agentStageEvents([
+      {
+        event: 'agent_stage',
+        run_id: 'run-content-access',
+        stage: 'content_access',
+        status: 'started',
+        round_id: '4',
+        summary: '发现未完成的正文取证，要求模型继续选择或读取来源',
+      },
+      {
+        event: 'agent_stage',
+        run_id: 'run-content-access',
+        stage: 'content_access',
+        status: 'started',
+        round_id: '6',
+        summary: '发现未完成的正文取证，要求模型继续选择或读取来源',
+      },
+      {
+        event: 'agent_stage',
+        run_id: 'run-content-access',
+        stage: 'content_access',
+        status: 'completed',
+        round_id: '8',
+        summary: '已完成模型选定正文来源的读取核对，允许进入最终回答检查',
+      },
+      {
+        event: 'agent_stage',
+        run_id: 'run-content-access',
+        stage: 'publish',
+        status: 'completed',
+        round_id: '8',
+        summary: '已发布最终回答',
+      },
+    ]);
+
+    expect(reconcileTerminalStageEvents(events).map((event) => `${event.stage}:${event.status}`)).toEqual([
+      'content_access:completed',
+      'publish:completed',
+    ]);
+  });
+
+  it('shows a semantic reflection verdict and bounded issues', () => {
+    const lines = stageDetails({
+      event: 'agent_stage',
+      runId: 'run-reflection',
+      stage: 'reflection',
+      status: 'completed',
+      summary: '语义复核发现问题',
+      details: {
+        verdict: 'revise',
+        reflection_round: 1,
+        reviewer_mode: 'self_refine',
+        summary: '建议收窄到证据能够支持的范围。',
+        issues: [{
+          block_index: 1,
+          category: 'reasoning',
+          severity: 'high',
+          reason: '现有资料不足以支持确定性预测。',
+        }],
+      },
+    });
+
+    expect(lines.map((line) => line.text)).toEqual([
+      '复核结果：需要修订',
+      '复核轮次：1',
+      '复核方式：受限自复核',
+      '复核说明：建议收窄到证据能够支持的范围。',
+      '问题 1：第 1 个区块 · reasoning · high：现有资料不足以支持确定性预测。',
     ]);
   });
 

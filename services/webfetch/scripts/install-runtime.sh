@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 MARKER="$PROJECT_DIR/logs/.webfetch-runtime-v2"
-RUNTIME_ID="scrapling-0.4.11-trafilatura-2.1.0-markitdown-0.1.6"
+RUNTIME_ID="scrapling-0.4.11-curl-cffi-0.16.3-trafilatura-2.1.0-markitdown-0.1.6"
 
 runtime_ready() {
     python3 - <<'PY' >/dev/null 2>&1
@@ -23,6 +23,7 @@ fi
 echo "[webfetch] installing webfetch HTTP, browser, article and document runtime…"
 python3 -m pip install \
     "scrapling[fetchers]==0.4.11" \
+    "curl-cffi==0.16.3" \
     "trafilatura==2.1.0" \
     "markitdown[pdf,docx,pptx,xlsx,xls]==0.1.6"
 scrapling install

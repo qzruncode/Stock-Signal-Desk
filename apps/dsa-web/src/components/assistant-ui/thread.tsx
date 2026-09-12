@@ -24,6 +24,13 @@ import {
   SquareIcon as StopIcon,
 } from 'lucide-react';
 import { AssistantMarkdown, AssistantMarkdownText } from './AssistantMarkdownText';
+import {
+  StructuredAnswerReferences,
+} from './StructuredAnswerReferences';
+import {
+  stripStructuredAnswerReferenceFallbacks,
+  structuredAnswerFromTrace,
+} from './StructuredAnswerReferencesUtils';
 import { splitAssistantText } from '../../utils/assistantTextSplit';
 import {
   assistantAnswerTextFromContent as answerTextFromContent,
@@ -332,7 +339,10 @@ const NativeExecutionDisclosure: FC<{ children?: ReactNode }> = ({ children }) =
           </button>
         ) : undefined}
       >
-        <div className="pt-0">{children}</div>
+        <div className="pt-0">
+          {children}
+          <AgentExecutionTimeline presentation="inline" stageOnly />
+        </div>
       </NativeDisclosure>
     </section>
   );
@@ -371,6 +381,8 @@ const AssistantMessage: FC = () => {
     s.metadata?.custom?.agent_execution_trace
     ?? s.metadata?.custom?.agentExecutionTrace
   ));
+  const structuredAnswer = structuredAnswerFromTrace(evidenceTrace);
+  const displayAnswerText = stripStructuredAnswerReferenceFallbacks(answerText, structuredAnswer);
   const hasOrderedPart = useMessage((s) => s.content.some((part) => {
     if (part.type === 'tool-call') return true;
     // The default assistant-ui reasoning renderer is intentionally hidden;
@@ -427,8 +439,9 @@ const AssistantMessage: FC = () => {
                 </NativeExecutionDisclosure>
               ) : null}
               {hasNativeTerminalAnswer || hasNativeAnswerPart ? (
-                <AssistantMarkdown text={answerText} evidence={evidenceTrace} />
+                <AssistantMarkdown text={displayAnswerText} evidence={evidenceTrace} />
               ) : null}
+              <StructuredAnswerReferences answer={structuredAnswer} renderedText={displayAnswerText} />
               {isActive && !hasOrderedPart && hasExecutionRecord && hasActiveExecutionDetail ? (
                 <AgentExecutionTimeline reasoningText={reasoningText} />
               ) : null}
@@ -439,7 +452,8 @@ const AssistantMessage: FC = () => {
           ) : (
             <>
               <AgentExecutionTimeline reasoningText={reasoningText} />
-              <AssistantMarkdown text={answerText} evidence={evidenceTrace} />
+              <AssistantMarkdown text={displayAnswerText} evidence={evidenceTrace} />
+              <StructuredAnswerReferences answer={structuredAnswer} renderedText={displayAnswerText} />
             </>
           )}
         </div>

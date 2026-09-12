@@ -52,6 +52,71 @@ export interface PersistedAgentStage {
   details?: Record<string, unknown>;
 }
 
+export type AgentAnswerBlockPresentation =
+  | 'markdown'
+  | 'table'
+  | 'code'
+  | 'json'
+  | 'list'
+  | 'quote'
+  | string;
+
+export interface StructuredAnswerBlockProjection {
+  section: string;
+  kind: string;
+  presentationType: AgentAnswerBlockPresentation;
+  language: string;
+  content: string;
+  evidenceIds: string[];
+  artifactRefs?: StructuredAnswerArtifactReference[];
+  chartRefs?: StructuredAnswerChartReference[];
+  actionRefs?: StructuredAnswerActionReference[];
+}
+
+export interface StructuredAnswerArtifactReference {
+  artifactId: string;
+  artifactType: 'file' | 'document' | string;
+  title: string;
+  mimeType: string;
+  downloadUrl: string;
+  previewUrl?: string | null;
+  actionId?: string | null;
+  evidenceId?: string | null;
+  toolName?: string | null;
+}
+
+export interface StructuredAnswerChartSeries {
+  key: string;
+  label: string;
+}
+
+export interface StructuredAnswerChartReference {
+  chartId: string;
+  chartType: 'line' | 'bar' | 'area' | string;
+  title: string;
+  xKey: string;
+  series: StructuredAnswerChartSeries[];
+  data: Array<Record<string, string | number>>;
+  actionId?: string | null;
+  evidenceId?: string | null;
+}
+
+export interface StructuredAnswerActionReference {
+  actionId: string;
+  toolName?: string | null;
+  effect: 'read' | 'side_effect' | string;
+  status: 'completed' | 'failed' | string;
+  success: boolean;
+  reused: boolean;
+  evidenceId?: string | null;
+}
+
+export interface StructuredAnswerProjection {
+  profile: 'general' | 'research' | string;
+  title: string;
+  blocks: StructuredAnswerBlockProjection[];
+}
+
 export interface AgentExecutionTrace {
   /** Ordered, bounded assistant-stream parts used for terminal replay. */
   displayParts?: Record<string, unknown>[];
@@ -60,6 +125,7 @@ export interface AgentExecutionTrace {
   toolResults?: Record<string, unknown>[];
   evidence?: Record<string, unknown>[];
   claimEvidence?: Record<string, unknown>[];
+  structuredAnswer?: StructuredAnswerProjection | null;
   loop?: Record<string, unknown>;
   completedToolCallIds?: string[];
   /** Defensive marker when a legacy or malformed API response was compacted for rendering. */
@@ -159,9 +225,12 @@ export interface ChatConversationDetail extends ChatConversationItem {
 // result cannot freeze the whole chat page during hydration.
 const CLIENT_TRACE_MAX_CHARACTERS = 180_000;
 const CLIENT_TRACE_MAX_DEPTH = 7;
+const CLIENT_STRUCTURED_ANSWER_MAX_DEPTH = 10;
 const CLIENT_TRACE_MAX_OBJECT_KEYS = 24;
 const CLIENT_TRACE_MAX_TEXT = 1_600;
 const CLIENT_DISPLAY_PART_TEXT = 12_000;
+const CLIENT_STRUCTURED_ANSWER_TEXT = 12_000;
+const CLIENT_STRUCTURED_ANSWER_ARRAY_LIMIT = 120;
 const CLIENT_TRACE_FIELD_LIMITS: Array<[string, string, number]> = [
   ['display_parts', 'displayParts', 240],
   // Citations are part of the final answer contract.  Keep the compact
@@ -171,6 +240,7 @@ const CLIENT_TRACE_FIELD_LIMITS: Array<[string, string, number]> = [
   ['tool_results', 'toolResults', 80],
   ['evidence', 'evidence', 80],
   ['claim_evidence', 'claimEvidence', 80],
+  ['structured_answer', 'structuredAnswer', 1],
   ['stages', 'stages', 120],
   ['actions', 'actions', 32],
   ['loop', 'loop', 1],
@@ -183,12 +253,64 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
 
+const comparableChartKey = (value: string): string => (
+  value.replace(/[^A-Za-z0-9]/g, '').toLowerCase()
+);
+
+/**
+ * ``camelcase-keys`` must normalize API fields, but chart data keys are
+ * server-owned dynamic series names and their string values must remain
+ * aligned with ``series[].key``.  Restore that alignment after normalization.
+ */
+const normalizeStructuredAnswerChartKeys = (value: unknown): unknown => {
+  if (!isRecord(value) || !Array.isArray(value.blocks)) return value;
+  return {
+    ...value,
+    blocks: value.blocks.map((rawBlock) => {
+      if (!isRecord(rawBlock) || !Array.isArray(rawBlock.chartRefs)) return rawBlock;
+      return {
+        ...rawBlock,
+        chartRefs: rawBlock.chartRefs.map((rawChart) => {
+          if (!isRecord(rawChart) || !Array.isArray(rawChart.series) || !Array.isArray(rawChart.data)) {
+            return rawChart;
+          }
+          const seriesKeys = rawChart.series
+            .filter(isRecord)
+            .map((series) => series.key)
+            .filter((key): key is string => typeof key === 'string' && key.length > 0);
+          if (seriesKeys.length === 0) return rawChart;
+          return {
+            ...rawChart,
+            data: rawChart.data.map((rawPoint) => {
+              if (!isRecord(rawPoint)) return rawPoint;
+              const point: Record<string, string | number> = {};
+              if (typeof rawPoint.x === 'string') point.x = rawPoint.x;
+              for (const seriesKey of seriesKeys) {
+                const sourceKey = Object.keys(rawPoint).find((key) => (
+                  key !== 'x' && comparableChartKey(key) === comparableChartKey(seriesKey)
+                ));
+                const number = sourceKey ? rawPoint[sourceKey] : undefined;
+                if (typeof number === 'number' && Number.isFinite(number)) {
+                  point[seriesKey] = number;
+                }
+              }
+              return point;
+            }),
+          };
+        }),
+      };
+    }),
+  };
+};
+
 const projectTraceValue = (
   value: unknown,
   budget: TraceBudget,
   depth = 0,
   arrayLimit = 16,
   textLimit = CLIENT_TRACE_MAX_TEXT,
+  maxDepth = CLIENT_TRACE_MAX_DEPTH,
+  nestedArrayLimit = 16,
 ): unknown => {
   if (budget.remaining <= 0) {
     budget.exhausted = true;
@@ -204,14 +326,14 @@ const projectTraceValue = (
     if (projected.length < value.length) budget.exhausted = true;
     return projected;
   }
-  if (depth >= CLIENT_TRACE_MAX_DEPTH) {
+  if (depth >= maxDepth) {
     budget.remaining -= 16;
     budget.exhausted = true;
     return '[嵌套详情已折叠]';
   }
   if (Array.isArray(value)) {
     const projected = value.slice(0, arrayLimit).map((item) => (
-      projectTraceValue(item, budget, depth + 1, 16, textLimit)
+      projectTraceValue(item, budget, depth + 1, nestedArrayLimit, textLimit, maxDepth, nestedArrayLimit)
     ));
     if (value.length > projected.length) {
       projected.push(`[其余 ${value.length - projected.length} 项已折叠]`);
@@ -231,7 +353,15 @@ const projectTraceValue = (
       }
       const safeKey = key.slice(0, 96);
       budget.remaining -= safeKey.length;
-      projected[safeKey] = projectTraceValue(value[key], budget, depth + 1, 16, textLimit);
+      projected[safeKey] = projectTraceValue(
+        value[key],
+        budget,
+        depth + 1,
+        nestedArrayLimit,
+        textLimit,
+        maxDepth,
+        nestedArrayLimit,
+      );
       keyCount += 1;
     }
     return projected;
@@ -248,12 +378,20 @@ const projectExecutionTraceForClient = (value: unknown): Record<string, unknown>
   for (const [snakeKey, camelKey, arrayLimit] of CLIENT_TRACE_FIELD_LIMITS) {
     const raw = value[snakeKey] ?? value[camelKey];
     if (raw === undefined) continue;
+    let textLimit = CLIENT_TRACE_MAX_TEXT;
+    if (snakeKey === 'display_parts') {
+      textLimit = CLIENT_DISPLAY_PART_TEXT;
+    } else if (snakeKey === 'structured_answer') {
+      textLimit = CLIENT_STRUCTURED_ANSWER_TEXT;
+    }
     projected[snakeKey] = projectTraceValue(
       raw,
       budget,
       0,
       arrayLimit,
-      snakeKey === 'display_parts' ? CLIENT_DISPLAY_PART_TEXT : CLIENT_TRACE_MAX_TEXT,
+      textLimit,
+      snakeKey === 'structured_answer' ? CLIENT_STRUCTURED_ANSWER_MAX_DEPTH : CLIENT_TRACE_MAX_DEPTH,
+      snakeKey === 'structured_answer' ? CLIENT_STRUCTURED_ANSWER_ARRAY_LIMIT : 16,
     );
   }
   if (budget.exhausted) projected.client_trace_truncated = true;
@@ -286,6 +424,12 @@ const normalizeConversationDetail = (payload: Record<string, unknown>): ChatConv
   if (executionTrace) presentationPayload.execution_trace = executionTrace;
   const rawPending = presentationPayload.pending_interrupt ?? presentationPayload.pendingInterrupt;
   const data = toCamelCase<ChatConversationDetail>(presentationPayload);
+  const normalizedExecutionTrace = data.executionTrace
+    ? {
+        ...data.executionTrace,
+        structuredAnswer: normalizeStructuredAnswerChartKeys(data.executionTrace.structuredAnswer) as AgentExecutionTrace["structuredAnswer"],
+      }
+    : data.executionTrace;
   const normalizedPending = rawPending && typeof rawPending === 'object' && !Array.isArray(rawPending)
     ? {
         ...toCamelCase<PendingAgentInterrupt>(rawPending as Record<string, unknown>),
@@ -300,6 +444,7 @@ const normalizeConversationDetail = (payload: Record<string, unknown>): ChatConv
     : null;
   return {
     ...data,
+    ...(normalizedExecutionTrace ? { executionTrace: normalizedExecutionTrace } : {}),
     pendingInterrupt: normalizedPending,
     ...(data.resumeState
       ? {

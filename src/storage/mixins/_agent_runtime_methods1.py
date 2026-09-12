@@ -384,7 +384,6 @@ class _AgentRuntimeMixinMethods1:
         final_text: str | None,
         agent_context: Mapping[str, Any] | None,
         artifacts: Sequence[Any] = (),
-        conclusions: Sequence[Mapping[str, Any]] = (),
         trace: Mapping[str, Any] | None = None,
         generated_title: str | None = None,
         error_code: str | None = None,
@@ -507,15 +506,6 @@ class _AgentRuntimeMixinMethods1:
                         created_at=now,
                     )
                 )
-
-            self._register_financial_conclusions_in_session(
-                session,
-                run_id=run_id,
-                conversation_id=conversation_id,
-                tenant_id=run.tenant_id,
-                owner_id=run.owner_id,
-                conclusions=conclusions,
-            )
 
             trace_record = (
                 session.execute(

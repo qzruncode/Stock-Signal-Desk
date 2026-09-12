@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from src.services.research_archive import project_research_conclusions
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from src.agent.run_registry import ActiveRun, RunBroadcaster
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
-from src.agent.langgraph_runtime.answer_contract import finalize_terminal_answer
+from src.agent.langgraph_runtime.answer_contract import (
+    finalize_terminal_answer,
+    project_structured_answer,
+)
+from src.agent.langgraph_runtime.reflection import reflection_review_projection
 from src.agent.langgraph_runtime.presentation import (
     enrich_execution_trace_with_result_previews,
     project_arguments_for_timeline,
@@ -37,6 +40,20 @@ def _short_list(value: Any, *, item_limit: int = 12, text_limit: int = 240) -> l
     if not isinstance(value, (list, tuple)):
         return []
     return [_short_text(item, text_limit) for item in value[:item_limit] if str(item or "").strip()]
+
+
+def _reflection_trace(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    status = str(state.get("reflection_status") or "").strip()
+    if not status or status == "not_started":
+        return None
+    review = reflection_review_projection(state.get("reflection_review"))
+    return {
+        "status": status,
+        "round": int(state.get("reflection_round") or 0),
+        "call_count": int(state.get("reflection_call_count") or 0),
+        "revision_count": int(state.get("reflection_revision_count") or 0),
+        **review,
+    }
 
 
 def _trace_result_items(value: Any) -> list[dict[str, Any]]:
@@ -265,6 +282,7 @@ def _execution_trace(
     evidence: Sequence[Mapping[str, Any]],
     claim_evidence: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any],
+    structured_answer: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     projected = {
         "stages": project_stage_history_for_client(
@@ -305,6 +323,11 @@ def _execution_trace(
             text_limit=96,
         ),
     }
+    if structured_answer:
+        projected["structured_answer"] = dict(structured_answer)
+    reflection = _reflection_trace(state)
+    if reflection:
+        projected["reflection"] = reflection
     return enrich_execution_trace_with_result_previews(
         projected,
         tool_results=tool_results,
@@ -398,6 +421,11 @@ class AgentTerminalPublisher:
             for item in (state.get("claim_evidence") or [])
             if isinstance(item, Mapping)
         ]
+        structured_answer = project_structured_answer(
+            state.get("structured_answer"),
+            evidence,
+            tool_results,
+        )
         execution_trace = _execution_trace(
             stage_history=stage_history,
             display_parts=display_parts,
@@ -405,6 +433,7 @@ class AgentTerminalPublisher:
             evidence=evidence,
             claim_evidence=claim_evidence,
             state=state,
+            structured_answer=structured_answer,
         )
         quality_projection = {
             "engine": "langgraph_agent_loop",
@@ -430,6 +459,11 @@ class AgentTerminalPublisher:
             },
             "execution_trace": execution_trace,
         }
+        reflection = _reflection_trace(state)
+        if reflection:
+            quality_projection["reflection"] = reflection
+        if structured_answer:
+            quality_projection["structured_answer"] = structured_answer
         trace_payload = {
             "engine": "langgraph_agent_loop",
             "run_id": self.run.run_id,
@@ -461,10 +495,6 @@ class AgentTerminalPublisher:
                         # graph. Clear it as the new turn becomes canonical.
                         agent_context={},
                         artifacts=(),
-                        conclusions=(
-                            project_research_conclusions(state, as_of=datetime.now())
-                            if status == "completed" else ()
-                        ),
                         trace=trace_payload,
                         generated_title=(
                             self.session_service.generate_title(first_user_text)

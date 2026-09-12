@@ -832,12 +832,16 @@ def build_structured_claim_evidence_ledger(
     blocks: Sequence[Mapping[str, Any]],
     evidence: Sequence[Mapping[str, Any]],
     tool_results: Sequence[Mapping[str, Any]],
+    *,
+    profile: str = "research",
 ) -> dict[str, Any]:
     """Validate claims supplied by the structured final-answer contract.
 
     Block boundaries and evidence IDs are model output fields validated by the
     Pydantic response schema.  This path never parses Markdown to discover
-    headings, tables, lists, or follow-up questions.
+    headings, tables, lists, or follow-up questions.  The default strict
+    ``research`` profile preserves the pre-profile contract for historical
+    callers and checkpoint data.
     """
     successful = {
         _id(item): item
@@ -854,6 +858,10 @@ def build_structured_claim_evidence_ledger(
     cited_evidence_ids: list[str] = []
     unresolved_evidence_ids: list[str] = []
 
+    normalized_profile = str(profile or "research").strip().lower()
+    if normalized_profile not in {"general", "research"}:
+        normalized_profile = "research"
+
     for index, block in enumerate(blocks, start=1):
         content = _short(block.get("content"), 2_000)
         if not content:
@@ -868,6 +876,20 @@ def build_structured_claim_evidence_ledger(
         direct_ids, unresolved = _resolve_evidence_ids(raw_ids, successful)
         cited_evidence_ids = _unique([*cited_evidence_ids, *direct_ids])
         unresolved_evidence_ids = _unique([*unresolved_evidence_ids, *unresolved])
+        # ``research`` retains the old fail-closed rule: every block other
+        # than context/disclaimer is material.  ``general`` adds a neutral
+        # ``answer`` block for explanations that do not rely on external
+        # evidence.  Once a general run has produced readable evidence, an
+        # answer block must cite it as well; this prevents the profile field
+        # from becoming a way to hide tool-backed facts.
+        if normalized_profile == "research":
+            requires_evidence = kind not in {"context", "disclaimer"}
+        elif kind in {"context", "disclaimer"}:
+            requires_evidence = False
+        elif kind == "answer":
+            requires_evidence = bool(successful)
+        else:
+            requires_evidence = True
         claim = _validate_claim(
             fragment=content,
             evidence_ids=direct_ids,
@@ -877,11 +899,7 @@ def build_structured_claim_evidence_ledger(
             issues=issues,
             claim_kind=kind,
             citation_mode="structured" if raw_ids else "missing",
-            # The structured contract makes the evidence boundary explicit:
-            # only context/disclaimer blocks may stand without an external
-            # evidence id.  This remains enforceable even when the model
-            # skipped tools entirely.
-            requires_evidence=kind not in {"context", "disclaimer"},
+            requires_evidence=requires_evidence,
             claim_id=f"claim_{index}",
             section=_short(block.get("section"), 160) or None,
         )

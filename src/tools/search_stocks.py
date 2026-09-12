@@ -59,23 +59,25 @@ def _security_codes_in_query(query: str) -> tuple[str, ...]:
 
 
 def search_stocks(
-    query: str = "",
+    query: str | None = "",
     market: str = "all",
     exchange: str = "all",
     board: str = "all",
-    sector: str = "",
+    sector: str | None = "",
     limit: int = 20,
 ) -> dict[str, Any]:
     from src.services.market_data_client import get_market_data_client
 
+    normalized_query = str(query or "").strip()
+    normalized_sector = str(sector or "").strip()
     markets = _markets_for_scope(market=market, exchange=exchange, board=board)
-    hints = _security_codes_in_query(query)
+    hints = _security_codes_in_query(normalized_query)
     limit = max(1, min(int(limit), 200))
     result = get_market_data_client().securities(
-        search="" if hints else query.strip(),
+        search="" if hints else normalized_query,
         codes=",".join(hints),
         market=",".join(markets) if markets else "none",
-        sector=sector.strip(),
+        sector=normalized_sector,
         page_size=limit,
     )
     items = result["items"]
@@ -83,12 +85,12 @@ def search_stocks(
     return {
         "success": True,
         "partial": has_more,
-        "query": query.strip(),
+        "query": normalized_query,
         "code_hints": list(hints),
         "market": market,
         "exchange": exchange,
         "board": board,
-        "sector": sector or None,
+        "sector": normalized_sector or None,
         "items": items,
         "returned_count": len(items),
         "has_more": has_more,
@@ -98,8 +100,8 @@ def search_stocks(
         "data_time_applicable": False,
         "data_time_provenance": "unavailable",
         "data_time_note": "证券身份信息由独立服务自动维护，检查时间不冒充上游发布时间。",
-        "is_stale": False,
-        "freshness_unknown": False,
+        "is_stale": None,
+        "freshness_unknown": True,
         "errors": [],
         "warnings": ["结果超过返回上限，请缩小搜索条件"] if has_more else [],
     }

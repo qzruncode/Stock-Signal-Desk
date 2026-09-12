@@ -111,6 +111,10 @@ class AgentState(LangChainAgentState, total=False):
     # answer; this is scoped per cited tool action, not to the whole run.
     required_content_reads: list[dict[str, Any]]
     pending_content_reads: list[dict[str, Any]]
+    # A proactive reference-selection turn is separate from the terminal
+    # content-access recovery feedback.  The former lets the runtime ask the
+    # model which candidate URLs matter before it submits an answer.
+    content_selection_feedback: str
     content_access_feedback: str
     # Feedback used when the provider returns a plain/invalid answer after the
     # application has required the native structured response contract.
@@ -132,6 +136,15 @@ class AgentState(LangChainAgentState, total=False):
     structured_output_required: bool
     answer_draft: str
     answer_final: str
+    # Semantic Reflection is a bounded publish-time review for research
+    # answers with judgment-bearing blocks.  The review itself is checkpoint
+    # safe and contains only a redacted projection.
+    reflection_status: str
+    reflection_feedback: str
+    reflection_review: dict[str, Any] | None
+    reflection_round: int
+    reflection_call_count: int
+    reflection_revision_count: int
     # Human-readable reason shared by graph guards and the terminal publisher.
     terminal_detail: str
     status: str
@@ -173,6 +186,7 @@ class AgentGraphInput(TypedDict, total=False):
     content_access_targets: list[dict[str, Any]]
     required_content_reads: list[dict[str, Any]]
     pending_content_reads: list[dict[str, Any]]
+    content_selection_feedback: str
     content_access_feedback: str
     response_format_feedback: str
     pending_interrupt: dict[str, Any] | None
@@ -181,6 +195,12 @@ class AgentGraphInput(TypedDict, total=False):
     structured_output_required: bool
     answer_draft: str
     answer_final: str
+    reflection_status: str
+    reflection_feedback: str
+    reflection_review: dict[str, Any] | None
+    reflection_round: int
+    reflection_call_count: int
+    reflection_revision_count: int
     terminal_detail: str
     status: str
     error_code: str | None
@@ -201,6 +221,9 @@ class GraphContext:
     run_attempt: int
     tenant_id: str
     owner_id: str
+    # Reserved for a future independently hosted reviewer.  The first phase
+    # uses the run model through a separate, tool-free structured call.
+    reflection_model: Any | None = None
     side_effect_lock: Any | None = None
 
 

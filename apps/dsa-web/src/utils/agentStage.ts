@@ -26,7 +26,9 @@ export type AgentStageEventV2 = AgentStageEvent;
 const STAGE_LABELS: Record<string, string> = {
   model: '模型决策',
   tool: '调用工具',
+  content_access: '正文取证',
   evidence: '关联证据',
+  reflection: '语义复核',
   approval: '等待审批',
   publish: '发布回答',
   // Historical display only. These values can never route a new run.
@@ -187,7 +189,12 @@ const stageInstanceKey = (event: AgentStageEvent): string => [
   // the action identity authoritative so recovery does not leave an obsolete
   // "running" row beside the terminal result.  Stages without either stable
   // id still use round id to distinguish sequential control-loop passes.
-  event.actionId || event.toolCallId ? '' : (event.roundId || ''),
+  // Content access is one logical gate. It can emit several recovery starts
+  // across model rounds before one terminal completion; keeping the round in
+  // its identity would leave old recovery rows visibly "进行中" forever.
+  event.stage === 'content_access'
+    ? ''
+    : event.actionId || event.toolCallId ? '' : (event.roundId || ''),
 ].join('|');
 
 const compatibleOpenStageKey = (

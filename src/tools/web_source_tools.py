@@ -19,6 +19,7 @@ from src.tools.webfetch import (
     _challenge_reason,
     _firecrawl_fetch,
     _http_fetch,
+    _https_upgrade_url,
     _scrapling_fetch,
     _unusable_document_reason,
     _validate_public_url,
@@ -361,7 +362,12 @@ def _single_provider_fetch(
     _validate_public_url(url)
     timeout_seconds = max(5, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
     report_tool_progress(f"正在读取公开网页来源 {provider}", progress=10)
-    raw = dict(execute(url, fmt, timeout_seconds))
+    provider_url = (
+        _https_upgrade_url(url)
+        if provider in {"scrapling", "patchright", "firecrawl"}
+        else None
+    ) or url
+    raw = dict(execute(provider_url, fmt, timeout_seconds))
     raw_content = str(raw.get("content") or "")
     content = raw_content
     truncated = False

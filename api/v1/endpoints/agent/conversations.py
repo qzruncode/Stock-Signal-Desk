@@ -14,6 +14,7 @@ from api.v1.endpoints.agent import router
 from api.v1.endpoints.agent.conversation_lifecycle import conversation_transition
 from src.agent.run_registry import active_run_registry
 from src.agent.langgraph_runtime import agent_graph_runtime
+from src.agent.langgraph_runtime.answer_contract import project_structured_answer
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
 from src.agent.langgraph_runtime.evidence_identity import prepare_answer_for_client
 from src.tools.base import evidence_record_is_eligible
@@ -112,19 +113,52 @@ def _execution_trace_for_run(
     if stages:
         persisted["stages"] = project_stage_history_for_client(stages)
     if isinstance(quality_projection, Mapping):
+        projection_evidence = (
+            quality_projection.get("evidence")
+            if isinstance(quality_projection.get("evidence"), list)
+            else ()
+        )
+        projection_tool_results = (
+            quality_projection.get("tool_results")
+            if isinstance(quality_projection.get("tool_results"), list)
+            else ()
+        )
         persisted = enrich_execution_trace_with_result_previews(
             persisted,
-            tool_results=(
-                quality_projection.get("tool_results")
-                if isinstance(quality_projection.get("tool_results"), list)
-                else ()
-            ),
+            tool_results=projection_tool_results,
             evidence=(
                 quality_projection.get("evidence")
                 if isinstance(quality_projection.get("evidence"), list)
                 else ()
             ),
         )
+    else:
+        projection_evidence = (
+            persisted.get("evidence")
+            if isinstance(persisted.get("evidence"), list)
+            else ()
+        )
+        projection_tool_results = (
+            persisted.get("tool_results")
+            if isinstance(persisted.get("tool_results"), list)
+            else ()
+        )
+    structured_answer_candidate = (
+        quality_projection.get("structured_answer")
+        if isinstance(quality_projection, Mapping)
+        and isinstance(quality_projection.get("structured_answer"), Mapping)
+        else persisted.get("structured_answer")
+    )
+    if isinstance(structured_answer_candidate, Mapping):
+        safe_structured_answer = project_structured_answer(
+            structured_answer_candidate,
+            projection_evidence,
+            projection_tool_results,
+        )
+        if safe_structured_answer:
+            persisted["structured_answer"] = safe_structured_answer
+        else:
+            persisted.pop("structured_answer", None)
     if isinstance(persisted.get("evidence"), list):
         persisted["evidence"] = [
             item

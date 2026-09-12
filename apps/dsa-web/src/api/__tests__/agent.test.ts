@@ -154,6 +154,90 @@ describe('agentApi.syncConversationSnapshot', () => {
     expect(JSON.stringify(trace).length).toBeLessThan(190_000);
   });
 
+  it('normalizes the typed structured-answer projection for future renderers', async () => {
+    get.mockResolvedValue({
+      data: {
+        id: 'c1',
+        title: '对话',
+        title_source: 'auto',
+        created_at: '2026-07-26T00:00:00Z',
+        updated_at: '2026-07-26T00:00:00Z',
+        messages: [],
+        execution_trace: {
+          structured_answer: {
+            profile: 'general',
+            title: '结构化说明',
+            blocks: [{
+              section: '示例',
+              kind: 'answer',
+              presentation_type: 'code',
+              language: 'python',
+              content: 'print(1)',
+              evidence_ids: [],
+            }],
+          },
+        },
+      },
+    });
+
+    const detail = await agentApi.getConversation('c1');
+
+    expect(detail.executionTrace?.structuredAnswer).toEqual({
+      profile: 'general',
+      title: '结构化说明',
+      blocks: [{
+        section: '示例',
+        kind: 'answer',
+        presentationType: 'code',
+        language: 'python',
+        content: 'print(1)',
+        evidenceIds: [],
+      }],
+    });
+  });
+
+  it('keeps bounded chart points available to the structured-answer renderer', async () => {
+    get.mockResolvedValue({
+      data: {
+        id: 'c1',
+        title: '对话',
+        title_source: 'auto',
+        created_at: '2026-07-26T00:00:00Z',
+        updated_at: '2026-07-26T00:00:00Z',
+        messages: [],
+        execution_trace: {
+          structured_answer: {
+            profile: 'research',
+            title: '资金流',
+            blocks: [{
+              kind: 'fact',
+              content: '图表',
+              chart_refs: [{
+                chart_id: 'chart-1',
+                chart_type: 'line',
+                title: '主力净流入',
+                x_key: 'x',
+                series: [{ key: 'main_net_inflow', label: '主力净流入' }],
+                data: Array.from({ length: 20 }, (_, index) => ({
+                  x: `2026-09-${String(index + 1).padStart(2, '0')}`,
+                  main_net_inflow: index * 100,
+                })),
+              }],
+              evidence_ids: [],
+            }],
+          },
+        },
+      },
+    });
+
+    const detail = await agentApi.getConversation('c1');
+    const chart = detail.executionTrace?.structuredAnswer?.blocks[0]?.chartRefs?.[0];
+
+    expect(chart?.data).toHaveLength(20);
+    expect(chart?.data[0]).toEqual({ x: '2026-09-01', main_net_inflow: 0 });
+    expect(chart?.data[19]).toEqual({ x: '2026-09-20', main_net_inflow: 1900 });
+  });
+
   it('preserves citation projections when a long stage history consumes the shared budget', async () => {
     get.mockResolvedValue({
       data: {

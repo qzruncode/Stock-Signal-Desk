@@ -248,6 +248,17 @@ def test_get_conversation_enriches_historical_evidence_with_result_preview(
                     },
                 },
             }],
+            "structured_answer": {
+                "profile": "general",
+                "title": "说明",
+                "blocks": [{
+                    "kind": "answer",
+                    "presentation_type": "code",
+                    "language": "python\nunsafe",
+                    "content": "print(1)",
+                    "unexpected": "discarded",
+                }],
+            },
         },
     }
     with (
@@ -268,6 +279,18 @@ def test_get_conversation_enriches_historical_evidence_with_result_preview(
     assert evidence["result_items"][0]["attributes"] == [
         {"name": "price", "value": "3942.0879"},
     ]
+    assert response.json()["execution_trace"]["structured_answer"] == {
+        "profile": "general",
+        "title": "说明",
+        "blocks": [{
+            "section": "",
+            "kind": "answer",
+            "presentation_type": "code",
+            "language": "",
+            "content": "print(1)",
+            "evidence_ids": [],
+        }],
+    }
     assert "quality_projection" not in response.json()
 
 

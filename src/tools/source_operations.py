@@ -397,6 +397,30 @@ def read_web_source(
     return reader(url=str(url), format=str(format), timeout=timeout)
 
 
+def select_content_sources(source_ids: list[int]) -> dict[str, Any]:
+    """Declare which current-run reference candidates need body access.
+
+    The runtime resolves these ephemeral candidate numbers against the current
+    run and performs the actual ``read_web_source`` calls. Keeping the
+    selection as a small model-visible operation lets the model choose the
+    relevant articles/reports without allowing it to bypass the server-owned
+    URL and evidence checks.
+    """
+    normalized = list(dict.fromkeys(int(value) for value in source_ids))
+    return {
+        "success": True,
+        "partial": False,
+        "selected_source_ids": normalized,
+        "selection_scope": "current_run_content_candidates",
+        "data_time": None,
+        "data_time_applicable": False,
+        "freshness_unknown": True,
+        "is_stale": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+
 def _source_enum(catalog: tuple[dict[str, Any], ...]) -> list[str]:
     return [str(item["id"]) for item in catalog]
 
@@ -617,6 +641,29 @@ TOOLS = (
         category="source_read",
         max_attempts=2,
         source_catalog=WEB_READ_SOURCE_CATALOG,
+    ),
+    ToolSpec(
+        name="select_content_sources",
+        description=(
+            "从本轮 reference-only 来源候选中选择需要核验正文的候选编号；"
+            "候选编号只来自系统随后提供的‘可选参考来源候选’，不是网页读取器 source_id。"
+            "服务端会根据所选编号自动调用 read_web_source，每次最多选择 4 个。"
+        ),
+        parameters=object_schema(
+            {
+                "source_ids": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 1},
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "description": "本轮参考来源候选编号，至少选择 1 个，最多选择 4 个",
+                }
+            },
+            ["source_ids"],
+        ),
+        executor=select_content_sources,
+        category="evidence_access",
+        max_attempts=1,
     ),
 )
 

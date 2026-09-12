@@ -380,6 +380,8 @@ def test_terminal_publisher_persists_safe_structured_execution_trace():
                         "tool_name": "read_quote",
                         "effect": "read",
                         "success": True,
+                        "has_data": True,
+                        "evidence_eligible": True,
                         "data_time": "2026-08-07",
                         "source_refs": ["source-1"],
                     }
@@ -392,6 +394,8 @@ def test_terminal_publisher_persists_safe_structured_execution_trace():
                         "tool_name": "read_quote",
                         "effect": "read",
                         "success": True,
+                        "has_data": True,
+                        "evidence_eligible": True,
                         "data_time": "2026-08-07",
                         "source_refs": ["source-1"],
                     }
@@ -421,12 +425,33 @@ def test_terminal_publisher_persists_safe_structured_execution_trace():
                     }
                 ],
                 "completed_tool_call_ids": ["call-a1"],
+                "structured_answer": {
+                    "profile": "research",
+                    "title": "行情判断",
+                    "blocks": [
+                        {
+                            "kind": "inference",
+                            "presentation_type": "table",
+                            "content": "| 指标 | 结果 |",
+                            "source_ids": [1],
+                        }
+                    ],
+                },
                 "model_turn_count": 2,
                 "tool_call_count": 1,
                 "tool_call_limit": 8,
                 "evidence_repair_count": 0,
                 "evidence_repair_limit": 1,
                 "work_budget_exhausted": False,
+                "reflection_status": "passed",
+                "reflection_round": 1,
+                "reflection_call_count": 1,
+                "reflection_revision_count": 0,
+                "reflection_review": {
+                    "verdict": "pass",
+                    "summary": "研究判断与现有证据边界一致。",
+                    "issues": [],
+                },
             },
         )
     )
@@ -442,6 +467,19 @@ def test_terminal_publisher_persists_safe_structured_execution_trace():
     assert trace["claim_evidence"][0]["checks"]["time"] is True
     assert trace["loop"]["tool_call_count"] == 1
     assert trace["completed_tool_call_ids"] == ["call-a1"]
+    assert trace["reflection"]["status"] == "passed"
+    assert trace["reflection"]["verdict"] == "pass"
+    assert trace["reflection"]["call_count"] == 1
+    assert captured["trace"]["quality_projection"]["reflection"]["status"] == "passed"
+    assert trace["structured_answer"]["blocks"][0] == {
+        "section": "",
+        "kind": "inference",
+        "presentation_type": "table",
+        "language": "",
+        "content": "| 指标 | 结果 |",
+        "evidence_ids": ["ev-a1"],
+    }
+    assert captured["trace"]["quality_projection"]["structured_answer"] == trace["structured_answer"]
 
 def test_expired_run_lease_can_be_reclaimed_without_losing_cursor(database):
     conversation_id = _conversation(database, "recovery")

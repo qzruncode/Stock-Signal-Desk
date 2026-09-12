@@ -171,16 +171,9 @@ async def app_lifespan(app: FastAPI):
         )
     except Exception:
         logger.exception("Failed to initialize durable Agent runtime recovery")
-    from src.services.research_alerts import run_research_monitor
-
-    research_task = asyncio.create_task(
-        run_research_monitor(database), name="research-monitor"
-    )
     try:
         yield
     finally:
-        research_task.cancel()
-        await asyncio.gather(research_task, return_exceptions=True)
         if maintenance_task is not None:
             maintenance_task.cancel()
             await asyncio.gather(maintenance_task, return_exceptions=True)

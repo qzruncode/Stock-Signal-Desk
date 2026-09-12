@@ -55,6 +55,7 @@ from .answer_contract import (
     finalize_terminal_answer,
     render_structured_answer,
     structured_answer_mapping,
+    structured_answer_profile,
 )
 from .graph import DEFAULT_RESPONSE_FORMAT, build_agent_graph
 from .model import LiteLLMChatModel, LiteLLMGateway
@@ -119,6 +120,7 @@ def _reset_turn_state() -> dict[str, Any]:
         "content_access_targets": [],
         "required_content_reads": [],
         "pending_content_reads": [],
+        "content_selection_feedback": "",
         "content_access_feedback": "",
         "evidence_feedback": "",
         "fallback_feedback": "",
@@ -126,6 +128,12 @@ def _reset_turn_state() -> dict[str, Any]:
         "pending_interrupt": None,
         "structured_answer": None,
         "structured_answer_call_id": "",
+        "reflection_status": "not_started",
+        "reflection_feedback": "",
+        "reflection_review": None,
+        "reflection_round": 0,
+        "reflection_call_count": 0,
+        "reflection_revision_count": 0,
         "answer_draft": "",
         "answer_final": "",
         "terminal_detail": "",
@@ -279,6 +287,10 @@ def _checkpoint_summary(snapshot: Any) -> dict[str, Any]:
             "response_repair_limit": int(values.get("response_repair_limit") or 0),
             "fallback_repair_count": int(values.get("fallback_repair_count") or 0),
             "fallback_repair_limit": int(values.get("fallback_repair_limit") or 0),
+            "reflection_status": str(values.get("reflection_status") or "not_started"),
+            "reflection_round": int(values.get("reflection_round") or 0),
+            "reflection_call_count": int(values.get("reflection_call_count") or 0),
+            "reflection_revision_count": int(values.get("reflection_revision_count") or 0),
             "required_content_read_count": len(values.get("required_content_reads") or []),
             "pending_content_read_count": len(values.get("pending_content_reads") or []),
             "has_pending_interrupt": isinstance(values.get("pending_interrupt"), Mapping),
@@ -687,6 +699,7 @@ class LangGraphRuntimeManager:
             answer = render_structured_answer(
                 structured_answer,
                 factual_evidence,
+                state.get("tool_results") or [],
             )
         if is_non_answer_agent_message(answer):
             answer = ""
@@ -782,6 +795,7 @@ class LangGraphRuntimeManager:
                             for item in state.get("tool_results") or []
                             if isinstance(item, Mapping)
                         ],
+                        profile=structured_answer_profile(structured_answer),
                     ).get("claims")
                     or []
                 )

@@ -15,7 +15,6 @@ import {
 import './App.css';
 import { WorkspaceQueryProvider } from './components/layout/WorkspaceQueryProvider';
 
-const ResearchPage = lazy(() => import('./pages/ResearchPage'));
 const MarketWorkspacePage = lazy(() => import('./pages/MarketWorkspacePage'));
 
 const PageFallback: React.FC = () => (
@@ -75,7 +74,6 @@ const AppContent: React.FC = () => {
           <Route path="/setting" element={<SettingPage />} />
           <Route path="/runs" element={<RunExplorerPage />} />
           <Route path="/monitoring" element={<AgentMonitoringPage />} />
-          <Route path="/research" element={<ResearchPage />} />
           <Route path="/stocks" element={<MarketWorkspacePage section="stocks" />} />
           <Route path="/screening" element={<MarketWorkspacePage section="screening" />} />
           <Route path="/sources" element={<MarketWorkspacePage section="sources" />} />

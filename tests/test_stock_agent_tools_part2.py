@@ -16,6 +16,8 @@ from src.tools.webfetch import (
     _challenge_reason,
     _extract_html,
     _http_fetch,
+    _https_upgrade_url,
+    _scrapling_failure_kind,
     fetch_url,
 )
 from src.tools.websearch import (
@@ -374,12 +376,62 @@ def test_webfetch_uses_open_http_path_before_any_fallback() -> None:
     firecrawl.assert_not_called()
 
 
+def test_webfetch_upgrades_http_to_https_before_other_providers() -> None:
+    failed = {
+        "provider": "http",
+        "success": False,
+        "skipped": False,
+        "error": "Empty reply from server",
+        "failure_kind": "transport",
+    }
+    upgraded = {
+        "provider": "http",
+        "success": True,
+        "skipped": False,
+        "error": None,
+        "content": "正文",
+        "attachments": None,
+        "final_url": "https://example.com/article",
+        "title": "标题",
+        "content_type": "text/html",
+        "extraction_method": "direct_http",
+    }
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch._http_fetch", side_effect=[failed, upgraded]) as http_fetch,
+        patch("src.tools.webfetch._scrapling_fetch") as scrapling,
+        patch("src.tools.webfetch._firecrawl_fetch") as firecrawl,
+    ):
+        result = fetch_url("http://example.com/article")
+
+    assert _https_upgrade_url("http://example.com/article") == "https://example.com/article"
+    assert [call.args[0] for call in http_fetch.call_args_list] == [
+        "http://example.com/article",
+        "https://example.com/article",
+    ]
+    assert result["provider"] == "http"
+    assert result["fallback_used"] is True
+    assert [item["url"] for item in result["attempts"]] == [
+        "http://example.com/article",
+        "https://example.com/article",
+    ]
+    scrapling.assert_not_called()
+    firecrawl.assert_not_called()
+
+
+def test_scrapling_tls_runtime_errors_are_marked_as_provider_unavailable() -> None:
+    assert _scrapling_failure_kind(
+        "TLS connect error: error:00000000:invalid library (0):OPENSSL_internal"
+    ) == "provider_unavailable"
+    assert _scrapling_failure_kind("connection reset by peer") == "transport"
+
+
 def test_webfetch_falls_back_in_transport_order() -> None:
     failed = {
         "provider": "http",
         "success": False,
         "skipped": False,
-        "error": "blocked",
+        "error": "文档解析结果为空",
     }
     static = {
         "provider": "scrapling",
@@ -403,8 +455,9 @@ def test_webfetch_falls_back_in_transport_order() -> None:
 
     assert result["provider"] == "scrapling"
     assert result["fallback_used"] is True
-    assert result["warnings"] == ["blocked"]
+    assert result["warnings"] == []
     assert [item["provider"] for item in result["attempts"]] == ["http", "scrapling"]
+    assert result["attempts"][0]["error"] == "文档解析结果为空"
     assert scrapling.call_args.kwargs["browser"] is False
     firecrawl.assert_not_called()
 

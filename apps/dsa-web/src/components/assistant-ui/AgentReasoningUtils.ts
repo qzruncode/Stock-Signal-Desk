@@ -131,6 +131,36 @@ export const stageDetails = (event: AgentStageEvent): DetailLine[] => {
     const args = argumentSummary(recordValue(details, 'arguments'));
     return [{ key: 'approval', text: [name, args ? `请求参数：${args}` : ''].filter(Boolean).join(' · ') }];
   }
+  if (event.stage === 'reflection') {
+    const verdict = text(recordValue(details, 'verdict'), 32);
+    const verdictLabel: Record<string, string> = {
+      pass: '通过',
+      revise: '需要修订',
+      block: '阻止发布',
+      skip: '已跳过',
+    };
+    const round = recordValue(details, 'reflection_round', 'reflectionRound');
+    const summary = text(recordValue(details, 'summary'), 1_200);
+    const reviewerMode = text(recordValue(details, 'reviewer_mode', 'reviewerMode'), 64);
+    const rawIssues = recordValue(details, 'issues');
+    const issues = Array.isArray(rawIssues)
+      ? rawIssues.map((value) => {
+        if (!isRecord(value)) return '';
+        const block = typeof value.block_index === 'number' ? `第 ${value.block_index} 个区块` : '相关区块';
+        const category = text(value.category, 64);
+        const severity = text(value.severity, 32);
+        const reason = text(value.reason, 600);
+        return `${block}${category ? ` · ${category}` : ''}${severity ? ` · ${severity}` : ''}：${reason}`;
+      }).filter(Boolean)
+      : [];
+    return [
+      ...(verdict ? [{ key: 'verdict', text: `复核结果：${verdictLabel[verdict] || verdict}` }] : []),
+      ...(typeof round === 'number' ? [{ key: 'round', text: `复核轮次：${round}` }] : []),
+      ...(reviewerMode ? [{ key: 'reviewer', text: `复核方式：${reviewerMode === 'independent' ? '独立复核' : '受限自复核'}` }] : []),
+      ...(summary ? [{ key: 'summary', text: `复核说明：${summary}` }] : []),
+      ...issues.map((issue, index) => ({ key: `reflection-issue-${index}`, text: `问题 ${index + 1}：${issue}` })),
+    ];
+  }
   if (event.stage === 'publish') return [];
   const preview = text(recordValue(details, 'answer_preview', 'answerPreview'));
   return preview ? [{ key: 'preview', text: `回答预览：${preview}` }] : [];

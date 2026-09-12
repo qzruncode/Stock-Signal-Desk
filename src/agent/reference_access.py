@@ -23,9 +23,12 @@ def canonical_url(value: Any) -> str:
         return text
     if not parts.netloc:
         return text
+    # A public page commonly upgrades an HTTP reference to HTTPS before the
+    # reader returns its body.  The original and final URLs remain stored for
+    # provenance; matching only needs to identify the same public resource.
     return urlunsplit(
         (
-            parts.scheme.lower(),
+            "https",
             parts.netloc.lower(),
             parts.path.rstrip("/") or "/",
             parts.query,

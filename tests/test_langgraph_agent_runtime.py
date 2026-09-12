@@ -19,6 +19,7 @@ from src.agent.langgraph_runtime.catalog import ToolCatalog
 from src.agent.langgraph_runtime.executor import action_fingerprint
 from src.agent.langgraph_runtime.graph import DEFAULT_RESPONSE_FORMAT
 from src.agent.langgraph_runtime.middleware import _source_fallback_reason
+from src.agent.langgraph_runtime.reflection import ReflectionReview
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 from src.tools.base import ToolSpec, object_schema
 from src.tools.registry import ToolRegistry
@@ -222,13 +223,44 @@ def _structured_output_call(
     blocks: list[Mapping[str, Any]],
     *,
     title: str = "",
+    profile: str | None = None,
 ) -> AIMessage:
+    arguments: dict[str, Any] = {
+        "title": title,
+        "blocks": [dict(block) for block in blocks],
+    }
+    if profile is not None:
+        arguments["profile"] = profile
     return AIMessage(
         content="",
         tool_calls=[
             {
                 "name": STRUCTURED_OUTPUT_TOOL_NAME,
-                "args": {"title": title, "blocks": [dict(block) for block in blocks]},
+                "args": arguments,
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
+def _reflection_output_call(
+    call_id: str,
+    *,
+    verdict: str = "pass",
+    summary: str = "候选回答与现有证据边界一致。",
+    issues: list[Mapping[str, Any]] | None = None,
+) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": ReflectionReview.__name__,
+                "args": {
+                    "verdict": verdict,
+                    "summary": summary,
+                    "issues": [dict(issue) for issue in (issues or [])],
+                },
                 "id": call_id,
                 "type": "tool_call",
             }
@@ -273,6 +305,25 @@ def _web_source_operation() -> ToolSpec:
         ),
         executor=lambda **_kwargs: {"success": True},
         source_catalog=({"id": "http", "name": "HTTP", "purpose": "测试"},),
+    )
+
+
+def _content_selection_operation() -> ToolSpec:
+    return ToolSpec(
+        name="select_content_sources",
+        description="选择本轮正文候选。",
+        parameters=object_schema(
+            {
+                "source_ids": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 1},
+                    "minItems": 1,
+                    "maxItems": 4,
+                }
+            },
+            required=("source_ids",),
+        ),
+        executor=lambda **_kwargs: {"success": True},
     )
 
 
@@ -322,6 +373,34 @@ def test_plain_answer_uses_the_standard_model_completion_path() -> None:
         assert result.final_text == "这是无需外部取证的解释。"
         assert executor.calls == []
         assert [item["stage"] for item in result.stage_history or []] == ["model", "model", "publish"]
+
+    asyncio.run(scenario())
+
+
+def test_native_general_answer_can_publish_without_external_evidence() -> None:
+    async def scenario() -> None:
+        result, _executor = await _run(
+            model=ScriptedChatModel(
+                responses=[
+                    _structured_output_call(
+                        "general-final",
+                        [{"kind": "answer", "content": "这是一个通用概念解释。"}],
+                        profile="general",
+                    )
+                ]
+            ),
+            registry=_registry(),
+            conversation_id="general-structured-answer",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "completed"
+        assert result.error_code is None
+        assert result.final_text == "这是一个通用概念解释。"
+        assert result.state["structured_answer"]["profile"] == "general"
+        assert result.state["claim_evidence"][0]["requires_evidence"] is False
+        assert result.state["reflection_status"] == "skipped"
+        assert len(result.stage_history or []) == 5
 
     asyncio.run(scenario())
 
@@ -697,6 +776,7 @@ def test_native_structured_answer_preserves_block_boundaries_and_evidence() -> N
                     ],
                     title="结构化分析",
                 ),
+                _reflection_output_call("structured-reflection-pass"),
             ]
         )
         result, _executor = await _run(
@@ -713,6 +793,166 @@ def test_native_structured_answer_preserves_block_boundaries_and_evidence() -> N
         assert len(result.state["claim_evidence"]) == 3
         assert all(all(claim["checks"].values()) for claim in result.state["claim_evidence"])
         assert result.state["structured_answer_call_id"] == "structured-final"
+
+    asyncio.run(scenario())
+
+
+def test_research_judgment_runs_reflection_after_hard_evidence_checks() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("reflection-read", "primary"),
+                _structured_output_call(
+                    "reflection-candidate",
+                    [
+                        {
+                            "section": "综合判断",
+                            "kind": "inference",
+                            "content": "已核验资料显示，增长仍有压力。",
+                            "source_ids": [1],
+                        }
+                    ],
+                    profile="research",
+                ),
+                _reflection_output_call("reflection-pass"),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            conversation_id="research-reflection-pass",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "completed"
+        assert result.error_code is None
+        assert result.state["reflection_status"] == "passed"
+        assert result.state["reflection_call_count"] == 1
+        assert result.state["reflection_round"] == 1
+        assert result.final_text.endswith("【证据 ev_reflection-read】")
+        reflection = [
+            item for item in result.stage_history or [] if item["stage"] == "reflection"
+        ]
+        assert reflection[-1]["details"]["verdict"] == "pass"
+
+    asyncio.run(scenario())
+
+
+def test_reflection_revision_is_one_no_tool_structured_rewrite_then_rechecked() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("reflection-revise-read", "primary"),
+                _structured_output_call(
+                    "reflection-revise-candidate",
+                    [
+                        {
+                            "section": "综合判断",
+                            "kind": "recommendation",
+                            "content": "建议立即重仓。",
+                            "source_ids": [1],
+                        }
+                    ],
+                    profile="research",
+                ),
+                _reflection_output_call(
+                    "reflection-revise-request",
+                    verdict="revise",
+                    summary="建议需要收窄到证据能够支持的范围。",
+                    issues=[
+                        {
+                            "block_index": 1,
+                            "category": "reasoning",
+                            "severity": "high",
+                            "reason": "现有资料不足以支持立即重仓。",
+                            "repair_instruction": "改为观察性建议，并保留证据边界。",
+                        }
+                    ],
+                ),
+                _structured_output_call(
+                    "reflection-revised-answer",
+                    [
+                        {
+                            "section": "综合判断",
+                            "kind": "recommendation",
+                            "content": "建议继续观察后续数据，不一次性重仓。",
+                            "source_ids": [1],
+                        }
+                    ],
+                    profile="research",
+                ),
+                _reflection_output_call("reflection-revised-pass"),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            conversation_id="research-reflection-revise",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "completed"
+        assert result.state["reflection_status"] == "passed"
+        assert result.state["reflection_call_count"] == 2
+        assert result.state["reflection_revision_count"] == 1
+        assert result.state["reflection_round"] == 2
+        assert "立即重仓" not in result.final_text
+        assert "继续观察后续数据" in result.final_text
+        refiner_tool_names = [
+            str(
+                tool.get("function", {}).get("name") or tool.get("name")
+                if isinstance(tool, Mapping)
+                else getattr(tool, "name", "")
+            )
+            for tool in model.call_options[3].get("tools", [])
+        ]
+        assert STRUCTURED_OUTPUT_TOOL_NAME in refiner_tool_names
+        assert "search_source" not in refiner_tool_names
+        assert any(
+            item["stage"] == "reflection"
+            and item.get("details", {}).get("reflection_status") == "revision_requested"
+            for item in result.stage_history or []
+        )
+
+    asyncio.run(scenario())
+
+
+def test_reflection_block_publishes_partial_and_does_not_claim_completion() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("reflection-block-read", "primary"),
+                _structured_output_call(
+                    "reflection-block-candidate",
+                    [
+                        {
+                            "section": "综合判断",
+                            "kind": "inference",
+                            "content": "这条资料足以证明未来一定上涨。",
+                            "source_ids": [1],
+                        }
+                    ],
+                    profile="research",
+                ),
+                _reflection_output_call(
+                    "reflection-block",
+                    verdict="block",
+                    summary="关键结论超出现有证据支持范围。",
+                ),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            conversation_id="research-reflection-block",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "reflection_blocked"
+        assert result.state["reflection_status"] == "blocked"
+        assert "关键结论超出现有证据支持范围" in result.final_text
+        assert any(
+            item["stage"] == "reflection" and item["status"] == "blocked"
+            for item in result.stage_history or []
+        )
 
     asyncio.run(scenario())
 
@@ -756,6 +996,7 @@ def test_native_structured_answer_repairs_a_material_block_that_lacks_evidence()
                         },
                     ],
                 ),
+                _reflection_output_call("structured-missing-reflection-pass"),
             ]
         )
         result, _executor = await _run(
@@ -769,7 +1010,7 @@ def test_native_structured_answer_repairs_a_material_block_that_lacks_evidence()
         assert "营收增长放缓" in result.final_text
         assert result.state["claim_evidence"][0]["checks"]["tool_success"] is True
         assert result.state["evidence_repair_count"] == 1
-        assert len(model.calls) == 3
+        assert len(model.calls) == 4
 
     asyncio.run(scenario())
 
@@ -785,11 +1026,12 @@ def test_structured_repair_targets_mixed_valid_and_invalid_references() -> None:
             _tool_call("mixed-read", "primary"),
             _structured_output_call("mixed-invalid", blocks([1, 99])),
             _structured_output_call("mixed-fixed", blocks([1])),
+            _reflection_output_call("mixed-reflection-pass"),
         ])
         result, _ = await _run(model=model, conversation_id="mixed-references", response_format=DEFAULT_RESPONSE_FORMAT)
         assert result.status == "completed"
         assert result.state["evidence_repair_count"] == 1
-        feedback = "\n".join(str(message.content) for message in model.calls[-1])
+        feedback = "\n".join(str(message.content) for message in model.calls[2])
         assert '"unresolved_evidence_ids": ["source:99"]' in feedback
         assert '"reference_integrity": false' in feedback
         assert result.state["claim_evidence"][1]["issues"] == []
@@ -910,6 +1152,118 @@ def test_structured_answer_uses_the_existing_scoped_content_access_gate() -> Non
         assert result.final_text.endswith("【证据 ev_structured-reference-body】")
         assert result.state["structured_answer_call_id"] == "structured-reference-final"
         assert len(model.calls) == 4
+        content_repair_request = model.call_options[2]
+        assert content_repair_request["tool_choice"] == "required"
+        assert {tool.name for tool in content_repair_request["tools"]} == {"read_web_source"}
+        final_request = model.call_options[3]
+        assert final_request["tool_choice"] == "any"
+        assert {tool.name for tool in final_request["tools"]} == {
+            "read_company_news_akshare",
+            "read_web_source",
+            STRUCTURED_OUTPUT_TOOL_NAME,
+        }
+
+    asyncio.run(scenario())
+
+
+def test_reference_sources_are_selected_before_answer_and_read_by_the_server() -> None:
+    async def scenario() -> None:
+        url = "https://example.test/proactive-news"
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "proactive-reference-news",
+                    "read_company_news_akshare",
+                    {"symbol": "600519"},
+                ),
+                _named_tool_call(
+                    "proactive-selection",
+                    "select_content_sources",
+                    {"source_ids": [1]},
+                ),
+                _structured_output_call(
+                    "proactive-final",
+                    [
+                        {
+                            "section": "新闻结论",
+                            "kind": "fact",
+                            "content": "正文已确认该消息。",
+                            "source_ids": [2],
+                        }
+                    ],
+                    profile="research",
+                ),
+            ]
+        )
+        executor = FakeAtomicExecutor(
+            {
+                "read_company_news_akshare": [
+                    {
+                        "source_refs": [url],
+                        "result": {
+                            "success": True,
+                            "items": [{"title": "测试新闻", "url": url}],
+                            "reference_links": [url],
+                            "content_access": {
+                                "mode": "reference_only",
+                                "content_read": False,
+                                "content_extracted": False,
+                                "content_read_required": True,
+                            },
+                        },
+                    }
+                ],
+                "read_web_source": [
+                    {
+                        "source_refs": [url],
+                        "result": {
+                            "success": True,
+                            "url": url,
+                            "content": "新闻正文已读取。",
+                        },
+                    }
+                ],
+            }
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(
+                _company_news_operation(),
+                _web_source_operation(),
+                _content_selection_operation(),
+            ),
+            executor=executor,
+            conversation_id="proactive-content-selection",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "completed"
+        assert [call["tool_name"] for call in executor.calls] == [
+            "read_company_news_akshare",
+            "select_content_sources",
+            "read_web_source",
+        ]
+        assert result.state["content_access_repair_count"] == 0
+        assert result.state["pending_content_reads"] == []
+        assert len(model.calls) == 3
+        selection_request = model.call_options[1]
+        assert selection_request["tool_choice"] == "required"
+        assert {tool.name for tool in selection_request["tools"]} == {
+            "select_content_sources"
+        }
+        selection_message = next(
+            message
+            for message in model.calls[2]
+            if getattr(message, "type", "") == "tool"
+            and getattr(message, "name", "") == "select_content_sources"
+        )
+        assert "新闻正文已读取" in str(selection_message.content)
+        assert any(
+            item["stage"] == "content_access"
+            and item["status"] == "started"
+            and item["details"].get("mode") == "proactive_selection"
+            for item in result.stage_history or []
+        )
 
     asyncio.run(scenario())
 
@@ -1019,7 +1373,7 @@ def test_content_repair_keeps_the_structured_candidate_when_model_returns_plain_
         )
         result, _executor = await _run(
             model=model,
-            registry=_registry(_company_news_operation()),
+            registry=_registry(_company_news_operation(), _web_source_operation()),
             executor=executor,
             conversation_id="structured-output-content-repair-plain",
             response_format=DEFAULT_RESPONSE_FORMAT,
@@ -1031,6 +1385,9 @@ def test_content_repair_keeps_the_structured_candidate_when_model_returns_plain_
         assert result.state["structured_answer_call_id"] == "reference-candidate"
         assert result.final_text.count("索引显示存在相关消息。") == 1
         assert "正文取证未完成" in result.final_text
+        content_repair_request = model.call_options[2]
+        assert content_repair_request["tool_choice"] == "required"
+        assert {tool.name for tool in content_repair_request["tools"]} == {"read_web_source"}
 
     asyncio.run(scenario())
 
@@ -1819,6 +2176,15 @@ def test_reference_only_source_requires_successful_web_body_read_before_final_an
         # URL.  Content access never fans out to the unselected candidate.
         assert result.state["content_access_repair_count"] == 1
         assert len(model.calls) == 4
+        content_repair_request = model.call_options[2]
+        assert content_repair_request["tool_choice"] == "required"
+        assert {tool.name for tool in content_repair_request["tools"]} == {"read_web_source"}
+        final_request = model.call_options[3]
+        assert final_request["tool_choice"] is None
+        assert {tool.name for tool in final_request["tools"]} == {
+            "read_company_news_akshare",
+            "read_web_source",
+        }
         assert any(
             "read_web_source" in str(message.content) and url in str(message.content)
             for message in model.calls[2]

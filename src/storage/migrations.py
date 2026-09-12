@@ -53,7 +53,6 @@ def ensure_compatible_schema(engine) -> None:
     _migrate_agent_step_observability_fields(engine)
     _migrate_agent_run_trace_latest_stage(engine)
     _migrate_agent_quality_fields(engine)
-    _migrate_research_alert_fields(engine)
     _record_schema_version(engine)
 
 
@@ -68,28 +67,6 @@ def _seed_agent_runtime_control(engine) -> None:
         session.rollback()
     finally:
         session.close()
-
-
-def _migrate_research_alert_fields(engine) -> None:
-    additions = {
-        "alert_rules": {
-            "tenant_id": "VARCHAR(64) NOT NULL DEFAULT 'local'",
-            "owner_id": "VARCHAR(128) NOT NULL DEFAULT 'admin'",
-            "state_json": "TEXT NOT NULL DEFAULT '{}'",
-            "next_check_at": "TIMESTAMP",
-        },
-        "alert_triggers": {"fingerprint": "VARCHAR(64)"},
-    }
-    inspector = inspect(engine)
-    with engine.begin() as connection:
-        for table, fields in additions.items():
-            columns = {column["name"] for column in inspector.get_columns(table)}
-            for name, sql_type in fields.items():
-                if name not in columns:
-                    connection.execute(text(f'ALTER TABLE {table} ADD COLUMN "{name}" {sql_type}'))
-        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_alert_trigger_fingerprint ON alert_triggers (fingerprint)"))
-        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_alert_rules_next_check ON alert_rules (next_check_at)"))
-        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_alert_rules_owner_source ON alert_rules (tenant_id, owner_id, source)"))
 
 
 def _ensure_meta_table(session: Session) -> None:

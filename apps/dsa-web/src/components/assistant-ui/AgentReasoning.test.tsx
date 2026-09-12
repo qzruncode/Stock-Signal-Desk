@@ -281,6 +281,71 @@ describe('AgentExecutionTimeline', () => {
     expect(screen.getByText(`缺口 1：${fullIssue}`)).not.toHaveClass('truncate');
   });
 
+  it('shows evidence and semantic review beside native tool parts without duplicating tools', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-review',
+            stage: 'model',
+            status: 'completed',
+            summary: '模型已完成研究回答',
+            details: { model_turn: 1 },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-review',
+            stage: 'tool',
+            status: 'completed',
+            action_id: 'call-native-review',
+            summary: 'read_realtime_quote 已返回结果',
+            details: { tool_name: 'read_realtime_quote' },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-review',
+            stage: 'evidence',
+            status: 'completed',
+            summary: '已核对 3 条结论与 2 条成功证据',
+            details: { claim_count: 3, fact_claim_count: 2, inference_claim_count: 1 },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-review',
+            stage: 'reflection',
+            status: 'completed',
+            summary: '语义复核通过，研究回答允许发布',
+            details: {
+              verdict: 'pass',
+              reflection_round: 1,
+              reviewer_mode: 'self_refine',
+              summary: '推理边界与风险表述均在现有证据范围内。',
+            },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-review',
+            stage: 'publish',
+            status: 'completed',
+            summary: '已发布最终回答',
+          },
+        ],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline presentation="inline" stageOnly />);
+
+    expect(screen.getByRole('region', { name: '校验与复核' })).toBeInTheDocument();
+    expect(screen.getByText('关联证据')).toBeInTheDocument();
+    expect(screen.getByText('语义复核')).toBeInTheDocument();
+    expect(screen.getByText('复核结果：通过')).toBeInTheDocument();
+    expect(screen.getByText('复核方式：受限自复核')).toBeInTheDocument();
+    expect(screen.queryByText('read_realtime_quote')).not.toBeInTheDocument();
+  });
+
   it('keeps the candidate-answer stage but does not duplicate its body', () => {
     mockMessage({
       status: { type: 'complete' },

@@ -1,4 +1,4 @@
-name: Research workspace quality
+name: Agent runtime quality
 
 on:
   workflow_dispatch:
@@ -7,16 +7,14 @@ on:
       - 'src/agent/**'
       - 'src/storage/**'
       - 'src/tools/registry.py'
-      - 'src/services/research*'
       - 'api/**'
       - 'apps/dsa-web/**'
-      - 'tests/test_*research*'
       - 'tests/test_agent_*'
       - 'tests/test_langgraph*'
       - 'tests/fixtures/agent_regression.json'
       - 'requirements*'
       - 'scripts/evaluate_agent.py'
-      - '.github/workflows/research-quality.yml'
+      - '.github/workflows/agent-runtime-quality.yml'
 
 permissions:
   contents: read
@@ -40,14 +38,17 @@ jobs:
         run: python -m pip install --require-hashes -r requirements.lock -r requirements-eval.lock
       - name: Check dependency consistency
         run: python -m pip check
-      - name: Offline Agent and research contracts
+      - name: Offline Agent and runtime contracts
         run: >-
           python -m pytest -q
           tests/test_agent_reported_usage.py tests/test_agent_conversation_memory.py
-          tests/test_agent_regression.py tests/test_research_workspace.py
-          tests/test_research_api.py tests/test_research_migration.py
-          tests/test_langgraph_native_stream.py tests/test_langgraph_agent_runtime.py
-          tests/test_langgraph_approval.py tests/test_agent_quality.py
+          tests/test_agent_regression.py tests/test_agent_answer_contract.py
+          tests/test_agent_reflection.py tests/test_agent_conversations.py
+          tests/test_agent_durable_runtime.py tests/test_agent_durable_runtime_part1.py
+          tests/test_agent_durable_runtime_part2.py tests/test_run_registry.py
+          tests/test_langgraph_native_stream.py
+          tests/test_langgraph_agent_runtime.py tests/test_langgraph_approval.py
+          tests/test_agent_quality.py
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
@@ -58,9 +59,11 @@ jobs:
       - name: Scoped browser-component contracts
         working-directory: apps/dsa-web
         run: >-
-          npx vitest run src/pages/ResearchPage.test.tsx src/pages/AgentMonitoringPage.test.tsx
-          src/App.test.tsx src/components/layout/__tests__/Shell.test.tsx
+          npx vitest run src/pages/AgentMonitoringPage.test.tsx src/App.test.tsx
+          src/components/layout/__tests__/Shell.test.tsx
+          src/components/runExplorer/RunDetailContent.test.tsx
           src/components/assistant-ui/ChatRuntimeBridge.test.tsx
+          src/components/assistant-ui/StructuredAnswerReferences.test.tsx
           src/api/__tests__/agent.test.ts src/utils/chatMessageDeletion.test.ts
           src/api/__tests__/agentMonitoring.test.ts
           src/hooks/__tests__/useChatController.test.tsx
@@ -71,12 +74,11 @@ jobs:
           node scripts/typecheck-files.mjs
           src/hooks/useChatController.ts src/hooks/useConversationActions.ts
           src/pages/ChatHomePage.tsx src/pages/AgentMonitoringPage.tsx src/utils/agentMonitoring.ts
-          src/pages/ResearchPage.tsx src/pages/SettingPage.tsx src/pages/MarketWorkspacePage.tsx
-          src/pages/RunExplorerPage.tsx src/components/research/ResearchAlerts.tsx
+          src/pages/SettingPage.tsx src/pages/MarketWorkspacePage.tsx src/pages/RunExplorerPage.tsx
           src/components/layout/WorkspaceQueryProvider.tsx src/components/layout/WorkspaceNav.tsx
-          src/components/layout/Shell.tsx src/api/research.ts src/App.tsx
+          src/components/layout/Shell.tsx src/api/agent.ts src/App.tsx
       - name: Scoped frontend lint and size budget
         working-directory: apps/dsa-web
         run: |
-          npx eslint src/pages/ResearchPage.tsx src/components/research/ResearchAlerts.tsx src/hooks/useChatController.ts src/hooks/useConversationActions.ts
-          node scripts/check-code-constraints.mjs --files src/pages/ResearchPage.tsx src/components/research/ResearchAlerts.tsx src/hooks/useChatController.ts src/hooks/useConversationActions.ts src/pages/ChatHomePage.tsx src/pages/AgentMonitoringPage.tsx
+          npx eslint src/hooks/useChatController.ts src/hooks/useConversationActions.ts src/pages/ChatHomePage.tsx src/pages/AgentMonitoringPage.tsx src/pages/SettingPage.tsx src/pages/MarketWorkspacePage.tsx src/pages/RunExplorerPage.tsx src/components/layout/WorkspaceQueryProvider.tsx src/components/layout/WorkspaceNav.tsx src/components/layout/Shell.tsx src/components/assistant-ui/StructuredAnswerReferences.tsx src/components/assistant-ui/StructuredAnswerReferencesUtils.ts src/api/agent.ts src/App.tsx
+          node scripts/check-code-constraints.mjs --files src/hooks/useChatController.ts src/hooks/useConversationActions.ts src/pages/ChatHomePage.tsx src/pages/AgentMonitoringPage.tsx src/components/layout/WorkspaceNav.tsx src/components/layout/Shell.tsx src/components/assistant-ui/StructuredAnswerReferences.tsx src/App.tsx

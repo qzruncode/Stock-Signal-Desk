@@ -249,7 +249,6 @@ class _AgentRuntimeMixinMethods4:
                     .where(
                         AgentRun.status.in_(_TERMINAL_RUN_STATUSES),
                         AgentRun.finished_at < finished_before,
-                        ~AgentRun.id.in_(select(AgentFinancialConclusion.run_id)),
                     )
                     .order_by(AgentRun.finished_at.asc())
                     .limit(max(1, min(limit, 5000)))
@@ -264,7 +263,6 @@ class _AgentRuntimeMixinMethods4:
                     select(AgentRunTrace.id)
                     .where(
                         AgentRunTrace.created_at < trace_cutoff,
-                        ~AgentRunTrace.run_id.in_(select(AgentFinancialConclusion.run_id)),
                     )
                     .order_by(AgentRunTrace.created_at.asc())
                     .limit(safe_limit)

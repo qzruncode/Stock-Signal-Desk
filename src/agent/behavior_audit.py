@@ -201,7 +201,9 @@ def _canonical_url(value: Any) -> str:
         # makes a redirected/read URL comparable to the original reference.
         return urlunsplit(
             (
-                parts.scheme.lower(),
+                # Keep HTTP and HTTPS as aliases for the same public page. The
+                # persisted audit still retains the original URLs elsewhere.
+                "https",
                 parts.netloc.lower(),
                 parts.path.rstrip("/") or "/",
                 "",

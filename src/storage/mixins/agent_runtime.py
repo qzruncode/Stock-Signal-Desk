@@ -18,7 +18,6 @@ from sqlalchemy.exc import IntegrityError
 
 from src.storage.models import (
     AgentArtifact,
-    AgentFinancialConclusion,
     AgentCircuitBreaker,
     AgentEffectOutbox,
     AgentRateLimitBucket,

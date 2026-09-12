@@ -8,6 +8,7 @@ middleware no longer has to bypass LangGraph's tool execution path for reads.
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import json
 from typing import Any, Awaitable, Callable
 
 from langchain_core.tools import StructuredTool
@@ -32,10 +33,35 @@ def native_tool_context(context: Any, tool_call_id: str):
         _NATIVE_TOOL_CONTEXT.reset(token)
 
 
+def _native_tool_result_envelope(
+    record: dict[str, Any],
+    evidence: dict[str, Any] | None,
+) -> str:
+    """Serialize the application result before LangChain formats tool output.
+
+    ``StructuredTool`` formats a mapping return value itself.  If a nested
+    provider value is not JSON serializable (for example a date-like scalar),
+    LangChain falls back to Python's repr, while the middleware still expects
+    the application envelope to be JSON.  Serializing at this boundary keeps
+    the native tool contract stable and preserves non-JSON leaves as display
+    strings, matching the rest of the runtime's projection policy.
+    """
+    return json.dumps(
+        {
+            NATIVE_TOOL_RESULT_MARKER: True,
+            "record": record,
+            "evidence": evidence,
+        },
+        ensure_ascii=False,
+        default=str,
+        separators=(",", ":"),
+    )
+
+
 def _native_tool_coroutine(
     tool_name: str,
     registry: ToolRegistry,
-) -> Callable[..., Awaitable[dict[str, Any]]]:
+) -> Callable[..., Awaitable[str]]:
     """Build one real async tool callable for LangGraph's native handler.
 
     Middleware sets a task-local run context immediately before it calls
@@ -43,7 +69,7 @@ def _native_tool_coroutine(
     of validation, idempotency, isolation, retries, and evidence persistence.
     """
 
-    async def execute(**arguments: Any) -> dict[str, Any]:
+    async def execute(**arguments: Any) -> str:
         runtime_context = _NATIVE_TOOL_CONTEXT.get()
         if runtime_context is None:
             raise RuntimeError("agent tool runtime context is unavailable")
@@ -61,11 +87,10 @@ def _native_tool_coroutine(
             "arguments": dict(arguments),
         }
         record, evidence = await context.executor.execute(action, approved=False)
-        return {
-            NATIVE_TOOL_RESULT_MARKER: True,
-            "record": dict(record),
-            "evidence": dict(evidence) if isinstance(evidence, dict) else None,
-        }
+        return _native_tool_result_envelope(
+            dict(record),
+            dict(evidence) if isinstance(evidence, dict) else None,
+        )
 
     execute.__name__ = f"execute_{tool_name}"
     return execute
@@ -94,4 +119,8 @@ def build_langchain_tools(registry: ToolRegistry) -> list[StructuredTool]:
     return tools
 
 
-__all__ = ["NATIVE_TOOL_RESULT_MARKER", "build_langchain_tools", "native_tool_context"]
+__all__ = [
+    "NATIVE_TOOL_RESULT_MARKER",
+    "build_langchain_tools",
+    "native_tool_context",
+]

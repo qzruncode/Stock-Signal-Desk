@@ -166,7 +166,16 @@ export const AgentExecutionTimeline: FC<{
   /** Legacy traces have no native parts; render them inline while they are
    * being upgraded instead of hiding the whole run behind one process card. */
   presentation?: 'inline' | 'disclosure';
-}> = ({ reasoningText = '', processText = '', presentation = 'disclosure' }) => {
+  /** Native assistant parts already render tool calls in chronological order.
+   * In that mode keep only the durable control stages (evidence/reflection/
+   * approval) so those checks remain visible without duplicating tool rows. */
+  stageOnly?: boolean;
+}> = ({
+  reasoningText = '',
+  processText = '',
+  presentation = 'disclosure',
+  stageOnly = false,
+}) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const messageActive = messageStatus === 'running' || messageStatus === 'requires-action';
   const messageTiming = useMessageTiming();
@@ -222,8 +231,12 @@ export const AgentExecutionTimeline: FC<{
       if (key && includedResults.has(key)) return;
       output.push({ key: `tool:${key || `unmatched-${resultIndex}`}`, result, kind: 'tool' });
     });
-    return output;
-  }, [events, results]);
+    return stageOnly
+      ? output.filter((row) => row.kind === 'stage'
+        && row.event
+        && !['model', 'publish'].includes(row.event.stage))
+      : output;
+  }, [events, results, stageOnly]);
   const phases = useMemo(() => groupTimelinePhases(rows), [rows]);
   // A model.started event is an internal lifecycle marker, not user-facing
   // progress. During a live run, do not turn that marker into a separate
@@ -296,7 +309,7 @@ export const AgentExecutionTimeline: FC<{
 
   if (presentation === 'inline') {
     return (
-      <section className="mb-3 min-w-0" aria-label="执行过程">
+      <section className="mb-3 min-w-0" aria-label={stageOnly ? '校验与复核' : '执行过程'}>
         {processVisible.trim() ? (
           <div className="mb-2">
             <AssistantMarkdown text={processVisible} evidence={trace} />

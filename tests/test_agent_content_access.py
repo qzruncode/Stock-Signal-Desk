@@ -17,6 +17,12 @@ def test_content_access_matching_preserves_query_parameters() -> None:
     )
 
 
+def test_content_access_matching_treats_http_upgrade_as_the_same_public_resource() -> None:
+    assert canonical_url("http://example.test/article?id=1") == canonical_url(
+        "https://example.test/article?id=1"
+    )
+
+
 def test_read_web_source_tool_message_keeps_a_useful_body_preview() -> None:
     content = "正文段落。" * 500
     message = _tool_message_content(
@@ -185,6 +191,40 @@ def test_only_successful_non_empty_web_reads_leave_the_queue() -> None:
         ],
     )
     assert [item["url"] for item in attachment_pending] == [url]
+
+
+def test_https_body_read_satisfies_an_http_reference_target() -> None:
+    http_url = "http://example.test/news/1"
+    https_url = "https://example.test/news/1"
+    _targets, pending = build_content_access_targets(
+        tool_results=[
+            {
+                "tool_name": "read_company_news_akshare",
+                "action_id": "news",
+                "success": True,
+                "result": {"items": [{"url": http_url}]},
+            },
+            {
+                "tool_name": "read_web_source",
+                "action_id": "read",
+                "success": True,
+                "arguments": {"url": https_url},
+                "result": {
+                    "success": True,
+                    "url": https_url,
+                    "final_url": https_url,
+                    "content": "正文",
+                    "content_access": {
+                        "content_read": True,
+                        "content_extracted": True,
+                        "content_length": 2,
+                    },
+                },
+            },
+        ],
+    )
+
+    assert pending == []
 
 
 def test_required_reads_are_scoped_to_the_cited_reference_tool_call() -> None:
