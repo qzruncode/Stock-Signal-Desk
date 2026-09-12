@@ -125,6 +125,96 @@ def test_model_cannot_self_authorize_a_side_effect() -> None:
         registry.execute("send_message", {"message": "测试通知", "confirmed": True})
 
 
+def test_approved_side_effect_injects_required_server_field_after_model_call() -> None:
+    async def scenario() -> None:
+        observed: list[bool] = []
+
+        def delete_record(record_ids: str, confirmed: bool) -> dict[str, Any]:
+            observed.append(confirmed)
+            return {
+                "success": True,
+                "partial": False,
+                "record_ids": record_ids,
+                "message": "已删除",
+                "errors": [],
+            }
+
+        operation = ToolSpec(
+            name="delete_required_confirmation",
+            description="删除指定记录",
+            parameters=object_schema(
+                {
+                    "record_ids": {"type": "string"},
+                    "confirmed": {"type": "boolean", "default": False},
+                },
+                required=("record_ids", "confirmed"),
+            ),
+            executor=delete_record,
+            effect="side_effect",
+            max_attempts=1,
+        )
+        manager = LangGraphRuntimeManager(
+            registry=_registry(operation),
+            response_format=None,
+        )
+        await manager.start(testing=True)
+        try:
+            interrupted = await manager.run_new(
+                messages=[{"role": "user", "content": "删除记录 1"}],
+                user_text="删除记录 1",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="run-required-confirmation",
+                conversation_id="required-confirmation",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=ScriptedChatModel(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "delete_required_confirmation",
+                                    "args": {"record_ids": "1"},
+                                    "id": "delete-required-confirmation",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        )
+                    ]
+                ),
+            )
+            assert interrupted.interrupted is True
+            assert interrupted.pending_interrupt is not None
+
+            completed = await manager.resume(
+                interrupt_id=interrupted.pending_interrupt["interrupt_id"],
+                decision={
+                    "decision": "approve",
+                    "fingerprint": interrupted.pending_interrupt["fingerprint"],
+                },
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="run-required-confirmation",
+                conversation_id="required-confirmation",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=ScriptedChatModel(responses=[AIMessage(content="删除完成")]),
+            )
+            assert completed.status == "completed"
+            assert observed == [True]
+            assert completed.state["tool_results"][0]["success"] is True
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
 def test_approval_executes_exactly_once_even_if_the_resume_is_replayed() -> None:
     async def scenario() -> None:
         executor = FakeAtomicExecutor()

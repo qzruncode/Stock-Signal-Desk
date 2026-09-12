@@ -113,7 +113,7 @@ def build_langchain_tools(registry: ToolRegistry) -> list[StructuredTool]:
                 coroutine=_native_tool_coroutine(spec.name, registry),
                 name=spec.name,
                 description=spec.description,
-                args_schema=spec.args_model,
+                args_schema=spec.model_args_model(),
             )
         )
     return tools

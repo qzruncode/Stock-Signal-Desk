@@ -9,6 +9,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from langchain_core.utils.function_calling import convert_to_openai_tool
+
+from src.agent.langgraph_runtime.agent_tools import build_langchain_tools
 from src.tools.registry import TOOL_MODULES, ToolRegistry
 from src.tools.base import ToolSpec, enforce_result_contract, object_schema
 
@@ -305,6 +308,30 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         notification_fields = set(notification.model_parameters()["properties"])
         self.assertEqual(notification_fields, {"message", "title"})
         self.assertNotIn("confirmed", notification_fields)
+
+    def test_bound_tool_schemas_hide_server_controlled_fields(self) -> None:
+        registry = ToolRegistry()
+        bound = {tool.name: tool for tool in build_langchain_tools(registry)}
+
+        for name in registry.get_tool_names():
+            spec = registry.get_tool(name)
+            self.assertIsNotNone(spec)
+            self.assertIn(name, bound)
+            assert spec is not None
+            schema = convert_to_openai_tool(bound[name])["function"]["parameters"]
+            properties = set(schema.get("properties") or {})
+            required = set(schema.get("required") or [])
+            model_properties = set(spec.model_parameters().get("properties") or {})
+
+            self.assertEqual(properties, model_properties, msg=name)
+            self.assertTrue(
+                set(spec.server_controlled_fields).isdisjoint(properties | required),
+                msg=name,
+            )
+
+        delete_schema = convert_to_openai_tool(bound["delete_analysis_history"])["function"]["parameters"]
+        self.assertEqual(set(delete_schema["properties"]), {"record_ids"})
+        self.assertEqual(delete_schema["required"], ["record_ids"])
 
     def test_rss_exposes_generic_operations_and_complete_source_catalog(self) -> None:
         names = set(ToolRegistry().get_tool_names())

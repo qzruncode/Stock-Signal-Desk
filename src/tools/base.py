@@ -16,7 +16,8 @@ from datetime import date, datetime
 import re
 from typing import Annotated, Any, Callable, Dict, Iterable, Iterator, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, create_model
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, create_model, field_validator
+from pydantic_core import PydanticUndefined
 
 
 @dataclass(frozen=True)
@@ -660,6 +661,46 @@ class ToolSpec:
             name for name in parameters.get("required") or [] if name not in controlled
         ]
         return parameters
+
+    def model_args_model(self) -> type[BaseModel]:
+        """Return a validation model containing only model-authored fields.
+
+        ``args_model`` is the complete execution model and may contain fields
+        owned by the server, such as ``confirmed``.  LangChain uses the model
+        passed as ``args_schema`` to generate the provider-facing tool schema,
+        so passing ``args_model`` directly would leak those fields back to the
+        model.  Copy the original Pydantic fields instead of rebuilding from
+        JSON schema so custom field metadata and provider-specific schema
+        shapes remain unchanged; the execution boundary still validates with
+        the complete ``args_model``.
+        """
+        fields = {
+            field_name: (field.annotation, field)
+            for field_name, field in self.args_model.model_fields.items()
+            if field_name not in set(self.server_controlled_fields)
+        }
+        validators: dict[str, Any] = {}
+        decorators = getattr(self.args_model, "__pydantic_decorators__", None)
+        for validator_name, decorator in (getattr(decorators, "field_validators", {}) or {}).items():
+            target_fields = tuple(decorator.info.fields)
+            if "*" not in target_fields and not set(target_fields).issubset(fields):
+                continue
+            validator_kwargs: dict[str, Any] = {"mode": decorator.info.mode}
+            if decorator.info.check_fields is not None:
+                validator_kwargs["check_fields"] = decorator.info.check_fields
+            if decorator.info.json_schema_input_type is not PydanticUndefined:
+                validator_kwargs["json_schema_input_type"] = decorator.info.json_schema_input_type
+            validator_function = getattr(decorator.func, "__func__", decorator.func)
+            validators[validator_name] = field_validator(
+                *target_fields,
+                **validator_kwargs,
+            )(validator_function)
+        return create_model(
+            f"{_model_name(self.name)}ModelArgs",
+            __config__=ConfigDict(extra="forbid"),
+            __validators__=validators,
+            **fields,
+        )
 
     def effect_for(self, arguments: Mapping[str, Any]) -> ToolEffect:
         resolved = self.effect_resolver(arguments) if self.effect_resolver is not None else self.effect
