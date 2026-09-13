@@ -248,10 +248,13 @@ export const AgentExecutionTimeline: FC<{
   );
   const problemSummary = useMemo(() => {
     const problemEvent = [...events].reverse().find((event) => (
+      !['tool', 'execute', 'approval'].includes(event.stage)
+      && (
       event.status === 'failed'
       || event.status === 'blocked'
       || event.status === 'cancelled'
       || Boolean(event.errorCode)
+      )
     ));
     if (!problemEvent) return '';
     return problemEvent.summary.trim() || problemEvent.errorCode || '本轮执行未完成，请重试';

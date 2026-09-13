@@ -8,7 +8,10 @@ from src.agent.langgraph_runtime.content_access import (
     cited_reference_access_status,
     required_content_access_targets,
 )
-from src.agent.langgraph_runtime.middleware import _tool_message_content
+from src.agent.langgraph_runtime.middleware import (
+    _tool_message_content,
+    _tool_result_observation,
+)
 
 
 def test_content_access_matching_preserves_query_parameters() -> None:
@@ -45,6 +48,23 @@ def test_read_web_source_tool_message_keeps_a_useful_body_preview() -> None:
     payload = json.loads(message)
     assert len(payload["result"]["content"]) > 1_200
     assert payload["result"]["content_preview_length"] == len(content)
+
+
+def test_pdf_tool_observation_keeps_the_report_body_beyond_generic_preview_limit() -> None:
+    content = "研报正文段落。" * 2_000
+    observation = _tool_result_observation(
+        {"tool_name": "read_web_source"},
+        {
+            "success": True,
+            "content_type": "application/pdf",
+            "document_extension": ".pdf",
+            "content": content,
+        },
+    )
+
+    assert observation["content"] == content
+    assert observation["content_preview_truncated"] is False
+    assert observation["content_preview_length"] == len(content)
 
 
 def test_tool_observation_preserves_empty_stale_and_fallback_state_for_the_model() -> None:

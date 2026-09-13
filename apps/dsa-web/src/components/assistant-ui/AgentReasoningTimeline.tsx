@@ -22,6 +22,7 @@ import {
   statusText,
   text,
   toolDetails,
+  toolOutcomeCounts,
   toolName,
   toolStatus,
   toolSummary,
@@ -204,8 +205,14 @@ export const TimelinePhaseRow: FC<{ phase: TimelinePhase }> = ({ phase }) => {
   const phaseNumber = phase.modelTurn || phase.index;
   const phaseLabel = `第 ${phaseNumber} 阶段`;
   const headline = phaseHeadline(phase);
+  const outcomes = toolOutcomeCounts(toolRows);
+  const phaseToolSummary = [
+    outcomes.running > 0 ? `正在执行 ${outcomes.running} 个工具` : '',
+    outcomes.completed > 0 ? `已完成 ${outcomes.completed} 个工具` : '',
+    outcomes.failed > 0 ? `失败 ${outcomes.failed} 个工具` : '',
+  ].filter(Boolean).join('，');
   const phaseSummary = toolRows.length > 0
-    ? `${status === 'started' ? '正在执行' : problem ? '执行出现问题' : '已完成'} ${toolRows.length} 个工具`
+    ? phaseToolSummary
     : headline;
 
   return (

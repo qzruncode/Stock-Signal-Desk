@@ -144,6 +144,19 @@ def test_duplicate_jobs_cancel_and_retry(service):
         assert session.get(SyncJob, a["id"]).active_key is None
 
 
+def test_scheduled_reference_subscription_resolves_company_name_to_code(service):
+    _, database, _, _ = service
+    seed(service, "securities")
+    from market_data_service.control_models import SyncJob
+    from market_data_service.jobs import target_symbols
+    from market_data_service.sources import register_request
+
+    register_request("news", {"symbol": "隔离测试000001"})
+    job = SyncJob(id="name-subscription", dataset="news", mode="all")
+    with database.get_session() as session:
+        assert target_symbols(session, job) == ["000001"]
+
+
 def test_atomic_financial_snapshot_versions_and_strict_reads(service):
     client, db, _, _ = service
     seed(service, "calendar", "securities", "financials")

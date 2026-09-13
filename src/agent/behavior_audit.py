@@ -103,6 +103,8 @@ _DATA_TIME_NOT_APPLICABLE_TOOLS = frozenset(
     {
         "search_stocks",
         "read_company_profile_cninfo",
+        "read_consensus_metric_ths",
+        "read_consensus_financial_estimates_ths",
     }
 )
 

@@ -94,6 +94,8 @@ def test_consensus_source_reads_keep_metric_and_detail_queries_separate() -> Non
     assert financials["actuals"][0]["revenue_yi"] == 1688.38
     assert financials["financial_forecasts"][0]["net_profit_growth_pct"] == 5.37
     assert financials["financial_forecasts"][0]["roe_pct"] == 31.62
+    assert eps["data_time"] is None and eps["data_time_applicable"] is False
+    assert financials["data_time"] is None and financials["data_time_applicable"] is False
 
 
 def test_metric_read_reports_no_coverage_without_claiming_other_metrics() -> None:
@@ -109,3 +111,4 @@ def test_metric_read_reports_no_coverage_without_claiming_other_metrics() -> Non
     assert result["coverage_status"] == "no_sell_side_coverage"
     assert result["errors"] == []
     assert any("无机构一致预测覆盖" in warning for warning in result["warnings"])
+    assert result["data_time_applicable"] is False

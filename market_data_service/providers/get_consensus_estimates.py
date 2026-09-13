@@ -195,6 +195,9 @@ def read_consensus_metric_ths(symbol: str, metric: str) -> dict[str, Any]:
         "errors": [],
         "warnings": [] if estimates else [f"{metric} 无机构一致预测覆盖"],
         "data_time": None,
+        "data_time_applicable": False,
+        "data_time_provenance": "unavailable",
+        "data_time_note": "一致预期按预测年度记录；预测年度不是来源发布时间。",
         "is_stale": None,
         "freshness_unknown": True,
         "_cached": cached,
@@ -239,8 +242,6 @@ def read_consensus_financial_estimates_ths(symbol: str) -> dict[str, Any]:
     code = _validated_code(symbol)
     rows, cached = _detail(code, "financial_metrics")
     actuals, forecasts = _normalize_financial_metrics(rows)
-    dated = [item.get("year") for item in [*actuals, *forecasts] if item.get("year")]
-    latest_year = max(dated) if dated else None
     return {
         "symbol": code,
         "actuals": actuals,
@@ -252,9 +253,12 @@ def read_consensus_financial_estimates_ths(symbol: str) -> dict[str, Any]:
         "partial": False,
         "errors": [],
         "warnings": [] if actuals or forecasts else ["该数据源未返回财务预测明细"],
-        "data_time": str(latest_year) if latest_year else None,
+        "data_time": None,
+        "data_time_applicable": False,
+        "data_time_provenance": "unavailable",
+        "data_time_note": "财务预测按预测年度记录；预测年度不是来源发布时间。",
         "is_stale": None,
-        "freshness_unknown": latest_year is None,
+        "freshness_unknown": True,
         "_cached": cached,
         "_fetched_at": datetime.now().astimezone().isoformat(),
     }

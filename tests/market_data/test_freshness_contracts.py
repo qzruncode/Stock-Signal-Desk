@@ -40,6 +40,38 @@ def test_missing_quote_time_is_never_promoted_from_transport_time(service):
     )
 
 
+def test_non_temporal_consensus_observation_is_not_blocked_by_freshness_gate(service):
+    _, database, _, _ = service
+    from market_data_service.control_models import utcnow
+    from market_data_service.jobs import publish
+    from market_data_service.sources import latest_observation, observation_payload
+
+    arguments = {"symbol": "000001", "metric": "net_profit"}
+    with database.session_scope() as session:
+        publish(
+            session,
+            "financials",
+            "000001",
+            {
+                "success": True,
+                "estimates": [{"year": 2026, "mean": 10}],
+                "data_time": None,
+                "data_time_applicable": False,
+                "freshness_unknown": True,
+            },
+            utcnow(),
+            operation="get_consensus_estimates.read_consensus_metric_ths",
+            arguments=arguments,
+        )
+
+    observation = latest_observation(
+        "get_consensus_estimates.read_consensus_metric_ths", arguments
+    )
+    payload = observation_payload(observation)
+    assert payload is not None
+    assert payload["data_service"]["status"] == "fresh"
+
+
 def test_one_immutable_kline_window_serves_smaller_reads_without_refetch(service):
     client, _, data, fixture = service
     seed(service, "calendar", "securities")

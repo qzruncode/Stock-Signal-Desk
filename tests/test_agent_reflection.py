@@ -89,6 +89,25 @@ def test_reflection_packet_redacts_urls_paths_and_real_evidence_ids():
     assert packet["evidence"][0]["alias"] == "e1"
 
 
+def test_reflection_packet_keeps_a_bounded_pdf_body_for_semantic_review():
+    content = "研报正文段落。" * 2_000
+    state = _state()
+    state["evidence"][0]["tool_name"] = "read_web_source"
+    state["evidence"][0]["result"] = {
+        "success": True,
+        "content_type": "application/pdf",
+        "document_extension": ".pdf",
+        "content": content,
+    }
+
+    packet = build_reflection_packet(state=state, answer=state["structured_answer"])
+    observation = packet["evidence"][0]["observation"]
+
+    assert observation["content"] == content
+    assert observation["content_preview_truncated"] is False
+    assert observation["content_length"] == len(content)
+
+
 def test_reflection_review_is_strict_and_feedback_is_bounded():
     review = normalize_reflection_review(
         ReflectionReview(

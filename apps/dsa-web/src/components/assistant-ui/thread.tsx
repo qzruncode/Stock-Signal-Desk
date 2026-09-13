@@ -14,6 +14,7 @@ import {
 import type { TextMessagePartProps } from '@assistant-ui/react';
 import {
   BookOpenIcon,
+  CircleAlertIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   Loader2Icon,
@@ -46,6 +47,7 @@ import {
 } from '../../utils/agentStage';
 import { formatElapsedDuration } from '../../utils/format';
 import { AgentExecutionTimeline, AgentToolCallPart } from './AgentReasoning';
+import { isRecord } from './AgentReasoningUtils';
 import { Composer } from './ThreadComposer';
 import { EmptyState } from './ThreadEmptyState';
 import { UserMessage } from './ThreadUserMessage';
@@ -219,16 +221,32 @@ const NativeToolGroup: FC<{
   startIndex: number;
   endIndex: number;
 }> = ({ children, startIndex, endIndex }) => {
-  const active = useAuiState((state) => state.message.parts
+  const activeCount = useAuiState((state) => state.message.parts
     .slice(startIndex, endIndex + 1)
-    .some((part) => (
+    .filter((part) => (
       part.type === 'tool-call'
       && (part.status.type === 'running' || part.status.type === 'requires-action')
-    )));
+    )).length);
+  const failedCount = useAuiState((state) => state.message.parts
+    .slice(startIndex, endIndex + 1)
+    .filter((part) => {
+      if (!isRecord(part) || part.type !== 'tool-call') return false;
+      const status = isRecord(part.status) ? part.status : {};
+      const result = isRecord(part.result) ? part.result : undefined;
+      return part.isError === true
+        || result?.success === false
+        || (status.type === 'incomplete' && status.reason === 'error');
+    }).length);
   const [expanded, setExpanded] = useState(false);
   const detailId = useId();
   const toolCount = Math.max(1, endIndex - startIndex + 1);
-  const label = active ? '正在执行' : '已完成';
+  const completedCount = Math.max(0, toolCount - activeCount - failedCount);
+  const label = [
+    activeCount > 0 ? `正在执行 ${activeCount} 个工具` : '',
+    completedCount > 0 ? `已完成 ${completedCount} 个工具` : '',
+    failedCount > 0 ? `失败 ${failedCount} 个工具` : '',
+  ].filter(Boolean).join('，');
+  const active = activeCount > 0;
 
   return (
     <div className="relative min-w-0">
@@ -248,6 +266,8 @@ const NativeToolGroup: FC<{
           >
             {active ? (
               <Loader2Icon className="size-4 shrink-0 animate-spin text-primary" aria-hidden="true" />
+            ) : failedCount > 0 ? (
+              <CircleAlertIcon className="size-4 shrink-0 text-amber-600" aria-hidden="true" />
             ) : (
               <BookOpenIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             )}

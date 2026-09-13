@@ -618,6 +618,97 @@ describe('AgentExecutionTimeline', () => {
     expect(screen.getByText('正在执行 1 个工具')).toBeInTheDocument();
   });
 
+  it('shows completed and failed tool counts separately', () => {
+    mockMessage({
+      status: { type: 'running' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-mixed-tools',
+            stage: 'tool',
+            status: 'completed',
+            action_id: 'call-good',
+            summary: 'read_quote 已返回',
+            details: { tool_name: 'read_quote' },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-mixed-tools',
+            stage: 'tool',
+            status: 'completed',
+            action_id: 'call-bad',
+            summary: 'read_news 调用失败',
+            details: { tool_name: 'read_news' },
+          },
+        ],
+        custom: {
+          agent_execution_trace: {
+            tool_results: [
+              {
+                action_id: 'call-good',
+                tool_name: 'read_quote',
+                success: true,
+              },
+              {
+                action_id: 'call-bad',
+                tool_name: 'read_news',
+                success: false,
+                errors: ['DataNotReady'],
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    render(<AgentExecutionTimeline />);
+
+    expect(screen.getByText('已完成 1 个工具，失败 1 个工具')).toBeInTheDocument();
+  });
+
+  it('does not mark a published answer as incomplete for tool-level failures', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-published-with-gap',
+            stage: 'tool',
+            status: 'failed',
+            action_id: 'call-failed',
+            summary: 'read_news 执行失败',
+            error_code: 'provider_unavailable',
+            details: { tool_name: 'read_news' },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-published-with-gap',
+            stage: 'publish',
+            status: 'completed',
+            summary: '已发布带限制的回答',
+          },
+        ],
+        custom: {
+          agent_execution_trace: {
+            tool_results: [{
+              action_id: 'call-failed',
+              tool_name: 'read_news',
+              success: false,
+              errors: ['上游暂不可用'],
+            }],
+          },
+        },
+      },
+    });
+
+    render(<AgentExecutionTimeline />);
+
+    expect(screen.getByRole('button', { name: /展开用时/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /展开执行未完成/ })).not.toBeInTheDocument();
+  });
+
   it('lists exact historical references instead of calling their length a source count', () => {
     mockMessage({
       status: { type: 'complete' },

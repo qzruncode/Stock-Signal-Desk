@@ -24,6 +24,7 @@ from .answer_contract import (
     structured_answer_mapping,
     structured_answer_profile,
 )
+from .content_access import DOCUMENT_BODY_PREVIEW_CHARACTERS
 
 
 ReflectionVerdict = Literal["pass", "revise", "block"]
@@ -135,6 +136,34 @@ def _safe_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
     return _safe_text(value, limit=600)
 
 
+def _safe_evidence_observation(item: Mapping[str, Any]) -> Any:
+    """Keep a complete bounded PDF body in the critic packet.
+
+    The generic redactor intentionally limits every string to 1,200
+    characters. That is appropriate for metadata, but not for a report body
+    whose tables can carry the very figures Reflection is checking.
+    """
+    raw_result = item.get("result")
+    observation = _safe_value(raw_result or {}, key="result")
+    if (
+        str(item.get("tool_name") or "") != "read_web_source"
+        or not isinstance(raw_result, Mapping)
+        or not isinstance(observation, dict)
+    ):
+        return observation
+    content = raw_result.get("content")
+    if not isinstance(content, str):
+        return observation
+    truncated = len(content) > DOCUMENT_BODY_PREVIEW_CHARACTERS
+    observation["content"] = _safe_text(
+        content,
+        limit=DOCUMENT_BODY_PREVIEW_CHARACTERS,
+    ) + ("…[正文预览已截断]" if truncated else "")
+    observation["content_length"] = len(content)
+    observation["content_preview_truncated"] = truncated
+    return observation
+
+
 def _eligible_evidence(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [
         dict(item)
@@ -239,7 +268,7 @@ def build_reflection_packet(
                 "data_time": _safe_text(item.get("data_time"), limit=80),
                 "data_time_provenance": _safe_text(item.get("data_time_provenance"), limit=80),
                 "entities": _safe_value(item.get("entities") or {}),
-                "observation": _safe_value(item.get("result") or {}, key="result"),
+                "observation": _safe_evidence_observation(item),
             }
         )
     claims = []

@@ -24,7 +24,7 @@ from market_data_service.control_models import (
 from market_data_service.database import get_database
 from market_data_service.freshness import state_status, iso
 from market_data_service.models import StockMeta, StockDaily, NewsIntel
-from market_data_service.providers.common import json_value
+from market_data_service.providers.common import bare_symbol, json_value
 from market_data_service.providers.live import get_provider
 from market_data_service.schemas import SyncRequest
 from market_data_service.settings import get_settings
@@ -190,7 +190,19 @@ def target_symbols(session, job):
                 SourceSubscription.last_requested_at >= utcnow() - timedelta(days=7),
             )
         )
-        tracked = {str(item.arguments.get("symbol") or "") for item in subscriptions}
+        tracked = set()
+        for item in subscriptions:
+            raw_symbol = str(item.arguments.get("symbol") or "").strip()
+            if not raw_symbol:
+                continue
+            try:
+                tracked.add(bare_symbol(raw_symbol))
+            except ValueError:
+                logger.warning(
+                    "忽略无法解析证券订阅：dataset=%s symbol=%s",
+                    job.dataset,
+                    raw_symbol,
+                )
         codes = [code for code in codes if code in tracked]
     if job.mode == "all":
         return codes

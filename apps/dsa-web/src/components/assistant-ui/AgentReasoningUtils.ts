@@ -204,6 +204,27 @@ export const toolSummary = (result: TraceRecord | undefined, event: AgentStageEv
   return event?.summary || `${name} 已返回`;
 };
 
+export interface ToolOutcomeCounts {
+  running: number;
+  completed: number;
+  failed: number;
+}
+
+export const toolOutcomeCounts = (rows: TimelineRow[]): ToolOutcomeCounts => {
+  return rows.reduce<ToolOutcomeCounts>((counts, row) => {
+    const status = toolStatus(row.result, row.event);
+    const problem = status === 'failed'
+      || status === 'blocked'
+      || status === 'cancelled'
+      || Boolean(row.event?.errorCode)
+      || Boolean(errorCode(row.result));
+    if (status === 'started') counts.running += 1;
+    else if (problem) counts.failed += 1;
+    else counts.completed += 1;
+    return counts;
+  }, { running: 0, completed: 0, failed: 0 });
+};
+
 const positiveModelTurn = (value: unknown): number | undefined => {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;

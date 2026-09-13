@@ -21,6 +21,10 @@ REFERENCE_ONLY_TOOL_KINDS: dict[str, str] = {
 }
 CONTENT_READER_TOOLS = frozenset({"read_web_source"})
 DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT = 2
+# A fetched PDF/report is already bounded by the source reader. Keep the
+# complete common report body in the model/reflection projection as well;
+# the old 1,200-character generic string bound cut through report tables.
+DOCUMENT_BODY_PREVIEW_CHARACTERS = 30_000
 
 _CONTENT_FIELDS = frozenset(
     {

@@ -31,6 +31,7 @@ from .content_access import (
     cited_reference_action_ids,
     cited_reference_access_status,
     content_read_call_urls,
+    DOCUMENT_BODY_PREVIEW_CHARACTERS,
     reference_candidates,
     required_content_access_targets,
     successful_content_read_urls,
@@ -89,6 +90,7 @@ _WEB_FALLBACK_CATEGORIES = frozenset(
 _CONTENT_SELECTION_TOOL_NAME = "select_content_sources"
 _CONTENT_SELECTION_CANDIDATE_LIMIT = 24
 _CONTENT_SELECTION_MAX_READS = 4
+_GENERIC_CONTENT_PREVIEW_CHARACTERS = 12_000
 
 
 def _last_model_turn_tool_results(
@@ -437,7 +439,8 @@ def _tool_result_observation(record: Mapping[str, Any], result: Mapping[str, Any
     Generic tool observations stay small, but a 1,200-character slice is too
     short for the model to use a fetched article or a MarkItDown PDF result.
     The complete result remains in the checkpoint and can be loaded by the
-    Run Explorer; this only enlarges the immediate reader observation.
+    Run Explorer; document bodies get a larger bounded projection so report
+    tables are not cut at the generic web-page limit.
     """
     projected = _bounded(result)
     if str(record.get("tool_name") or "") != "read_web_source" or not isinstance(projected, Mapping):
@@ -446,8 +449,14 @@ def _tool_result_observation(record: Mapping[str, Any], result: Mapping[str, Any
     if len(content) <= 1_200:
         return projected
     projected = dict(projected)
-    projected["content"] = content[:12_000] + ("…[正文预览已截断]" if len(content) > 12_000 else "")
+    content_type = str(result.get("content_type") or "").split(";", 1)[0].strip().lower()
+    extension = str(result.get("document_extension") or "").strip().lower().lstrip(".")
+    is_pdf = content_type == "application/pdf" or extension == "pdf"
+    limit = DOCUMENT_BODY_PREVIEW_CHARACTERS if is_pdf else _GENERIC_CONTENT_PREVIEW_CHARACTERS
+    truncated = len(content) > limit
+    projected["content"] = content[:limit] + ("…[正文预览已截断]" if truncated else "")
     projected["content_preview_length"] = len(content)
+    projected["content_preview_truncated"] = truncated
     return projected
 
 
