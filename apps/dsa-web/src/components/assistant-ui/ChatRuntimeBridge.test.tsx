@@ -126,6 +126,212 @@ describe('ChatRuntimeBridge', () => {
     expect(content[2]?.text).toBe('最终回答');
   });
 
+  it('preserves legacy Planning progress while rehydrating terminal history', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '最终回答';
+    detail.executionTrace = {
+      displayParts: [
+        {
+          type: 'text',
+          text: '我先根据你的目标制定了 2 步研究计划。\n\n接下来，我会核验证券身份。',
+          displayKind: 'progress',
+        },
+        {
+          type: 'text',
+          text: '已完成当前步骤：核验证券身份：已获得 1 条工具观察。',
+          displayKind: 'progress',
+        },
+        {
+          type: 'text',
+          text: '最终回答',
+          displayKind: 'answer',
+        },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'run-legacy-planning',
+      '最终回答',
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content[0]?.text).toBe('我先根据你的目标制定了 2 步研究计划。\n\n');
+    expect(content[1]?.text).toBe('接下来，我会核验证券身份。');
+    expect(content[2]?.text).toBe('已完成当前步骤：核验证券身份：已获得 1 条工具观察。');
+  });
+
+  it('coalesces duplicate persisted progress without changing the transcript order', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '最终回答';
+    detail.executionTrace = {
+      displayParts: [
+        { type: 'text', text: '正在核对来源。', displayKind: 'progress' },
+        { type: 'text', text: '正在核对来源。', displayKind: 'progress' },
+        {
+          type: 'tool-call',
+          toolCallId: 'call-1',
+          toolName: 'read_source',
+          argsText: '{}',
+          result: { success: true },
+          displayKind: 'progress',
+        },
+        { type: 'text', text: '正在核对来源。', displayKind: 'progress' },
+        { type: 'text', text: '最终回答', displayKind: 'answer' },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'run-duplicate-progress',
+      '最终回答',
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content.map((part) => part.type)).toEqual(['text', 'tool-call', 'text']);
+    expect(content.map((part) => part.text)).toEqual([
+      '正在核对来源。',
+      undefined,
+      '最终回答',
+    ]);
+    expect(content[2]?.text).toBe('最终回答');
+  });
+
+  it('coalesces wording-only progress revisions during terminal replay', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '最终回答';
+    detail.executionTrace = {
+      displayParts: [
+        {
+          type: 'text',
+          text: '市场宽度已确认：上涨家数多于下跌家数（2946 vs 2086），整体偏强，但主要指数行情因数据源未就绪而获取失败，需要重试。',
+          displayKind: 'progress',
+        },
+        {
+          type: 'text',
+          text: '市场宽度已确认：上涨家数明显多于下跌家数（2946 vs 2086），整体环境偏强，但主要指数行情因数据源未就绪而两次获取失败，需要重试。',
+          displayKind: 'progress',
+        },
+        { type: 'text', text: '最终回答', displayKind: 'answer' },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'run-near-duplicate-progress',
+      '最终回答',
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content.map((part) => part.text)).toEqual([
+      '市场宽度已确认：上涨家数多于下跌家数（2946 vs 2086），整体偏强，但主要指数行情因数据源未就绪而获取失败，需要重试。',
+      '最终回答',
+    ]);
+  });
+
+  it('restores the execution disclosure for every assistant turn in history', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '第一轮回答';
+    detail.messages.push(
+      {
+        id: 'user-2',
+        conversationId: detail.id,
+        role: 'user',
+        content: '第二个问题',
+        sequence: 2,
+        createdAt: '2026-07-17T10:02:00Z',
+      },
+      {
+        id: 'assistant-2',
+        conversationId: detail.id,
+        role: 'assistant',
+        content: '第二轮回答',
+        sequence: 3,
+        createdAt: '2026-07-17T10:03:00Z',
+      },
+    );
+    const traceHistory = [
+      {
+        runId: 'run-1',
+        finalText: '第一轮回答【证据 ev-1】',
+        executionTrace: {
+          displayParts: [
+            { type: 'text', text: '第一轮已完成取证。', displayKind: 'progress' },
+            { type: 'text', text: '第一轮回答', displayKind: 'answer' },
+          ],
+        },
+      },
+      {
+        runId: 'run-2',
+        finalText: '第二轮回答【证据 ev-2】',
+        executionTrace: {
+          displayParts: [
+            { type: 'text', text: '第二轮已完成取证。', displayKind: 'progress' },
+            { type: 'text', text: '第二轮回答', displayKind: 'answer' },
+          ],
+        },
+      },
+    ];
+    detail.executionTraces = [
+      ...traceHistory,
+    ];
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      traceHistory[1]!.executionTrace,
+      'run-2',
+      '第二轮回答',
+      false,
+      traceHistory,
+    );
+    const first = messages.find((message) => message.id === 'assistant-1');
+    const second = messages.find((message) => message.id === 'assistant-2');
+
+    expect((first?.content as unknown as Array<Record<string, unknown>>).map((part) => part.text))
+      .toEqual(['第一轮已完成取证。', '第一轮回答']);
+    expect((second?.content as unknown as Array<Record<string, unknown>>).map((part) => part.text))
+      .toEqual(['第二轮已完成取证。', '第二轮回答']);
+    expect(
+      (first?.metadata as Record<string, unknown>)?.custom,
+    ).toEqual({ agent_execution_trace: traceHistory[0]!.executionTrace });
+    expect(
+      (second?.metadata as Record<string, unknown>)?.custom,
+    ).toEqual({ agent_execution_trace: traceHistory[1]!.executionTrace });
+  });
+
+  it('hides legacy internal Planning diagnostics in chat replay', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '已保留部分结果\n\n[本轮结果存在未完成的核验：PlanningStepReport failed after 2 attempts (planning_contract_validation_failed)]';
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      undefined,
+      'run-legacy-diagnostic',
+      detail.messages[1]!.content,
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+
+    expect(String(content[0]?.text)).not.toContain('PlanningStepReport');
+    expect(String(content[0]?.text)).toContain('计划尚未完整结束');
+  });
+
   it('restores plain text history from canonical messages instead of importing thread state', async () => {
     render(
       <ChatRuntimeBridge

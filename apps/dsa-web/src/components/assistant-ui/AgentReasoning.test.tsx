@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useMessage, useMessageTiming } from '@assistant-ui/react';
 import { AgentExecutionTimeline, AgentToolCallPart } from './AgentReasoning';
+import { TimelineStageRow } from './AgentReasoningTimeline';
 
 vi.mock('@assistant-ui/react', () => ({
   useMessage: vi.fn(),
@@ -93,6 +94,45 @@ describe('AgentExecutionTimeline', () => {
 
     expect(screen.getByRole('button', { name: '展开工具 search_stocks 详情' })).toBeInTheDocument();
     expect(screen.queryByText(/执行原子工具/)).not.toBeInTheDocument();
+  });
+
+  it('does not repeat native request arguments already present in the stage record', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [{
+          event: 'agent_stage',
+          run_id: 'run-no-duplicate-request',
+          stage: 'tool',
+          status: 'completed',
+          action_id: 'call-no-duplicate-request',
+          tool_call_id: 'call-no-duplicate-request',
+          summary: 'search_stocks 已返回结果',
+          details: {
+            tool_name: 'search_stocks',
+            arguments: { query: '600519' },
+            result_count: 1,
+          },
+        }],
+      },
+    });
+
+    render(
+      <AgentToolCallPart
+        type="tool-call"
+        toolCallId="call-no-duplicate-request"
+        toolName="search_stocks"
+        args={{ query: '600519' }}
+        argsText='{"query":"600519"}'
+        status={{ type: 'complete' }}
+        addResult={vi.fn()}
+        resume={vi.fn()}
+        respondToApproval={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '展开工具 search_stocks 详情' }));
+    expect(screen.getAllByText('请求：query=600519')).toHaveLength(1);
   });
 
   it('merges the actual tool result into one compact execution line', () => {
@@ -344,6 +384,123 @@ describe('AgentExecutionTimeline', () => {
     expect(screen.getByText('复核结果：通过')).toBeInTheDocument();
     expect(screen.getByText('复核方式：受限自复核')).toBeInTheDocument();
     expect(screen.queryByText('read_realtime_quote')).not.toBeInTheDocument();
+  });
+
+  it('renders Planning as readable progress instead of exposing plan fields', () => {
+    render(
+      <TimelineStageRow
+        row={{
+          key: 'planning-plan',
+          kind: 'stage',
+          event: {
+            event: 'agent_stage',
+            runId: 'run-readable-planning',
+            stage: 'planning',
+            status: 'completed',
+            summary: '已生成研究计划，共 2 个步骤',
+            details: {
+              planning_phase: 'plan_created',
+              progress_text: '我会先确认证券身份，再根据核验结果获取最新行情。',
+              step_count: 2,
+              steps: [{ objective: '核验证券身份' }, { objective: '获取最新行情' }],
+              goal: '完成只读研究',
+              constraints: ['只读'],
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('我会先确认证券身份，再根据核验结果获取最新行情。')).toBeInTheDocument();
+    expect(screen.queryByText(/我先根据你的目标制定了|接下来，我会/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/计划目标：|约束：|步骤序列：/)).not.toBeInTheDocument();
+  });
+
+  it('does not duplicate Planning rows beside native stream parts', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [{
+          event: 'agent_stage',
+          run_id: 'run-hidden-planning',
+          stage: 'planning',
+          status: 'completed',
+          summary: '已生成研究计划，共 2 个步骤',
+          details: { planning_phase: 'plan_created', step_count: 2 },
+        }],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline presentation="inline" stageOnly />);
+
+    expect(screen.queryByText('已生成研究计划，共 2 个步骤')).not.toBeInTheDocument();
+    expect(screen.queryByText(/我先根据你的目标制定了/)).not.toBeInTheDocument();
+  });
+
+  it('keeps a Planning failure visible even when native progress exists', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [{
+          event: 'agent_stage', run_id: 'blocked-planning', stage: 'planning',
+          status: 'blocked', summary: '步骤报告未通过核验，不能宣称完成',
+          details: { planning_phase: 'goal_checked' },
+        }],
+        custom: {},
+      },
+    });
+    render(<AgentExecutionTimeline presentation="inline" stageOnly includePlanning={false} />);
+    expect(screen.getByText('步骤报告未通过核验，不能宣称完成')).toBeInTheDocument();
+  });
+
+  it('keeps Planning readable for terminal records without native progress parts', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-legacy-planning',
+            stage: 'planning',
+            status: 'completed',
+            summary: '已生成研究计划，共 2 个步骤',
+            details: {
+              planning_phase: 'plan_created',
+              progress_text: '先确认证券身份，再根据核验结果获取最新行情。',
+              step_count: 2,
+              steps: [{ objective: '核验证券身份' }, { objective: '获取最新行情' }],
+            },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-legacy-planning',
+            stage: 'evidence',
+            status: 'completed',
+            summary: '已关联证据',
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-legacy-planning',
+            stage: 'planning',
+            status: 'completed',
+            summary: '已完成当前步骤：核验证券身份：已获得 1 条工具观察。',
+            details: {
+              planning_phase: 'step_completed',
+              progress_text: '已经确认 600519 对应贵州茅台，下一步继续获取最新行情。',
+            },
+          },
+        ],
+        custom: {},
+      },
+      content: [],
+    });
+
+    render(<AgentExecutionTimeline presentation="inline" stageOnly includePlanning />);
+
+    expect(screen.getByText('先确认证券身份，再根据核验结果获取最新行情。')).toBeInTheDocument();
+    expect(screen.getByText('已关联证据')).toBeInTheDocument();
+    expect(screen.getByText('已经确认 600519 对应贵州茅台，下一步继续获取最新行情。')).toBeInTheDocument();
   });
 
   it('keeps the candidate-answer stage but does not duplicate its body', () => {

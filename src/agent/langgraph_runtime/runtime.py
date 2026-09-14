@@ -59,6 +59,7 @@ from .answer_contract import (
 )
 from .graph import DEFAULT_RESPONSE_FORMAT, build_agent_graph
 from .model import LiteLLMChatModel, LiteLLMGateway
+from .planning import PLANNING_DEFAULT_REPLAN_LIMIT, resolve_planning_mode
 from .state import AgentGraphInput, GraphContext
 from src.tools.base import evidence_record_is_eligible
 
@@ -134,6 +135,24 @@ def _reset_turn_state() -> dict[str, Any]:
         "reflection_round": 0,
         "reflection_call_count": 0,
         "reflection_revision_count": 0,
+        "planning_enabled": False,
+        "planning_mode": "direct",
+        "planning_status": "not_started",
+        "planning_plan": None,
+        "planning_revision": 0,
+        "planning_current_step_id": "",
+        "planning_active_tool_call_ids": [],
+        "planning_step_reports": [],
+        "planning_updates": [],
+        "planning_replan_count": 0,
+        "planning_replan_limit": PLANNING_DEFAULT_REPLAN_LIMIT,
+        "planning_model_call_count": 0,
+        "planning_original_structured_output_required": False,
+        "planning_error": "",
+        "planning_decision": None,
+        "planning_step_attempts": 0,
+        "planning_step_tool_call_ids": [],
+        "planning_feedback": "",
         "answer_draft": "",
         "answer_final": "",
         "terminal_detail": "",
@@ -291,6 +310,15 @@ def _checkpoint_summary(snapshot: Any) -> dict[str, Any]:
             "reflection_round": int(values.get("reflection_round") or 0),
             "reflection_call_count": int(values.get("reflection_call_count") or 0),
             "reflection_revision_count": int(values.get("reflection_revision_count") or 0),
+            "planning_enabled": bool(values.get("planning_enabled")),
+            "planning_mode": str(values.get("planning_mode") or "direct"),
+            "planning_status": str(values.get("planning_status") or "not_started"),
+            "planning_revision": int(values.get("planning_revision") or 0),
+            "planning_current_step_id": str(values.get("planning_current_step_id") or "") or None,
+            "planning_replan_count": int(values.get("planning_replan_count") or 0),
+            "planning_step_count": len(values.get("planning_plan", {}).get("steps") or [])
+            if isinstance(values.get("planning_plan"), Mapping)
+            else 0,
             "required_content_read_count": len(values.get("required_content_reads") or []),
             "pending_content_read_count": len(values.get("pending_content_reads") or []),
             "has_pending_interrupt": isinstance(values.get("pending_interrupt"), Mapping),
@@ -543,7 +571,11 @@ class LangGraphRuntimeManager:
             database=database,
             run_id=run_id,
             conversation_id=conversation_id,
-            controller=controller,
+            # The bridge owns the assistant-stream projection while a
+            # LangGraph run is active.  It uses the graph's official custom
+            # stream for text/tool chunks and falls back to the underlying
+            # controller for recovery paths outside the graph context.
+            controller=events,
             events=events,
             compact_result=self.compact_result,
             attach_fallback=self.attach_fallback,
@@ -578,7 +610,7 @@ class LangGraphRuntimeManager:
                 graph_input,
                 config,
                 context=context,
-                stream_mode=["messages", "updates"],
+                stream_mode=["messages", "updates", "custom"],
                 version="v2",
             ):
                 if not isinstance(chunk, Mapping):
@@ -588,12 +620,14 @@ class LangGraphRuntimeManager:
                 if chunk_type == "messages" and isinstance(data, (list, tuple)) and data:
                     message = data[0]
                     metadata = data[1] if len(data) > 1 and isinstance(data[1], Mapping) else {}
-                    if metadata.get("lc_source") == "summarization":
+                    if metadata.get("lc_source") in {"summarization", "planning"}:
                         continue
                     if isinstance(message, (AIMessageChunk, AIMessage)):
                         context.events.model_message(message)
                 elif chunk_type == "updates" and isinstance(data, Mapping):
                     last_update = data
+                elif chunk_type == "custom":
+                    await context.events.consume_stream_record(data)
             return last_update
         except ModelProviderReportedTimeoutError:
             return await self._terminate_partial(
@@ -846,6 +880,7 @@ class LangGraphRuntimeManager:
         model: Any | None = None,
         executor: Any | None = None,
         history_mode: str = "auto",
+        planning_mode: str = "direct",
     ) -> GraphRunResult:
         graph = self._require_graph()
         normalized_history_mode = str(history_mode or "auto").strip().lower()
@@ -873,6 +908,7 @@ class LangGraphRuntimeManager:
             executor=executor,
         )
         limits = get_agent_runtime_limits()
+        resolved_planning_mode = resolve_planning_mode(user_text, planning_mode)
         input_state: AgentGraphInput = {
             **_reset_turn_state(),
             **({} if continue_checkpoint else {"conversation_context": None}),
@@ -882,6 +918,12 @@ class LangGraphRuntimeManager:
                 else Overwrite(convert_to_messages(graph_messages))
             ),
             "engine": "langgraph_agent_loop",
+            # The chat entry point explicitly requests auto. Internal users
+            # of the existing loop retain its direct execution contract.
+            "planning_enabled": resolved_planning_mode != "direct",
+            "planning_mode": resolved_planning_mode,
+            "planning_status": "not_started",
+            "planning_replan_limit": PLANNING_DEFAULT_REPLAN_LIMIT,
             "run_id": run_id,
             "conversation_id": conversation_id,
             "user_text": user_text,

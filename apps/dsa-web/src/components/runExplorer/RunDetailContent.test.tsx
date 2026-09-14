@@ -2,6 +2,36 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentRunDetail } from '../../api/runExplorer';
 import { RunDetailContent } from './RunDetailContent';
+import { PlanningAuditCard } from './RunDetailCards';
+
+it('shows persisted Planning reports and criterion checks independently of overall run success', () => {
+  render(<PlanningAuditCard planning={{
+    enabled: true, mode: 'planned', status: 'partial', revision: 2, replanCount: 1, replanLimit: 2,
+    modelCallCount: 4, decision: { mode: 'planned', reason: '需要跨来源比较' },
+    plan: { goal: '比较两家公司', steps: [{ stepId: 'first', objective: '核实口径', status: 'completed', completionCriteria: ['口径一致'] }] },
+    stepReports: [{ stepId: 'first', status: 'completed', completedSummary: '两家公司均采用单季度口径。',
+      evidenceIds: ['ev_real'], criteriaChecks: [{ criterion: '口径一致', satisfied: true, explanation: '已核对报告期' }] }],
+  }} />);
+  expect(screen.getByText(/未完整完成/)).toBeInTheDocument();
+  expect(screen.getByText('需要跨来源比较')).toBeInTheDocument();
+  fireEvent.click(screen.getByText(/1. 核实口径/));
+  expect(screen.getByText('两家公司均采用单季度口径。')).toBeInTheDocument();
+  expect(screen.getByText('通过：口径一致 — 已核对报告期')).toBeInTheDocument();
+  expect(screen.getByText('关联证据：ev_real')).toBeInTheDocument();
+});
+
+it('keeps replaced-step reports and unmet overall criteria visible after replanning', () => {
+  render(<PlanningAuditCard planning={{
+    enabled: true, mode: 'planned', status: 'blocked', revision: 2, replanCount: 1, replanLimit: 2, modelCallCount: 5,
+    plan: { steps: [{ stepId: 'replacement', objective: '替代来源', status: 'blocked' }] },
+    stepReports: [{ stepId: 'original', status: 'blocked', planRevision: 1, completedSummary: '原来源只返回了部分数据。',
+      goalChecks: [{ criterion: '两家公司口径一致', satisfied: false, explanation: '另一家公司仍缺少报告期' }] }],
+  }} />);
+  fireEvent.click(screen.getByText('最近一次总体目标核验'));
+  expect(screen.getByText('未满足：两家公司口径一致 — 另一家公司仍缺少报告期')).toBeInTheDocument();
+  fireEvent.click(screen.getByText('被替换步骤的历史报告'));
+  expect(screen.getByText('原来源只返回了部分数据。')).toBeInTheDocument();
+});
 
 const detail: AgentRunDetail = {
   snapshot: {

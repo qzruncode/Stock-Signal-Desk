@@ -24,6 +24,7 @@ from .middleware import (
     TerminalPublicationMiddleware,
     ToolExecutionMiddleware,
 )
+from .planning import PlanningCoordinatorMiddleware
 from .state import AgentState, GraphContext
 
 
@@ -83,6 +84,7 @@ def build_agent_graph(
             OperationPolicyMiddleware(),
             ToolExecutionMiddleware(),
             TerminalPublicationMiddleware(),
+            PlanningCoordinatorMiddleware(),
         ),
         state_schema=AgentState,
         context_schema=GraphContext,

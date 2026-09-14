@@ -117,6 +117,22 @@ export interface StructuredAnswerProjection {
   blocks: StructuredAnswerBlockProjection[];
 }
 
+export interface AgentPlanningTrace {
+  enabled: boolean;
+  mode: string;
+  status: string;
+  revision: number;
+  replanCount: number;
+  replanLimit: number;
+  modelCallCount: number;
+  currentStepId?: string | null;
+  error?: string | null;
+  decision?: { mode: string; reason: string } | null;
+  plan?: Record<string, unknown> | null;
+  stepReports?: Record<string, unknown>[];
+  updates?: PersistedAgentStage[];
+}
+
 export interface AgentExecutionTrace {
   /** Ordered, bounded assistant-stream parts used for terminal replay. */
   displayParts?: Record<string, unknown>[];
@@ -126,10 +142,23 @@ export interface AgentExecutionTrace {
   evidence?: Record<string, unknown>[];
   claimEvidence?: Record<string, unknown>[];
   structuredAnswer?: StructuredAnswerProjection | null;
+  planning?: AgentPlanningTrace | null;
   loop?: Record<string, unknown>;
   completedToolCallIds?: string[];
   /** Defensive marker when a legacy or malformed API response was compacted for rendering. */
   clientTraceTruncated?: boolean;
+}
+
+/** One bounded execution projection belonging to one durable conversation turn. */
+export interface AgentExecutionTraceRecord {
+  runId: string;
+  status?: string | null;
+  errorCode?: string | null;
+  finalText?: string | null;
+  latestStage?: PersistedAgentStage | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  executionTrace?: AgentExecutionTrace | null;
 }
 
 export interface AgentCheckpointTaskSummary {
@@ -156,6 +185,13 @@ export interface AgentCheckpointStateSummary {
   modelTurnCount: number;
   toolCallCount: number;
   evidenceRepairCount: number;
+  planningEnabled?: boolean;
+  planningMode?: string;
+  planningStatus?: string;
+  planningRevision?: number;
+  planningCurrentStepId?: string | null;
+  planningReplanCount?: number;
+  planningStepCount?: number;
   hasPendingInterrupt: boolean;
   hasAnswer: boolean;
 }
@@ -199,6 +235,8 @@ export interface ChatConversationDetail extends ChatConversationItem {
   messages: ChatConversationMessage[];
   threadState?: ChatConversationThreadState | null;
   executionTrace?: AgentExecutionTrace | null;
+  /** Per-run trace projections used to restore process disclosures in history. */
+  executionTraces?: AgentExecutionTraceRecord[] | null;
   /** 后端是否仍在生成该对话的回复(刷新后前端据此判断是否续流)。 */
   isGenerating?: boolean;
   resumeState?: {
@@ -241,6 +279,7 @@ const CLIENT_TRACE_FIELD_LIMITS: Array<[string, string, number]> = [
   ['evidence', 'evidence', 80],
   ['claim_evidence', 'claimEvidence', 80],
   ['structured_answer', 'structuredAnswer', 1],
+  ['planning', 'planning', 1],
   ['stages', 'stages', 120],
   ['actions', 'actions', 32],
   ['loop', 'loop', 1],
@@ -411,6 +450,22 @@ const normalizeConversationDetail = (payload: Record<string, unknown>): ChatConv
   const rawExecutionTrace = presentationPayload.execution_trace ?? presentationPayload.executionTrace;
   delete presentationPayload.execution_trace;
   delete presentationPayload.executionTrace;
+  const rawExecutionTraceHistory = presentationPayload.execution_traces
+    ?? presentationPayload.executionTraces;
+  delete presentationPayload.execution_traces;
+  delete presentationPayload.executionTraces;
+  if (Array.isArray(rawExecutionTraceHistory)) {
+    presentationPayload.execution_traces = rawExecutionTraceHistory.map((rawRecord) => {
+      if (!isRecord(rawRecord)) return rawRecord;
+      const record = { ...rawRecord };
+      const rawTrace = record.execution_trace ?? record.executionTrace;
+      delete record.execution_trace;
+      delete record.executionTrace;
+      const executionTrace = projectExecutionTraceForClient(rawTrace);
+      if (executionTrace) record.execution_trace = executionTrace;
+      return record;
+    });
+  }
   const rawResumeState = presentationPayload.resume_state ?? presentationPayload.resumeState;
   const resumeStatePayload = isRecord(rawResumeState) ? { ...rawResumeState } : undefined;
   const rawResumeTrace = resumeStatePayload?.execution_trace ?? resumeStatePayload?.executionTrace;
@@ -430,6 +485,21 @@ const normalizeConversationDetail = (payload: Record<string, unknown>): ChatConv
         structuredAnswer: normalizeStructuredAnswerChartKeys(data.executionTrace.structuredAnswer) as AgentExecutionTrace["structuredAnswer"],
       }
     : data.executionTrace;
+  const normalizedExecutionTraces = Array.isArray(data.executionTraces)
+    ? data.executionTraces.map((record) => ({
+        ...record,
+        ...(record.executionTrace
+          ? {
+              executionTrace: {
+                ...record.executionTrace,
+                structuredAnswer: normalizeStructuredAnswerChartKeys(
+                  record.executionTrace.structuredAnswer,
+                ) as AgentExecutionTrace["structuredAnswer"],
+              },
+            }
+          : {}),
+      }))
+    : data.executionTraces;
   const normalizedPending = rawPending && typeof rawPending === 'object' && !Array.isArray(rawPending)
     ? {
         ...toCamelCase<PendingAgentInterrupt>(rawPending as Record<string, unknown>),
@@ -445,6 +515,7 @@ const normalizeConversationDetail = (payload: Record<string, unknown>): ChatConv
   return {
     ...data,
     ...(normalizedExecutionTrace ? { executionTrace: normalizedExecutionTrace } : {}),
+    ...(normalizedExecutionTraces ? { executionTraces: normalizedExecutionTraces } : {}),
     pendingInterrupt: normalizedPending,
     ...(data.resumeState
       ? {

@@ -41,6 +41,16 @@ export const errorCode = (record: TraceRecord | undefined): string => text(
   120,
 );
 
+/** A failed contract attempt that is expected to be followed by a retry. */
+export const isRecoverablePlanningRetry = (event: AgentStageEvent): boolean => {
+  if (event.stage !== 'planning' || event.status !== 'failed') return false;
+  const phase = text(recordValue(event.details, 'planning_phase', 'phase'), 64);
+  if (phase !== 'contract_retry') return false;
+  const attempt = Number(recordValue(event.details, 'attempt'));
+  const maxAttempts = Number(recordValue(event.details, 'max_attempts'));
+  return !Number.isFinite(maxAttempts) || !Number.isFinite(attempt) || attempt < maxAttempts;
+};
+
 export const stageKey = (event: AgentStageEvent): string => [
   event.runId,
   event.stage,
@@ -98,6 +108,82 @@ export const stageDetails = (event: AgentStageEvent): DetailLine[] => {
           const request = argumentsText || (keys.length > 0 ? `参数字段：${keys.join('、')}` : '无参数');
           return { key: `operation-${index}`, text: `操作 ${index + 1}：${name} · ${request}` };
         }),
+    ];
+  }
+  if (event.stage === 'planning') {
+    const phase = text(recordValue(details, 'planning_phase', 'phase'), 64);
+    const phaseLabels: Record<string, string> = {
+      plan_created: '已生成计划',
+      step_started: '开始执行步骤',
+      step_completed: '步骤完成',
+      goal_checked: '目标检查',
+      replanned: '已重新规划',
+      finalizing: '最终整理',
+    };
+    const stepId = text(recordValue(details, 'step_id', 'stepId'), 96);
+    const objective = text(recordValue(details, 'objective'), 1_200);
+    const goal = text(recordValue(details, 'goal'), 1_600);
+    const initialState = text(recordValue(details, 'initial_state', 'initialState'), 800);
+    const constraints = Array.isArray(recordValue(details, 'constraints'))
+      ? (recordValue(details, 'constraints') as unknown[]).map((value) => text(value, 400)).filter(Boolean)
+      : [];
+    const completed = text(recordValue(details, 'completed_summary', 'completedSummary'), 1_200);
+    const nextReason = text(recordValue(details, 'next_step_reason', 'nextStepReason', 'reason'), 1_200);
+    const nextStep = text(recordValue(details, 'next_step_id', 'nextStepId'), 96);
+    const criteria = Array.isArray(recordValue(details, 'completion_criteria', 'completionCriteria'))
+      ? (recordValue(details, 'completion_criteria', 'completionCriteria') as unknown[])
+        .map((value) => text(value, 600)).filter(Boolean)
+      : [];
+    const criteriaStatus = text(recordValue(details, 'criteria_status', 'criteriaStatus'), 32);
+    const criteriaStatusLabel: Record<string, string> = {
+      passed: '通过',
+      not_met: '未满足',
+    };
+    const missing = Array.isArray(recordValue(details, 'missing_items', 'missingItems'))
+      ? (recordValue(details, 'missing_items', 'missingItems') as unknown[])
+        .map((value) => text(value, 600)).filter(Boolean)
+      : [];
+    const observed = Array.isArray(recordValue(details, 'observed_facts', 'observedFacts'))
+      ? (recordValue(details, 'observed_facts', 'observedFacts') as unknown[])
+        .map((value) => text(value, 600)).filter(Boolean).slice(0, 3)
+      : [];
+    const evidenceIds = Array.isArray(recordValue(details, 'evidence_ids', 'evidenceIds'))
+      ? (recordValue(details, 'evidence_ids', 'evidenceIds') as unknown[])
+        .map((value) => text(value, 100)).filter(Boolean)
+      : [];
+    const rawSteps = recordsFrom(recordValue(details, 'steps'));
+    const steps = rawSteps.map((step, index) => {
+      const id = text(recordValue(step, 'step_id', 'stepId'), 96) || `步骤 ${index + 1}`;
+      const stepObjective = text(recordValue(step, 'objective'), 240);
+      return stepObjective ? `${id}：${stepObjective}` : id;
+    });
+    const revision = recordValue(details, 'revision');
+    return [
+      ...(phase ? [{ key: 'planning-phase', text: `阶段：${phaseLabels[phase] || phase}` }] : []),
+      ...(stepId ? [{ key: 'planning-step', text: `步骤：${stepId}` }] : []),
+      ...(goal ? [{ key: 'planning-goal', text: `计划目标：${goal}` }] : []),
+      ...(initialState ? [{ key: 'planning-initial-state', text: `初始状态：${initialState}` }] : []),
+      ...(constraints.length > 0
+        ? [{ key: 'planning-constraints', text: `约束：${constraints.join('；')}` }]
+        : []),
+      ...(objective ? [{ key: 'planning-objective', text: `目标：${objective}` }] : []),
+      ...(completed ? [{ key: 'planning-completed', text: `已完成：${completed}` }] : []),
+      ...(criteria.length > 0
+        ? [{ key: 'planning-criteria', text: `完成标准：${criteria.join('；')}` }]
+        : []),
+      ...(criteriaStatus
+        ? [{ key: 'planning-criteria-status', text: `标准检查：${criteriaStatusLabel[criteriaStatus] || criteriaStatus}` }]
+        : []),
+      ...(steps.length > 0 ? [{ key: 'planning-steps', text: `步骤序列：${steps.join('；')}` }] : []),
+      ...(nextStep || nextReason
+        ? [{ key: 'planning-next', text: `下一步：${[nextStep, nextReason].filter(Boolean).join(' · ')}` }]
+        : []),
+      ...missing.map((item, index) => ({ key: `planning-missing-${index}`, text: `缺口：${item}` })),
+      ...observed.map((item, index) => ({ key: `planning-observed-${index}`, text: `观察：${item}` })),
+      ...(evidenceIds.length > 0
+        ? [{ key: 'planning-evidence', text: `关联证据：${evidenceIds.join('、')}` }]
+        : []),
+      ...(typeof revision === 'number' ? [{ key: 'planning-revision', text: `计划版本：${revision}` }] : []),
     ];
   }
   if (event.stage === 'evidence') {
@@ -164,6 +250,34 @@ export const stageDetails = (event: AgentStageEvent): DetailLine[] => {
   if (event.stage === 'publish') return [];
   const preview = text(recordValue(details, 'answer_preview', 'answerPreview'));
   return preview ? [{ key: 'preview', text: `回答预览：${preview}` }] : [];
+};
+
+/**
+ * Project only text authored by the planner/executor model.
+ *
+ * The event summary is an audit fallback for old or tool-silent runs.  New
+ * runs put the model's natural-language progress in `progress_text`; this
+ * function must not turn structured step fields into conversational prose.
+ */
+export const planningProgressText = (event: AgentStageEvent): string => {
+  if (event.stage !== 'planning') return '';
+  const details = event.details || {};
+  const progress = text(recordValue(
+    details,
+    'progress_text',
+    'progressText',
+    'model_summary',
+    'modelSummary',
+    'user_message',
+    'userMessage',
+  ), 1_800).trim();
+  if (progress) return progress;
+  if (!isRecoverablePlanningRetry(event)) return '';
+
+  const schema = text(recordValue(details, 'schema', 'contract'), 96);
+  if (schema === 'PlanningRoute') return '我正在重新判断这项任务是否需要分阶段核验。';
+  if (schema === 'PlanningStepReport') return '刚才的步骤核验结果不够完整，我正在补全后继续。';
+  return '刚才的研究计划格式不够完整，我正在修正后继续。';
 };
 
 export interface TimelineRow {
@@ -410,9 +524,10 @@ export const toolDetails = (result: TraceRecord | undefined, event: AgentStageEv
 };
 
 export const phaseStatus = (phase: TimelinePhase): AgentStageEvent['status'] => {
-  const statuses = phase.rows.map((row) => row.kind === 'tool'
-    ? toolStatus(row.result, row.event)
-    : row.event?.status || 'started');
+  const statuses = phase.rows.map((row) => {
+    const status = row.kind === 'tool' ? toolStatus(row.result, row.event) : row.event?.status || 'started';
+    return row.event && isRecoverablePlanningRetry(row.event) ? 'started' : status;
+  });
   if (statuses.some((status) => status === 'failed' || status === 'blocked')) return 'failed';
   if (statuses.some((status) => status === 'cancelled')) return 'cancelled';
   if (statuses.some((status) => status === 'started')) return 'started';
@@ -420,6 +535,7 @@ export const phaseStatus = (phase: TimelinePhase): AgentStageEvent['status'] => 
 };
 
 export const phaseProblem = (phase: TimelinePhase): boolean => phase.rows.some((row) => {
+  if (row.event && isRecoverablePlanningRetry(row.event)) return false;
   const status = row.kind === 'tool' ? toolStatus(row.result, row.event) : row.event?.status;
   return status === 'failed'
     || status === 'blocked'

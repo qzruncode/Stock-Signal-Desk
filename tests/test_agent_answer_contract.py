@@ -465,3 +465,16 @@ def test_terminal_finalizer_is_idempotent_and_preserves_empty_provider_failure()
         status="failed",
         error_code="model_provider_timeout",
     ) == ""
+
+
+def test_terminal_finalizer_hides_internal_planning_diagnostics_from_chat_answer() -> None:
+    answer = finalize_terminal_answer(
+        "已保留部分结果",
+        status="partial",
+        error_code="planning_incomplete",
+        detail="PlanningStepReport failed after 2 attempts (planning_contract_validation_failed)",
+    )
+
+    assert "PlanningStepReport" not in answer
+    assert "planning_contract_validation_failed" not in answer
+    assert "计划尚未完整结束" in answer

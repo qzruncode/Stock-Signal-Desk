@@ -9,12 +9,12 @@ from typing import Any
 import pytest
 from langchain.agents.middleware import ModelRequest
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.runtime import Runtime
 from pydantic import ConfigDict, Field
 
-from src.agent.langgraph_runtime.context import ContextBudgetMiddleware
+from src.agent.langgraph_runtime.context import ContextBudgetMiddleware, completed_answers_as_context
 from src.agent.model_runtime import ModelContextWindowExceededError
 
 
@@ -63,6 +63,30 @@ def _request(model: CountingChatModel, messages: list[BaseMessage], events: Even
         system_message=SystemMessage(content="system"),
         runtime=Runtime(context=SimpleNamespace(events=events)),
     )
+
+
+def test_prior_typed_answer_becomes_context_without_touching_current_tool_pairs():
+    from tests.test_langgraph_agent_runtime import _structured_output_call, _named_tool_call
+
+    old_answer = _structured_output_call("old-answer", [{"kind": "answer", "content": "上一轮结论"}], profile="general")
+    current_call = _named_tool_call("current", "search_source", {"query": "本轮"})
+    current_answer = _structured_output_call(
+        "new-answer", [{"kind": "answer", "content": "本轮候选"}], profile="general"
+    )
+    messages = [
+        HumanMessage(content="旧问题"),
+        old_answer,
+        ToolMessage(content="Returning structured response", tool_call_id="old-answer"),
+        HumanMessage(content="新问题"),
+        current_call,
+        ToolMessage(content="真实本轮观察", tool_call_id="current"),
+        current_answer,
+        ToolMessage(content="本轮修订反馈", tool_call_id="new-answer", status="error"),
+    ]
+    projected = completed_answers_as_context(messages)
+    assert projected[1].content == "上一轮结论" and not projected[1].tool_calls
+    assert projected[2:] == messages[3:]
+    assert messages[1].tool_calls and len(messages) == 8
 
 
 def test_context_budget_trims_transient_messages_and_preserves_canonical_input(monkeypatch):

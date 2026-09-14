@@ -452,6 +452,43 @@ def test_terminal_publisher_persists_safe_structured_execution_trace():
                     "summary": "研究判断与现有证据边界一致。",
                     "issues": [],
                 },
+                "planning_enabled": True,
+                "planning_mode": "planned",
+                "planning_status": "completed",
+                "planning_revision": 1,
+                "planning_replan_count": 0,
+                "planning_replan_limit": 2,
+                "planning_model_call_count": 1,
+                "planning_plan": {
+                    "plan_id": "plan-trace",
+                    "revision": 1,
+                    "goal": "核验行情",
+                    "initial_state": "已有用户问题",
+                    "constraints": [],
+                    "completion_criteria": ["取得有效行情观察"],
+                    "steps": [{
+                        "step_id": "step-quote",
+                        "depends_on": [],
+                        "objective": "取得行情观察",
+                        "allowed_tools": ["read_quote"],
+                        "expected_observation": "有效行情",
+                        "completion_criteria": ["工具成功"],
+                        "status": "completed",
+                    }],
+                },
+                "planning_step_reports": [{
+                    "step_id": "step-quote",
+                    "status": "completed",
+                    "completed_summary": "已取得行情观察",
+                }],
+                "planning_updates": [{
+                    "event": "agent_stage",
+                    "run_id": "run-trace",
+                    "stage": "planning",
+                    "status": "completed",
+                    "summary": "计划步骤已完成",
+                    "details": {"planning_phase": "step_completed"},
+                }],
             },
         )
     )
@@ -470,6 +507,9 @@ def test_terminal_publisher_persists_safe_structured_execution_trace():
     assert trace["reflection"]["status"] == "passed"
     assert trace["reflection"]["verdict"] == "pass"
     assert trace["reflection"]["call_count"] == 1
+    assert trace["planning"]["status"] == "completed"
+    assert trace["planning"]["plan"]["steps"][0]["step_id"] == "step-quote"
+    assert captured["trace"]["quality_projection"]["planning"]["revision"] == 1
     assert captured["trace"]["quality_projection"]["reflection"]["status"] == "passed"
     assert trace["structured_answer"]["blocks"][0] == {
         "section": "",

@@ -17,7 +17,7 @@ import uuid
 
 from sqlalchemy import delete, select
 
-from src.storage.models import AgentRunTrace
+from src.storage.models import AgentRun, AgentRunTrace
 
 
 _SENSITIVE_KEYS = frozenset(
@@ -217,6 +217,86 @@ class AgentRunTraceMixin:
                 "quality_projection": quality_projection,
                 "updated_at": (record.updated_at.isoformat() if record.updated_at is not None else None),
             }
+
+    def list_agent_run_trace_history(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 32,
+    ) -> list[dict[str, Any]]:
+        """Return one compact trace envelope for each run in a conversation.
+
+        A conversation contains multiple durable turns, while the old
+        conversation endpoint exposed only the newest ``AgentRunTrace``.  The
+        resulting UI could render the latest execution process, but had no
+        trace to attach to earlier assistant messages.  Join the trace with
+        its run here so the presentation layer can bind each process to the
+        run's canonical ``final_text`` without importing the legacy thread
+        snapshot.
+        """
+        safe_limit = max(1, min(int(limit), 64))
+        with self.session_scope() as session:
+            rows = session.execute(
+                select(AgentRunTrace, AgentRun)
+                .join(AgentRun, AgentRun.id == AgentRunTrace.run_id)
+                .where(
+                    AgentRunTrace.conversation_id == conversation_id,
+                    AgentRunTrace.orchestrator_mode == "langgraph_agent_loop",
+                )
+                .order_by(
+                    AgentRun.created_at.asc(),
+                    AgentRunTrace.created_at.asc(),
+                    AgentRunTrace.updated_at.asc(),
+                )
+                .limit(safe_limit)
+            ).all()
+
+            history: list[dict[str, Any]] = []
+            for trace_record, run_record in rows:
+                latest_stage = None
+                if trace_record.latest_stage_json:
+                    try:
+                        parsed = json.loads(trace_record.latest_stage_json)
+                        if isinstance(parsed, dict):
+                            latest_stage = parsed
+                    except (TypeError, ValueError):
+                        latest_stage = None
+
+                execution_trace = None
+                quality_projection = None
+                if trace_record.quality_projection_json:
+                    try:
+                        projection = json.loads(trace_record.quality_projection_json)
+                        if isinstance(projection, dict):
+                            quality_projection = projection
+                            candidate = projection.get("execution_trace")
+                            if isinstance(candidate, dict):
+                                execution_trace = candidate
+                    except (TypeError, ValueError):
+                        execution_trace = None
+
+                history.append(
+                    {
+                        "run_id": trace_record.run_id,
+                        "status": trace_record.status,
+                        "error_code": trace_record.error_code,
+                        "latest_stage": latest_stage,
+                        "execution_trace": execution_trace,
+                        "quality_projection": quality_projection,
+                        "final_text": run_record.final_text or "",
+                        "created_at": (
+                            run_record.created_at.isoformat()
+                            if run_record.created_at is not None
+                            else None
+                        ),
+                        "updated_at": (
+                            trace_record.updated_at.isoformat()
+                            if trace_record.updated_at is not None
+                            else None
+                        ),
+                    }
+                )
+            return history
 
     def prune_agent_run_traces(
         self,

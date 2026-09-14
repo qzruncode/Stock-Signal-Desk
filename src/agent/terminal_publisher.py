@@ -15,6 +15,7 @@ from src.agent.langgraph_runtime.answer_contract import (
     project_structured_answer,
 )
 from src.agent.langgraph_runtime.reflection import reflection_review_projection
+from src.agent.langgraph_runtime.planning import planning_trace
 from src.agent.langgraph_runtime.presentation import (
     enrich_execution_trace_with_result_previews,
     project_arguments_for_timeline,
@@ -323,6 +324,9 @@ def _execution_trace(
             text_limit=96,
         ),
     }
+    planning = planning_trace(state)
+    if planning is not None:
+        projected["planning"] = planning
     if structured_answer:
         projected["structured_answer"] = dict(structured_answer)
     reflection = _reflection_trace(state)
@@ -459,6 +463,8 @@ class AgentTerminalPublisher:
             },
             "execution_trace": execution_trace,
         }
+        if execution_trace.get("planning") is not None:
+            quality_projection["planning"] = execution_trace["planning"]
         reflection = _reflection_trace(state)
         if reflection:
             quality_projection["reflection"] = reflection

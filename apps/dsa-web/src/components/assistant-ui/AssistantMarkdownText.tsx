@@ -1,4 +1,4 @@
-import { useMemo, type FC } from 'react';
+import { useEffect, useMemo, useRef, useState, type FC } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { TextMessagePartProps } from '@assistant-ui/react';
@@ -15,6 +15,80 @@ import { splitAssistantText } from '../../utils/assistantTextSplit';
 type AssistantMarkdownProps = {
   text: string;
   evidence?: unknown;
+  /**
+   * Reveal live assistant text progressively. Persisted/terminal messages
+   * leave this disabled so a conversation does not replay on hydration.
+   */
+  animate?: boolean;
+};
+
+const TEXT_REVEAL_MIN_DURATION_MS = 240;
+const TEXT_REVEAL_MAX_DURATION_MS = 1_600;
+const TEXT_REVEAL_MS_PER_CHARACTER = 22;
+
+const textRevealDurationMs = (text: string): number => Math.min(
+  TEXT_REVEAL_MAX_DURATION_MS,
+  Math.max(TEXT_REVEAL_MIN_DURATION_MS, text.length * TEXT_REVEAL_MS_PER_CHARACTER),
+);
+
+/**
+ * The runtime may deliver one natural-language progress sentence as a single
+ * text part. Keep the transport event intact, but make that part feel like a
+ * live assistant response in the chat. This is deliberately a UI-only
+ * reveal: it never invents text or changes the persisted message.
+ */
+const useProgressiveText = (text: string, animate: boolean): string => {
+  const shouldAnimate = animate
+    && typeof window !== 'undefined'
+    && !(typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+    && typeof window.requestAnimationFrame === 'function';
+  const initialText = shouldAnimate ? '' : text;
+  const [visibleText, setVisibleText] = useState(initialText);
+  const visibleTextRef = useRef(initialText);
+
+  useEffect(() => {
+    if (!shouldAnimate || !text) {
+      visibleTextRef.current = text;
+      return undefined;
+    }
+
+    const currentText = visibleTextRef.current;
+    const startLength = text.startsWith(currentText) ? currentText.length : 0;
+    const remainingLength = text.length - startLength;
+    if (remainingLength <= 0) return undefined;
+
+    const startedAt = window.performance?.now() ?? Date.now();
+    const duration = textRevealDurationMs(text.slice(startLength));
+    let frameId = 0;
+
+    const reveal = () => {
+      // Use the same clock for both timestamps. Some browser/test
+      // implementations expose an animation-frame timestamp with a
+      // different origin than performance.now().
+      const now = window.performance?.now() ?? Date.now();
+      const elapsed = now - startedAt;
+      const progress = Math.min(1, Math.max(0, elapsed / duration));
+      const nextLength = progress >= 1
+        ? text.length
+        : startLength + Math.max(1, Math.ceil(remainingLength * progress));
+      const nextText = text.slice(0, nextLength);
+
+      if (nextText !== visibleTextRef.current) {
+        visibleTextRef.current = nextText;
+        setVisibleText(nextText);
+      }
+      if (nextLength < text.length) {
+        frameId = window.requestAnimationFrame(reveal);
+      }
+    };
+
+    frameId = window.requestAnimationFrame(reveal);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [shouldAnimate, text]);
+
+  return shouldAnimate ? visibleText : text;
 };
 
 const evidenceSourceLabel = (value: string): string => {
@@ -201,8 +275,9 @@ const EvidenceCitation: FC<{
   );
 };
 
-export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({ text, evidence }) => {
-  const { content, stopped } = splitAssistantText(text);
+export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({ text, evidence, animate = false }) => {
+  const renderedText = useProgressiveText(text, animate);
+  const { content, stopped } = splitAssistantText(renderedText);
   const evidenceIndex = useMemo(() => assistantEvidenceIndexFromTrace(evidence), [evidence]);
   const renderedContent = useMemo(
     () => replaceAssistantEvidenceMarkers(content, evidenceIndex),
@@ -303,6 +378,6 @@ export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({ text, evidence }
 };
 
 /** Adapter kept for assistant-ui part registries outside the chat timeline. */
-export const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text }) => (
-  <AssistantMarkdown text={text} />
+export const AssistantMarkdownText: FC<TextMessagePartProps & { animate?: boolean }> = ({ text, animate = false }) => (
+  <AssistantMarkdown text={text} animate={animate} />
 );

@@ -593,7 +593,7 @@ def test_response_format_repair_does_not_force_unnecessary_source_recovery(inval
         assert result.state["response_repair_count"] == 1
         assert result.state["fallback_repair_count"] == 0
         assert result.state["evidence_repair_count"] == 0
-        assert STRUCTURED_OUTPUT_TOOL_NAME in {tool.name for tool in model.call_options[-1]["tools"]}
+        assert {tool.name for tool in model.call_options[-1]["tools"]} == {STRUCTURED_OUTPUT_TOOL_NAME}
     asyncio.run(scenario())
 
 

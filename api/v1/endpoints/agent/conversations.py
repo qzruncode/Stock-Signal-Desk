@@ -365,8 +365,120 @@ def get_agent_conversation(
         else str(durable_run.get("final_text") or "") if durable_run else ""
     )
     assistant_text, _ = prepare_answer_for_client(assistant_text, trace_evidence)
+
+    # A conversation can contain several completed turns.  Keep the latest
+    # trace for backwards compatibility, but also expose a bounded per-run
+    # projection so the client can attach each execution process to the
+    # assistant message that produced it.  A failure to read historical
+    # observability data must never prevent the conversation answer itself
+    # from loading.
+    execution_trace_history: list[dict[str, Any]] = []
+    try:
+        trace_history = db_manager.list_agent_run_trace_history(
+            conversation_id,
+            limit=32,
+        )
+    except Exception:
+        logger.warning(
+            "[Agent] unable to read trace history conversation_id=%s",
+            conversation_id,
+            exc_info=True,
+        )
+        trace_history = []
+
+    if isinstance(trace_history, list):
+        for historical_record in trace_history:
+            if not isinstance(historical_record, Mapping):
+                continue
+            historical_run_id = str(historical_record.get("run_id") or "").strip()
+            if not historical_run_id:
+                continue
+            historical_quality_projection = historical_record.get("quality_projection")
+            historical_trace = _execution_trace_for_run(
+                db_manager=db_manager,
+                trace=historical_record,
+                run=None,
+                durable_run={"run_id": historical_run_id},
+                quality_projection=(
+                    historical_quality_projection
+                    if isinstance(historical_quality_projection, Mapping)
+                    else None
+                ),
+            )
+            if not historical_trace:
+                continue
+            historical_evidence = (
+                historical_trace.get("evidence")
+                if isinstance(historical_trace.get("evidence"), list)
+                else []
+            )
+            historical_evidence = [
+                item
+                for item in historical_evidence
+                if isinstance(item, Mapping) and _client_evidence_is_resolvable(item)
+            ]
+            historical_final_text, _ = prepare_answer_for_client(
+                str(historical_record.get("final_text") or ""),
+                historical_evidence,
+            )
+            execution_trace_history.append(
+                {
+                    "run_id": historical_run_id,
+                    "status": historical_record.get("status"),
+                    "error_code": historical_record.get("error_code"),
+                    "latest_stage": historical_record.get("latest_stage"),
+                    "final_text": historical_final_text,
+                    "created_at": historical_record.get("created_at"),
+                    "updated_at": historical_record.get("updated_at"),
+                    "execution_trace": historical_trace,
+                }
+            )
+
+    # During the small window before the trace row is committed, the active
+    # broadcaster/event log can still provide a valid execution projection.
+    # Add that projection once, so refresh/replay does not lose the current
+    # process merely because durable trace persistence is a few milliseconds
+    # behind the conversation response.
+    current_trace_run_id = str(
+        (trace or {}).get("run_id")
+        if isinstance(trace, Mapping)
+        else ""
+    ).strip()
+    if not current_trace_run_id:
+        current_trace_run_id = str(
+            run.run_id if is_generating and run
+            else (durable_run.get("run_id") if durable_run else "")
+        ).strip()
+    if (
+        current_trace_run_id
+        and (execution_trace or persisted_stage)
+        and not any(
+            item.get("run_id") == current_trace_run_id
+            for item in execution_trace_history
+        )
+    ):
+        execution_trace_history.append(
+            {
+                "run_id": current_trace_run_id,
+                "status": (
+                    run.status if is_generating and run
+                    else durable_status or reconciled_trace_status
+                ),
+                "error_code": (
+                    trace.get("error_code")
+                    if isinstance(trace, Mapping)
+                    else None
+                ),
+                "latest_stage": persisted_stage,
+                "final_text": assistant_text,
+                "created_at": None,
+                "updated_at": None,
+                "execution_trace": execution_trace or {"stages": [persisted_stage]},
+            }
+        )
     conversation["is_generating"] = is_generating
     conversation["execution_trace"] = execution_trace
+    conversation["execution_traces"] = execution_trace_history
     context_snapshot = durable_run.get("context_snapshot") if durable_run else None
     pending_interrupt = (
         context_snapshot.get("pending_interrupt")

@@ -67,6 +67,7 @@ from .reflection import (
     reflection_messages,
     reflection_review_projection,
 )
+from .planning import planning_allowed_tools, planning_model_messages, planning_prompt
 from .state import AgentState, GraphContext
 
 
@@ -683,6 +684,8 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
             update["content_selection_feedback"] = ""
         elif (
             not state.get("content_selection_feedback")
+            and (planning_allowed_tools(state) is None
+                 or _CONTENT_SELECTION_TOOL_NAME in (planning_allowed_tools(state) or set()))
             and context.registry.get_tool(_CONTENT_SELECTION_TOOL_NAME) is not None
             and not state.get("work_budget_exhausted")
             and max(
@@ -698,6 +701,7 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     "content_access",
                     "started",
                     "reference-only 来源已返回，先选择需要核验的正文来源",
+                    user_message="有些来源目前只有摘要，我先补齐关键正文，再继续整理答案。",
                     details={
                         "mode": "proactive_selection",
                         "candidate_count": len(content_targets),
@@ -716,12 +720,16 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
     ) -> ModelResponse | ExtendedModelResponse:
         context = request.runtime.context
         state = request.state
+        # Projection only: checkpoint history and the direct loop are intact.
+        # Apply before ContextBudgetMiddleware so this request is budgeted.
+        request = request.override(messages=planning_model_messages(state, request.messages))
         evidence = [item for item in state.get("evidence") or [] if isinstance(item, Mapping)]
         observations = [item for item in state.get("tool_results") or [] if isinstance(item, Mapping)]
         feedback = str(state.get("evidence_feedback") or "").strip()
         fallback_feedback = str(state.get("fallback_feedback") or "").strip()
         reflection_feedback_text = str(state.get("reflection_feedback") or "").strip()
         content_feedback = str(state.get("content_access_feedback") or "").strip()
+        response_format_feedback = str(state.get("response_format_feedback") or "").strip()
         # Recovery is a real native tool turn. Exclude the answer tool for
         # this one request so ToolStrategy cannot satisfy required tool use
         # by producing another final-answer candidate instead of a read.
@@ -765,7 +773,10 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 tool_choice="required",
                 response_format=None,
             )
-        response_format_feedback = str(state.get("response_format_feedback") or "").strip()
+        elif response_format_feedback:
+            # Format repair is not another discovery turn. Let ToolStrategy
+            # bind just the typed answer, instead of the full operation catalog.
+            request = request.override(tools=[], tool_choice=None)
         content_targets, pending_content_reads = build_content_access_targets(
             tool_results=state.get("tool_results") or [],
             existing_targets=state.get("content_access_targets") or [],
@@ -779,10 +790,17 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
         source_catalog = context.catalog.model_context()
         output_catalog = output_reference_catalog_for_model(observations, evidence)
         base_prompt = str(state.get("system_prompt") or request.system_prompt or "").strip()
+        planning_context = planning_prompt(state)
         prompt_parts = [
             part
             for part in (
                 base_prompt,
+                (
+                    "Planning 协调状态（服务端控制，不包含隐藏思维）：\n"
+                    + planning_context
+                    if planning_context
+                    else ""
+                ),
                 """你是通用的证据驱动助手，只围绕本轮用户问题工作，不套用预设行业流程。
 
 所有 operation schema 已直接绑定到本次模型调用，是名称、参数和 source_id 的唯一权威。工具是可选的；需要外部事实、实时数据或用户明确要求检索时才调用。
@@ -895,7 +913,7 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。需�
                 (
                     "系统证据检查反馈：\n"
                     + feedback
-                    + "\n请只返回修订后的最终答案，保留已证实内容并删除、弱化或明确标注无法关联证据的结论。"
+                    + "\n请调用 StructuredAgentAnswer 返回完整修订对象，不要返回普通文本。保留已证实内容并删除、弱化或明确标注无法关联证据的结论。"
                     if feedback
                     else ""
                 ),
@@ -1072,6 +1090,7 @@ class ReflectionMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "blocked" if status == "blocked" else "failed",
             "语义复核未通过，已发布带明确限制的结果",
             error_code=error_code,
+            user_message="语义复核没有通过，我会在最终回答中明确保留限制和未确认部分。",
             details={
                 **review_trace,
                 "reflection_status": status,
@@ -1127,6 +1146,7 @@ class ReflectionMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "reflection",
                 "completed",
                 "当前回答无需语义复核，已直接进入发布",
+                user_message="这份回答不需要额外语义复核，我直接进入发布。",
                 details={
                     "reflection_status": "skipped",
                     "reason": reason,
@@ -1167,6 +1187,7 @@ class ReflectionMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "reflection",
             "started",
             "已完成证据与格式硬校验，正在复核研究结论的推理边界",
+            user_message="前面的证据已经收集完成，我正在复核结论是否都能被现有来源支持。",
             details={
                 "reflection_status": "started",
                 "reflection_round": next_round,
@@ -1221,6 +1242,7 @@ class ReflectionMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "reflection",
                 "completed",
                 "语义复核通过，研究回答允许发布",
+                user_message="语义复核通过，现有证据足以支持这份回答。",
                 details={
                     **review_details,
                     "reflection_status": "passed",
@@ -1260,6 +1282,7 @@ class ReflectionMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "reflection",
                 "completed",
                 "语义复核发现可在既有证据内修订的问题，进入一次受限重写",
+                user_message="复核发现少量表述需要收紧，我会基于已有证据修订后再发布。",
                 details={
                     **review_details,
                     "reflection_status": "revision_requested",
@@ -1353,6 +1376,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "failed",
             "来源恢复未取得可支持回答的证据，本轮已结束",
             error_code="source_fallback_incomplete",
+            user_message="部分来源仍无法支持完整结论，我会在最终回答中明确保留这个限制。",
             details={
                 "requirements": [dict(item) for item in requirements[:8]],
                 "fallback_repair_count": int(state.get("fallback_repair_count") or 0),
@@ -1382,6 +1406,10 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         candidate: Mapping[str, Any] | None,
     ) -> dict[str, Any] | None:
         """Recover an unsupported terminal candidate inside the native loop."""
+        # Planning owns data gaps and revisions. A second independent source
+        # recovery loop could leave its active step and whitelist behind.
+        if state.get("planning_enabled"):
+            return None
         # An ordinary tool call is ongoing work, not a terminal candidate.
         # Native ToolNode must execute it and return its matching ToolMessage;
         # jumping back to the model here would strand pending tool calls.
@@ -1438,6 +1466,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "source_fallback",
             "started",
             "最终回答缺少有效来源，下一轮通过工具选择约束执行搜索/读取",
+            user_message="当前证据还不足以支撑完整回答，我先补充相关来源并重新核对。",
             details={
                 "requirements": [dict(item) for item in requirements[:8]],
                 "fallback_repair_count": repair_count + 1,
@@ -1459,6 +1488,10 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         context: GraphContext = runtime.context
         last = _last_ai_message(state.get("messages") or [])
         if last is None:
+            return None
+        if state.get("planning_enabled") and state.get("planning_status") == "executing" and not last.tool_calls:
+            # This is worker progress. Only the verified step report can
+            # advance a plan; normal prose is not an answer candidate here.
             return None
         current_structured_call_id = _structured_output_call_id(last)
         structured_answer = resolve_structured_answer_references(
@@ -1526,6 +1559,20 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 return content_access_update
             return {**content_access_update, **self._check_answer(state, context, last)}
 
+        if state.get("planning_enabled") and state.get("planning_status") in {"blocked", "finalizing"}:
+            # A provider can still hallucinate an unbound operation. Pair its
+            # calls with errors and enter the existing bounded answer repair,
+            # rather than ending with an unclassified partial/progress string.
+            errors = [_error_tool_message(
+                tool_call_id=str(call["id"]), tool_name=str(call.get("name") or ""),
+                message="计划执行已结束或受阻，本轮只允许调用 StructuredAgentAnswer 整理已核验结果及缺口。",
+            ) for call in last.tool_calls if call.get("id")]
+            return self._request_structured_output_repair(
+                state, context, candidate=_message_text(last),
+                reason="最终整理阶段不能调用计划外工具",
+                content_access_update={"messages": errors},
+            )
+
         used = max(0, int(state.get("tool_call_count") or 0))
         remaining = max(0, int(state.get("tool_call_limit") or 0) - used)
         artificial_messages: list[ToolMessage] = []
@@ -1540,6 +1587,14 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             tool_name = str(call.get("name") or "").strip()
             arguments = dict(call.get("args") or {}) if isinstance(call.get("args"), Mapping) else {}
             if not call_id or not tool_name:
+                continue
+            planning_tools = planning_allowed_tools(state)
+            if planning_tools is not None and tool_name not in planning_tools:
+                artificial_messages.append(_error_tool_message(
+                    tool_call_id=call_id, tool_name=tool_name,
+                    message="该工具不在当前计划步骤的允许范围内；需要调整计划后才能使用。",
+                ))
+                rejected.append(call_id)
                 continue
             if allowed_calls >= remaining:
                 budget_exhausted = True
@@ -1635,6 +1690,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             f"{tool_name} 会产生外部副作用，正在等待用户批准",
             action_id=action_id,
             tool_call_id=action_id,
+            user_message="这一步可能产生外部影响，我会先等你确认后再继续。",
             details={"tool_name": tool_name, "arguments": payload["arguments"]},
         )
         decision = interrupt(payload)
@@ -1650,6 +1706,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 f"用户已批准 {tool_name}，将串行执行一次",
                 action_id=action_id,
                 tool_call_id=action_id,
+                user_message="你已确认这项操作，我现在继续执行。",
             )
             updates.update(
                 {
@@ -1665,6 +1722,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 f"用户拒绝执行 {tool_name}，该操作没有被调用",
                 action_id=action_id,
                 tool_call_id=action_id,
+                user_message="你没有批准这项操作，我不会执行它，并会在结果中说明这一点。",
             )
             rejection = _failed_record(
                 tool_call_id=action_id,
@@ -1765,6 +1823,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "failed",
             "结构化回答修订次数已用尽，已停止继续调用模型",
             error_code="structured_output_incomplete",
+            user_message="回答内容已经生成，但格式核对仍未通过；我会保留可用部分并明确说明限制。",
             details={
                 "response_repair_count": int(state.get("response_repair_count") or 0),
                 "response_repair_limit": int(state.get("response_repair_limit") or 0),
@@ -1819,6 +1878,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "response_format",
             "failed",
             "候选回答未满足结构化输出契约，已请求一次受限修订",
+            user_message="我正在把刚才的回答整理成可核验的完整结果，然后再发给你。",
             details={
                 "response_repair_count": repair_count + 1,
                 "response_repair_limit": repair_limit,
@@ -1880,6 +1940,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "failed",
             "正文读取未完成，已阻止无正文核验的完整回答",
             error_code=error_code,
+            user_message="部分来源的正文暂时无法读取，我会把这项证据限制写进最终结果。",
             details={
                 "target_count": len(targets),
                 "required_count": len(required),
@@ -1986,6 +2047,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     "content_access",
                     "completed",
                     "已完成模型选定正文来源的读取核对，允许进入最终回答检查",
+                    user_message="需要核对的关键正文已经读取完成，我继续检查最终回答。",
                     details={
                         "candidate_count": len(targets),
                         "required_count": len(required),
@@ -2083,6 +2145,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "content_access",
             "started",
             "发现未完成的正文取证，要求模型继续选择或读取来源",
+            user_message="我发现部分引用还缺少正文依据，先补齐关键来源的正文核验。",
             details={
                 "candidate_count": len(targets),
                 "required_count": len(required),
@@ -2163,6 +2226,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "failed",
                 "结构化回答为空，已阻止发布空结果",
                 error_code="agent_runtime_failed",
+                user_message="这轮没有生成可发布的回答内容，我会明确说明本轮未完成。",
                 details={"structured_output": True, "block_count": len(blocks)},
             )
             context.events.commit_model_answer(final_answer)
@@ -2258,6 +2322,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     "evidence",
                     "started",
                     "发现结构化回答的证据关联缺口，正在请求模型修订结构化区块",
+                    user_message="我正在逐段核对结论和来源，确保每个判断都有对应依据。",
                     details={
                         **audit_details,
                         "issues": issues,
@@ -2285,6 +2350,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "failed",
                 "结构化回答的区块证据校验未通过，已发布可追溯的部分结果",
                 error_code="evidence_link_incomplete",
+                user_message="部分结论暂时找不到完整来源，我会明确标注这部分限制后继续回答。",
                 details={**audit_details, "issues": issues},
             )
             context.events.commit_model_answer(final_answer)
@@ -2301,11 +2367,22 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "evidence",
             "completed",
             f"已核对结构化回答的 {len(ledger.get('claims') or [])} 个区块与 {len(ledger.get('cited_evidence_ids') or [])} 条成功证据",
+            user_message="来源核对完成，接下来整理最终回答。",
             details=audit_details,
         )
         # ReflectionMiddleware is the next after-model hook.  Keep the
         # accepted candidate buffered until it either passes semantic review
         # or is converted into an explicit partial result.
+        if state.get("planning_enabled") and state.get("planning_status") == "blocked":
+            detail = str(state.get("planning_error") or "计划仍有未完成步骤")
+            # Decide the partial lifecycle before Reflection can publish a
+            # successful answer and cause a second terminal body with a suffix.
+            return {
+                **base_update, **content_access_update,
+                "answer_final": finalize_terminal_answer(answer, status="partial", error_code="planning_incomplete", detail=detail),
+                "status": "partial", "error_code": "planning_incomplete", "terminal_detail": detail,
+                "evidence_feedback": "",
+            }
         return {
             **base_update,
             "answer_final": answer,
@@ -2370,6 +2447,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     "failed",
                     "工具调用预算已用尽，已保留现有证据并明确未完成的取证缺口",
                     error_code="tool_call_budget_exceeded",
+                    user_message="工具调用额度已经用尽，我会保留已有证据并明确尚未完成的取证缺口。",
                     details={"detail": budget_detail or "tool call budget exhausted"},
                 )
             else:
@@ -2468,6 +2546,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "evidence",
                 "started",
                 "发现候选回答的证据关联缺口，正在请求模型基于已有证据修订",
+                user_message="我正在逐段检查回答和来源的对应关系，发现缺口就先修订再发布。",
                 details={
                     **audit_details,
                     "issues": issues,
@@ -2488,6 +2567,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "evidence",
                 "failed",
                 "证据关联修订预算已用尽，保留答案并明确标注未完全核验的缺口",
+                user_message="部分结论仍无法和完整来源对应，我会保留答案并把未核验部分标清楚。",
                 details={
                     **audit_details,
                     "issues": issues,
@@ -2510,6 +2590,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "evidence",
             "completed",
             f"已核对 {len(ledger['claims'])} 条结论与 {len(cited)} 条成功证据",
+            user_message="来源核对完成，接下来整理最终回答。",
             details=audit_details,
         )
         return _budget_partial(
@@ -2580,6 +2661,7 @@ class ToolExecutionMiddleware(AgentMiddleware[AgentState, GraphContext]):
             action_id=tool_call_id,
             tool_call_id=tool_call_id,
             error_code="invalid_content_source_selection",
+            user_message="来源选择没有通过校验，我会保留这个缺口并继续整理可用结果。",
             details={"error": message[:1_000]},
         )
         return Command(
@@ -2810,6 +2892,7 @@ class ToolExecutionMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 action_id=tool_call_id,
                 tool_call_id=tool_call_id,
                 error_code=error_code,
+                user_message=f"{tool_name} 这次没有成功返回，我会根据实际缺口选择是否继续或改用替代来源。",
                 details={"tool_name": tool_name, "error": message[:1_000]},
             )
 
@@ -2877,6 +2960,17 @@ class TerminalPublicationMiddleware(AgentMiddleware[AgentState, GraphContext]):
             or state.get("work_budget_detail")
             or ""
         ).strip()
+        if (
+            state.get("planning_enabled")
+            and str(state.get("planning_status") or "") == "blocked"
+            and status not in {"failed", "cancelled"}
+        ):
+            status = "partial"
+            error_code = error_code or "planning_incomplete"
+            terminal_detail = terminal_detail or str(
+                state.get("planning_error")
+                or "计划存在未完成步骤，以下回答仅代表已取得的部分观察。"
+            ).strip()
         answer = finalize_terminal_answer(
             answer,
             status=status,

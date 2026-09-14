@@ -131,6 +131,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
       conversationDetail.resumeState?.runId,
       conversationDetail.resumeState?.assistantText,
       !shouldReplayStream,
+      conversationDetail.executionTraces,
     ));
 
     if (!shouldReplayStream) {

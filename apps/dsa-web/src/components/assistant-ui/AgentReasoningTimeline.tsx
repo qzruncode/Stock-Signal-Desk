@@ -14,9 +14,11 @@ import { cn } from '../../utils/cn';
 import { AssistantMarkdown } from './AssistantMarkdownText';
 import {
   errorCode,
+  isRecoverablePlanningRetry,
   phaseHeadline,
   phaseProblem,
   phaseStatus,
+  planningProgressText,
   recordValue,
   stageDetails,
   statusText,
@@ -74,6 +76,7 @@ export const TimelineDetailLines: FC<{ lines: DetailLine[] }> = ({ lines }) => {
 export const TimelineStageRow: FC<{ row: TimelineRow }> = ({ row }) => {
   const event = row.event;
   if (!event) return null;
+  if (event.stage === 'planning') return <TimelinePlanningRow row={row} />;
   const status = event.status;
   const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
     || Boolean(event.errorCode);
@@ -120,6 +123,34 @@ export const TimelineStageRow: FC<{ row: TimelineRow }> = ({ row }) => {
         ) : null}
         <TimelineDetailLines lines={details} />
       </div>
+    </li>
+  );
+};
+
+/** Render Planning as user-facing progress, never as a field-by-field dump. */
+export const TimelinePlanningRow: FC<{ row: TimelineRow }> = ({ row }) => {
+  const event = row.event;
+  if (!event) return null;
+  const retrying = isRecoverablePlanningRetry(event);
+  const problem = !retrying && (event.status === 'failed'
+    || event.status === 'blocked'
+    || event.status === 'cancelled'
+    || Boolean(event.errorCode));
+  const progress = planningProgressText(event) || event.summary || '正在规划执行步骤。';
+  return (
+    <li className="min-w-0 py-1.5 text-sm text-foreground/90">
+      {problem ? (
+        <div className="flex min-w-0 items-start gap-2 text-amber-800">
+          <StatusIcon status={event.status} problem className="mt-1 size-4 shrink-0 text-amber-600" />
+          <div className="min-w-0 flex-1">
+            <AssistantMarkdown text={progress} />
+          </div>
+        </div>
+      ) : (
+        <div className={cn(retrying && 'text-muted-foreground')}>
+          <AssistantMarkdown text={progress} />
+        </div>
+      )}
     </li>
   );
 };

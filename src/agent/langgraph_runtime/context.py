@@ -15,11 +15,12 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from src.agent.model_runtime import ModelContextWindowExceededError
+from .answer_contract import STRUCTURED_OUTPUT_TOOL_NAME, render_structured_answer
 
 
 DEFAULT_CONTEXT_WINDOW = 200_000
@@ -168,6 +169,49 @@ class ContextBudget:
         return max(1, self.input_tokens - self.response_schema_tokens)
 
 
+def completed_answers_as_context(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+    """Past typed answers are conversation content, not live tool receipts.
+
+    Preserve native tool pairs in the current user turn (including repairs),
+    every ordinary history message, and domain-tool pairs. Only a previous
+    turn's output-schema call is rendered through the existing answer renderer
+    and its corresponding protocol receipt omitted from the transient request.
+    """
+    last_user = max((i for i, message in enumerate(messages) if isinstance(message, HumanMessage)), default=-1)
+    output_ids = {
+        str(call.get("id"))
+        for message in messages[: max(0, last_user)]
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+        if call.get("name") == STRUCTURED_OUTPUT_TOOL_NAME
+    }
+    if not output_ids:
+        return list(messages)
+    projected: list[BaseMessage] = []
+    for index, message in enumerate(messages):
+        if index >= last_user:
+            projected.append(message)
+        elif isinstance(message, ToolMessage) and message.tool_call_id in output_ids:
+            continue
+        elif isinstance(message, AIMessage) and any(str(c.get("id")) in output_ids for c in message.tool_calls):
+            answers = [
+                render_structured_answer(c.get("args") or {})
+                for c in message.tool_calls
+                if str(c.get("id")) in output_ids
+            ]
+            projected.append(
+                message.model_copy(
+                    update={
+                        "content": "\n\n".join(answer for answer in answers if answer) or message.content,
+                        "tool_calls": [c for c in message.tool_calls if str(c.get("id")) not in output_ids],
+                    }
+                )
+            )
+        else:
+            projected.append(message)
+    return projected
+
+
 class ContextBudgetMiddleware(AgentMiddleware):
     """Fit the final model request without changing persisted graph state."""
 
@@ -176,7 +220,8 @@ class ContextBudgetMiddleware(AgentMiddleware):
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         model = request.model
         system_messages = [request.system_message] if request.system_message else []
-        messages = list(request.messages or [])
+        messages = completed_answers_as_context(request.messages or [])
+        request = request.override(messages=messages)
         budget = ContextBudget(
             context_window=model_context_window(model),
             output_tokens=model_output_reserve(model),

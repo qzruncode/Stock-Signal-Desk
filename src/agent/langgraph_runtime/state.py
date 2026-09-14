@@ -1,9 +1,8 @@
-"""Checkpoint-safe state for the message-and-tool Agent runtime.
+"""Checkpoint-safe state for the native Agent loop and Planning coordinator.
 
-The graph itself is intentionally supplied by :func:`langchain.agents.create_agent`.
-There are no task-specific planning, verification, or workflow contracts in this
-module: the durable state is only the conversation, the observed tool work, and
-the server-owned operational controls around it.
+The graph is still supplied by :func:`langchain.agents.create_agent`. Planning
+adds only checkpoint-safe coordination fields; tool execution, evidence, and
+terminal publication remain owned by the existing runtime contracts.
 """
 
 from __future__ import annotations
@@ -72,6 +71,28 @@ class AgentState(LangChainAgentState, total=False):
     # Large member collections remain in the tool observation and are fetched
     # page-by-page when the model needs them.
     conversation_context: dict[str, Any] | None
+
+    # Planning is an optional coordinator around the generic Agent loop. These
+    # fields are server-owned projections of the plan and its observations; they
+    # never contain hidden chain-of-thought.
+    planning_enabled: bool
+    planning_mode: str
+    planning_status: str
+    planning_plan: dict[str, Any] | None
+    planning_revision: int
+    planning_current_step_id: str
+    planning_active_tool_call_ids: list[str]
+    planning_step_reports: list[dict[str, Any]]
+    planning_updates: list[dict[str, Any]]
+    planning_replan_count: int
+    planning_replan_limit: int
+    planning_model_call_count: int
+    planning_original_structured_output_required: bool
+    planning_error: str
+    planning_decision: dict[str, Any] | None
+    planning_step_attempts: int
+    planning_step_tool_call_ids: list[str]
+    planning_feedback: str
 
     # One record per actual model tool call, not a precompiled action plan.
     tool_results: Annotated[list[dict[str, Any]], merge_records]
@@ -162,6 +183,24 @@ class AgentGraphInput(TypedDict, total=False):
     reference_time: str
     conversation_context: dict[str, Any] | None
     engine: str
+    planning_enabled: bool
+    planning_mode: str
+    planning_status: str
+    planning_plan: dict[str, Any] | None
+    planning_revision: int
+    planning_current_step_id: str
+    planning_active_tool_call_ids: list[str]
+    planning_step_reports: list[dict[str, Any]]
+    planning_updates: list[dict[str, Any]]
+    planning_replan_count: int
+    planning_replan_limit: int
+    planning_model_call_count: int
+    planning_original_structured_output_required: bool
+    planning_error: str
+    planning_decision: dict[str, Any] | None
+    planning_step_attempts: int
+    planning_step_tool_call_ids: list[str]
+    planning_feedback: str
     tool_results: list[dict[str, Any]]
     evidence: list[dict[str, Any]]
     claim_evidence: list[dict[str, Any]]

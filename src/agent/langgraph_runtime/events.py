@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from difflib import SequenceMatcher
 import json
-from typing import Any, Mapping, Sequence
+import re
+from typing import Any, Callable, Mapping, Sequence
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
@@ -12,6 +14,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 _CLIENT_STAGE_HISTORY_MAX_EVENTS = 120
 _CLIENT_STAGE_HISTORY_MAX_BYTES = 160_000
 _CLIENT_STAGE_DETAIL_MAX_BYTES = 24_000
+_PROGRESS_NEAR_DUPLICATE_MIN_LENGTH = 24
+_PROGRESS_NEAR_DUPLICATE_THRESHOLD = 0.84
 
 
 def _client_stage_value(value: Any, *, depth: int = 0) -> Any:
@@ -122,12 +126,69 @@ def project_stage_history_for_client(
     return selected
 
 
+class _ProjectedToolCallController:
+    """Controller-shaped handle whose chunks use the graph custom stream."""
+
+    def __init__(
+        self,
+        bridge: "GraphEventBridge",
+        tool_call_id: str,
+        tool_name: str,
+        parent_id: str | None,
+        *,
+        use_stream: bool,
+    ) -> None:
+        self.bridge = bridge
+        self.tool_call_id = tool_call_id
+        self.tool_name = tool_name
+        self.parent_id = parent_id
+        self.use_stream = use_stream
+        self.direct_handle: Any | None = None
+        self.closed = False
+
+    def append_args_text(self, args_text_delta: str) -> None:
+        value = str(args_text_delta or "")
+        if not value:
+            return
+        if not self.use_stream and self.direct_handle is not None:
+            self.direct_handle.append_args_text(value)
+            return
+        self.bridge._emit_tool_record(
+            {
+                "kind": "tool-call-delta",
+                "tool_call_id": self.tool_call_id,
+                "args_text_delta": value[:8_000],
+            },
+            lambda: None,
+        )
+
+    def set_response(self, result: Any, is_error: bool = False) -> None:
+        if not self.use_stream and self.direct_handle is not None:
+            self.direct_handle.set_response(result, is_error=is_error)
+            self.closed = True
+            return
+        self.bridge._emit_tool_record(
+            {
+                "kind": "tool-result",
+                "tool_call_id": self.tool_call_id,
+                "result": self.bridge._stream_tool_result(result),
+                "is_error": bool(is_error),
+            },
+            lambda: None,
+        )
+        self.closed = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class GraphEventBridge:
     # Stage events are a presentation channel.  The complete tool result and
     # audit trace remain in the durable run state; sending an unbounded copy
     # of them through every browser event can freeze the chat renderer.
     _MAX_DETAIL_BYTES = 24_000
     _MAX_DETAIL_KEYS = 24
+    _MAX_STREAM_TOOL_RESULT_BYTES = 16_000
 
     def __init__(self, controller: Any | None, *, run_id: str) -> None:
         self.controller = controller
@@ -145,6 +206,17 @@ class GraphEventBridge:
         self._model_chunks_seen = False
         self._model_progress_committed = False
         self._last_committed_answer: str | None = None
+        # A validation loop may emit the same user-facing progress sentence
+        # more than once while its durable stage events are intentionally kept
+        # separate.  Coalesce repeated progress projection text within this
+        # run; model text and the audit history remain untouched.
+        self._progress_projection_seen: set[str] = set()
+        # Tool chunks and progress text are emitted through LangGraph's
+        # official ``custom`` stream while the graph is running.  The map is
+        # populated by the runtime-side projection consumer, which keeps the
+        # assistant-stream tool handle on the same ordered side of the
+        # boundary as the begin/delta/result chunks.
+        self._stream_tool_calls: dict[str, Any] = {}
 
     def set_round(self, round_id: str | int | None) -> None:
         self._round_id = str(round_id) if round_id not in (None, "") else None
@@ -204,7 +276,14 @@ class GraphEventBridge:
         if self._model_progress_committed:
             return
         for text in self._model_text_buffer:
-            self._publish_model_text(text)
+            # Model planning output is provisional progress, not the accepted
+            # answer.  Send it through the same projection gate as stage
+            # progress so a repair turn that restates the same observation is
+            # not appended as another full paragraph.  Keep individual
+            # provider chunks separate for smooth live rendering.
+            published = self._publish_progress_projection(text)
+            if published:
+                self._model_text_published += published
         self._model_text_buffer = []
         self._model_progress_committed = True
 
@@ -244,9 +323,167 @@ class GraphEventBridge:
 
     def _publish_text_delta(self, value: str) -> None:
         text = str(value or "")
-        if not text or self.controller is None:
+        if not text:
             return
-        self.controller.append_text(text)
+        self._emit_stream_record(
+            {
+                "kind": "text",
+                "text": text,
+                "display_kind": "progress",
+                "round_id": self._round_id,
+            },
+            fallback=lambda: self.controller.append_text(text) if self.controller is not None else None,
+        )
+
+    @staticmethod
+    def _active_stream_writer() -> Callable[[Any], Any] | None:
+        """Return LangGraph's custom stream writer when inside a graph run.
+
+        ``GraphEventBridge`` is also used by terminal/error paths and by unit
+        tests outside a LangGraph runnable context.  Those paths must retain
+        the existing direct-controller fallback instead of treating the
+        missing writer as a runtime failure.
+        """
+        try:
+            from langgraph.config import get_stream_writer
+
+            writer = get_stream_writer()
+        except (KeyError, LookupError, RuntimeError):
+            return None
+        return writer if callable(writer) else None
+
+    def _emit_stream_record(
+        self,
+        record: Mapping[str, Any],
+        *,
+        fallback: Callable[[], None],
+    ) -> None:
+        """Send one product projection through LangGraph or the safe fallback.
+
+        The custom record is deliberately small and JSON-safe.  The graph
+        runtime consumes it and materializes assistant-stream chunks in order;
+        code running outside LangGraph still writes directly to the injected
+        controller, preserving recovery and test compatibility.
+        """
+        writer = self._active_stream_writer()
+        if writer is not None:
+            try:
+                writer(dict(record))
+                return
+            except Exception:
+                # A provider/graph shutdown must not suppress a user answer
+                # just because its optional stream projection disappeared.
+                pass
+        fallback()
+
+    @classmethod
+    def _stream_tool_result(cls, result: Any) -> Any:
+        """Bound a tool result before it enters LangGraph's custom channel."""
+        safe = cls._safe_detail(result)
+        try:
+            encoded = json.dumps(
+                safe,
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            return {"result_preview": str(result)[:1_200], "truncated": True}
+        if len(encoded) <= cls._MAX_STREAM_TOOL_RESULT_BYTES:
+            return safe
+        if isinstance(safe, Mapping):
+            return {
+                key: value
+                for key, value in list(safe.items())[:16]
+                if value is None or isinstance(value, (str, int, float, bool))
+            } | {
+                "_stream_presentation": {
+                    "truncated": True,
+                    "reason": "custom_channel_budget",
+                    "original_bytes": len(encoded),
+                }
+            }
+        return {
+            "result_preview": str(safe)[:1_200],
+            "_stream_presentation": {
+                "truncated": True,
+                "reason": "custom_channel_budget",
+                "original_bytes": len(encoded),
+            },
+        }
+
+    async def add_tool_call(
+        self,
+        tool_name: str,
+        tool_call_id: str | None = None,
+        parent_id: str | None = None,
+    ) -> "_ProjectedToolCallController":
+        """Expose the controller contract through the ordered custom stream."""
+        normalized_id = str(tool_call_id or "").strip()
+        if not normalized_id:
+            normalized_id = f"call_{id(self)}_{len(self._stream_tool_calls)}"
+        projected = _ProjectedToolCallController(
+            self,
+            normalized_id,
+            str(tool_name or "原子工具"),
+            str(parent_id) if parent_id else None,
+            use_stream=self._active_stream_writer() is not None,
+        )
+        if projected.use_stream:
+            self._emit_tool_record(
+                {
+                    "kind": "tool-call-begin",
+                    "tool_call_id": projected.tool_call_id,
+                    "tool_name": projected.tool_name,
+                    "parent_id": projected.parent_id,
+                },
+                lambda: None,
+            )
+        elif self.controller is not None:
+            projected.direct_handle = await self.controller.add_tool_call(
+                projected.tool_name,
+                tool_call_id=projected.tool_call_id,
+                parent_id=projected.parent_id,
+            )
+        return projected
+
+    async def consume_stream_record(self, record: Any) -> None:
+        """Materialize one LangGraph custom record into assistant-stream."""
+        if not isinstance(record, Mapping) or self.controller is None:
+            return
+        kind = str(record.get("kind") or record.get("type") or "").strip()
+        if kind == "text":
+            text = str(record.get("text") or "")
+            if text:
+                self.controller.append_text(text)
+            return
+        if kind == "tool-call-begin":
+            tool_call_id = str(record.get("tool_call_id") or "").strip()
+            if not tool_call_id:
+                return
+            handle = await self.controller.add_tool_call(
+                str(record.get("tool_name") or "原子工具"),
+                tool_call_id=tool_call_id,
+                parent_id=str(record.get("parent_id") or "") or None,
+            )
+            self._stream_tool_calls[tool_call_id] = handle
+            return
+        if kind == "tool-call-delta":
+            tool_call_id = str(record.get("tool_call_id") or "").strip()
+            delta = str(record.get("args_text_delta") or "")
+            handle = self._stream_tool_calls.get(tool_call_id)
+            if handle is not None and delta:
+                handle.append_args_text(delta)
+            return
+        if kind == "tool-result":
+            tool_call_id = str(record.get("tool_call_id") or "").strip()
+            handle = self._stream_tool_calls.get(tool_call_id)
+            if handle is not None:
+                handle.set_response(record.get("result"), is_error=bool(record.get("is_error")))
+            return
+
+    def _emit_tool_record(self, record: Mapping[str, Any], fallback: Callable[[], None]) -> None:
+        self._emit_stream_record(record, fallback=fallback)
 
     @staticmethod
     def _safe_detail(value: Any, *, depth: int = 0) -> Any:
@@ -320,7 +557,15 @@ class GraphEventBridge:
         round_id: str | None = None,
         error_code: str | None = None,
         details: Mapping[str, Any] | None = None,
+        user_message: str | None = None,
     ) -> dict[str, Any]:
+        normalized_user_message = str(user_message or "").strip()
+        stage_details = dict(details or {})
+        if normalized_user_message:
+            # Keep the text available to legacy timeline projection while the
+            # live/native path receives it through the ordered custom stream.
+            stage_details.setdefault("user_message", normalized_user_message)
+            stage_details.setdefault("display_projection", "native_progress")
         payload = {
             "event": "agent_stage",
             "engine": "langgraph_agent_loop",
@@ -334,11 +579,13 @@ class GraphEventBridge:
             "summary": summary,
             "occurred_at": datetime.now().astimezone().isoformat(),
         }
-        if details:
-            payload["details"] = self._bounded_details(details)
+        if stage_details:
+            payload["details"] = self._bounded_details(stage_details)
         self._stage_history.append(dict(payload))
         if self.controller is not None:
             self.controller.add_data(payload)
+        if normalized_user_message:
+            self._publish_progress_projection(f"{normalized_user_message}\n\n")
         return payload
 
     @property
@@ -400,6 +647,69 @@ class GraphEventBridge:
     def reasoning(self, text: str) -> None:
         if self.controller is not None and text:
             self.controller.append_reasoning(text)
+
+    def progress(self, text: str) -> None:
+        """Publish user-facing progress without treating it as an answer.
+
+        Planning and other control-plane middleware can use this boundary to
+        keep the live assistant stream conversational.  It deliberately does
+        not update the accepted answer state; terminal publication still owns
+        the final answer and the durable trace keeps the structured details.
+        """
+        self._publish_progress_projection(str(text or ""))
+
+    @staticmethod
+    def _is_near_duplicate_progress(candidate: str, previous: str) -> bool:
+        if not candidate or not previous:
+            return False
+        if candidate == previous or candidate in previous:
+            return True
+        shorter, longer = sorted((candidate, previous), key=len)
+        if len(shorter) < _PROGRESS_NEAR_DUPLICATE_MIN_LENGTH:
+            return False
+        # A later model turn often prefixes the old observation with a new
+        # transition sentence.  The extra context must not hide that this is
+        # still a restatement of the same progress event.
+        if len(shorter) / len(longer) < 0.60:
+            return False
+        return (
+            SequenceMatcher(
+                None,
+                shorter[:4_000],
+                longer[:4_000],
+                autojunk=False,
+            ).ratio()
+            >= _PROGRESS_NEAR_DUPLICATE_THRESHOLD
+        )
+
+    def _publish_progress_projection(self, message: str) -> str | None:
+        text = str(message or "")
+        blocks = re.split(r"\n\s*\n", text)
+        published: list[str] = []
+        for index, block in enumerate(blocks):
+            normalized_block = block.strip()
+            if not normalized_block:
+                continue
+            visible_text = normalized_block
+            has_following_block = any(item.strip() for item in blocks[index + 1:])
+            if has_following_block or text.endswith(("\n\n", "\n \n")):
+                visible_text += "\n\n"
+            normalized = " ".join(visible_text.split())
+            if not normalized or any(
+                self._is_near_duplicate_progress(normalized, previous)
+                for previous in self._progress_projection_seen
+            ):
+                continue
+            self._publish_text_delta(visible_text)
+            self._progress_projection_seen.add(normalized)
+            published.append(visible_text)
+
+        if len(self._progress_projection_seen) > 256:
+            last = published[-1] if published else ""
+            self._progress_projection_seen.clear()
+            if last:
+                self._progress_projection_seen.add(" ".join(last.split()))
+        return "".join(published) or None
 
     def text(self, text: str) -> None:
         self.commit_model_answer(text)

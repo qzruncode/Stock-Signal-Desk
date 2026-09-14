@@ -125,6 +125,7 @@ async def _execute_background_agent_run(
                 user_text=latest_user_text(messages),
                 system_prompt=system_prompt,
                 history_mode=_graph_history_mode(body),
+                planning_mode=str(body.get("planning_mode") or "auto"),
                 **common,
             )
 

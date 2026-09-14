@@ -35,6 +35,7 @@ describe('generic Agent loop stage projection', () => {
     expect(agentStageLabel('tool')).toBe('调用工具');
     expect(agentStageLabel('content_access')).toBe('正文取证');
     expect(agentStageLabel('evidence')).toBe('关联证据');
+    expect(agentStageLabel('planning')).toBe('规划流程');
     expect(agentStageLabel('reflection')).toBe('语义复核');
     expect(agentStageLabel('approval')).toBe('等待审批');
     expect(agentStageLabel('publish')).toBe('发布回答');
@@ -136,6 +137,32 @@ describe('generic Agent loop stage projection', () => {
       '复核方式：受限自复核',
       '复核说明：建议收窄到证据能够支持的范围。',
       '问题 1：第 1 个区块 · reasoning · high：现有资料不足以支持确定性预测。',
+    ]);
+  });
+
+  it('shows the plan objective, completed observation, and next step', () => {
+    const lines = stageDetails({
+      event: 'agent_stage',
+      runId: 'run-planning',
+      stage: 'planning',
+      status: 'completed',
+      summary: '目标尚未全部完成，下一步执行 step_2',
+      details: {
+        planning_phase: 'goal_checked',
+        step_id: 'step_2',
+        completed_summary: '已完成第一步取证',
+        next_step_id: 'step_2',
+        next_step_reason: 'step_1 已完成且后置依赖已满足',
+        revision: 1,
+      },
+    });
+
+    expect(lines.map((line) => line.text)).toEqual([
+      '阶段：目标检查',
+      '步骤：step_2',
+      '已完成：已完成第一步取证',
+      '下一步：step_2 · step_1 已完成且后置依赖已满足',
+      '计划版本：1',
     ]);
   });
 

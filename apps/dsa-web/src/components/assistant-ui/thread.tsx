@@ -231,11 +231,12 @@ const NativeToolGroup: FC<{
     .slice(startIndex, endIndex + 1)
     .filter((part) => {
       if (!isRecord(part) || part.type !== 'tool-call') return false;
-      const status = isRecord(part.status) ? part.status : {};
+      const statusType = part.status.type;
+      const statusReason = part.status.type === 'incomplete' ? part.status.reason : undefined;
       const result = isRecord(part.result) ? part.result : undefined;
       return part.isError === true
         || result?.success === false
-        || (status.type === 'incomplete' && status.reason === 'error');
+        || (statusType === 'incomplete' && statusReason === 'error');
     }).length);
   const [expanded, setExpanded] = useState(false);
   const detailId = useId();
@@ -262,7 +263,7 @@ const NativeToolGroup: FC<{
             aria-controls={detailId}
             aria-label={`${expanded ? '收起' : '展开'}阶段工具调用`}
             onClick={toggle}
-            className="flex w-full min-w-0 items-center gap-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+            className="flex w-full min-w-0 items-center gap-2 py-2 text-left text-[16px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
           >
             {active ? (
               <Loader2Icon className="size-4 shrink-0 animate-spin text-primary" aria-hidden="true" />
@@ -271,7 +272,7 @@ const NativeToolGroup: FC<{
             ) : (
               <BookOpenIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             )}
-            <span className="min-w-0 flex-1 truncate">{label} {toolCount} 个工具</span>
+            <span className="min-w-0 flex-1 truncate">{label}</span>
             <ChevronRightIcon
               className={cn(
                 'size-4 shrink-0 transition-transform duration-300 ease-out',
@@ -295,6 +296,9 @@ const NativeTextPart: FC<TextMessagePartProps> = (part) => (
 const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const active = messageStatus === 'running' || messageStatus === 'requires-action';
+  const hasPlanningTrace = useMessage((state) => agentStageEvents(state.metadata?.unstable_data).some(
+    (event) => event.stage === 'planning',
+  ));
   const answerText = useMessage((state) => answerTextFromContent(state.content));
   const postToolBody = useMessage((state) => firstPostToolProgressText(state.content));
   const isTerminalFallbackAnswer = !active
@@ -302,12 +306,13 @@ const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
     && part.text.trim().length > 0
     && part.text.trim() === answerText.trim();
   const isTerminalPostToolBody = !active
+    && !hasPlanningTrace
     && postToolBody.trim().length > 0
     && part.text.trim() === postToolBody.trim();
 
   return displayKindOf(part) === 'answer' || isTerminalFallbackAnswer || isTerminalPostToolBody
     ? null
-    : <AssistantMarkdownText {...part} />;
+    : <AssistantMarkdownText {...part} animate={active} />;
 };
 
 const NativeExecutionDisclosure: FC<{ children?: ReactNode }> = ({ children }) => {
@@ -361,7 +366,6 @@ const NativeExecutionDisclosure: FC<{ children?: ReactNode }> = ({ children }) =
       >
         <div className="pt-0">
           {children}
-          <AgentExecutionTimeline presentation="inline" stageOnly />
         </div>
       </NativeDisclosure>
     </section>
@@ -450,7 +454,7 @@ const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-start">
       <div className="relative min-w-0 flex-1 pb-5">
-        <div className="w-full min-w-0 overflow-hidden text-sm text-foreground">
+        <div className="w-full min-w-0 overflow-hidden text-[17px] leading-7 text-foreground sm:text-[18px]">
           {isActive || hasNativeDisplayPart ? (
             <>
               {hasNativeProcessPart ? (
@@ -459,7 +463,11 @@ const AssistantMessage: FC = () => {
                 </NativeExecutionDisclosure>
               ) : null}
               {hasNativeTerminalAnswer || hasNativeAnswerPart ? (
-                <AssistantMarkdown text={displayAnswerText} evidence={evidenceTrace} />
+                <AssistantMarkdown
+                  text={displayAnswerText}
+                  evidence={evidenceTrace}
+                  animate={isActive}
+                />
               ) : null}
               <StructuredAnswerReferences answer={structuredAnswer} renderedText={displayAnswerText} />
               {isActive && !hasOrderedPart && hasExecutionRecord && hasActiveExecutionDetail ? (

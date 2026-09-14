@@ -28,6 +28,8 @@ const STAGE_LABELS: Record<string, string> = {
   tool: '调用工具',
   content_access: '正文取证',
   evidence: '关联证据',
+  planning: '规划流程',
+  routing: '判断任务',
   reflection: '语义复核',
   approval: '等待审批',
   publish: '发布回答',

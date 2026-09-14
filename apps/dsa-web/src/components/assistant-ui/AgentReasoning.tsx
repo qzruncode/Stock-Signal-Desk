@@ -22,6 +22,7 @@ import {
   actionId,
   argumentSummary,
   groupTimelinePhases,
+  isRecoverablePlanningRetry,
   isRecord,
   phaseHasActiveDetails,
   recordValue,
@@ -91,10 +92,13 @@ export const AgentToolCallPart: FC<ToolCallMessagePartProps> = ({
   const detailLines = useMemo(() => {
     const request = argumentSummary(args);
     const nativeResult = isRecord(result) ? result : undefined;
-    return [
-      ...(request ? [{ key: 'request', text: `请求：${request}` }] : []),
-      ...toolDetails(nativeResult, event ?? undefined),
-    ];
+    const lines = toolDetails(nativeResult, event ?? undefined);
+    // The durable tool stage normally already carries the redacted request.
+    // Only use the native stream arguments when an old/incomplete trace does
+    // not have that line; otherwise the same request is shown twice.
+    return lines.some((line) => line.key === 'request') || !request
+      ? lines
+      : [{ key: 'request', text: `请求：${request}` }, ...lines];
   }, [args, event, result]);
   const detailId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -170,11 +174,18 @@ export const AgentExecutionTimeline: FC<{
    * In that mode keep only the durable control stages (evidence/reflection/
    * approval) so those checks remain visible without duplicating tool rows. */
   stageOnly?: boolean;
+  /**
+   * Terminal records created before Planning progress became native stream
+   * text have no interleaved progress parts. Include their compact Planning
+   * projection as a compatibility fallback while still avoiding tool rows.
+   */
+  includePlanning?: boolean;
 }> = ({
   reasoningText = '',
   processText = '',
   presentation = 'disclosure',
   stageOnly = false,
+  includePlanning = false,
 }) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const messageActive = messageStatus === 'running' || messageStatus === 'requires-action';
@@ -234,9 +245,11 @@ export const AgentExecutionTimeline: FC<{
     return stageOnly
       ? output.filter((row) => row.kind === 'stage'
         && row.event
-        && !['model', 'publish'].includes(row.event.stage))
+        && !['model', 'publish', 'routing'].includes(row.event.stage)
+        && (includePlanning || row.event.stage !== 'planning'
+          || ['failed', 'blocked', 'cancelled'].includes(row.event.status)))
       : output;
-  }, [events, results, stageOnly]);
+  }, [events, results, stageOnly, includePlanning]);
   const phases = useMemo(() => groupTimelinePhases(rows), [rows]);
   // A model.started event is an internal lifecycle marker, not user-facing
   // progress. During a live run, do not turn that marker into a separate
@@ -249,6 +262,7 @@ export const AgentExecutionTimeline: FC<{
   const problemSummary = useMemo(() => {
     const problemEvent = [...events].reverse().find((event) => (
       !['tool', 'execute', 'approval'].includes(event.stage)
+      && !isRecoverablePlanningRetry(event)
       && (
       event.status === 'failed'
       || event.status === 'blocked'

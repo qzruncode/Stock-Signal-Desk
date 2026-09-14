@@ -31,6 +31,7 @@ import {
   ErrorDetails,
   EvidenceRow,
   Metric,
+  PlanningAuditCard,
   ToolObservationDetails,
 } from './RunDetailCards';
 
@@ -208,6 +209,8 @@ export function RunDetailContent({
       </Card>
 
       <BehaviorAuditCard audit={behaviorAudit} onSampleSources={onSampleSources} sourceSampling={sourceSampling} sourceSample={sourceSample} />
+
+      <PlanningAuditCard planning={projection.planning} />
 
       <ClaimEvidenceCard claims={claimEvidence} />
 

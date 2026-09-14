@@ -1,5 +1,6 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
+import type { AgentPlanningTrace } from './agent';
 
 export type AgentRunStatus =
   | 'queued'
@@ -195,6 +196,7 @@ export interface AgentRunDetail {
     run: Record<string, unknown>;
     trace: Record<string, unknown>;
     qualityProjection: {
+      planning?: AgentPlanningTrace;
       inspectionSchemaVersion?: string;
       toolResults?: Array<Record<string, unknown>>;
       evidence?: Array<Record<string, unknown>>;

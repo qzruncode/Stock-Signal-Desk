@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { AssistantMarkdown } from './AssistantMarkdownText';
 
 describe('AssistantMarkdown evidence citations', () => {
+  it('reveals live assistant text progressively before settling on the full sentence', async () => {
+    const text = '我会先核对证券身份，再继续读取最新行情。';
+
+    render(<AssistantMarkdown text={text} animate />);
+
+    expect(screen.queryByText(text)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument());
+  });
+
   it('hides the raw ID and reveals the evidence summary on hover', async () => {
     render(
       <AssistantMarkdown

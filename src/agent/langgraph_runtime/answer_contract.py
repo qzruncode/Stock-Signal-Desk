@@ -1187,6 +1187,32 @@ def render_structured_answer(
 
 
 _PARTIAL_DIAGNOSTIC_PREFIX = "[本轮结果存在未完成的核验："
+_INTERNAL_TERMINAL_DETAIL_MARKERS = (
+    "PlanningPlan",
+    "PlanningRoute",
+    "PlanningStepReport",
+    "PlanningContractError",
+    "planning_",
+    "ValidationError",
+    "Input should",
+    "failed after",
+    "function_calling",
+)
+
+
+def _user_safe_terminal_detail(detail: Any, error_code: str | None) -> str:
+    """Keep provider/contract diagnostics out of the conversational answer."""
+    raw = str(detail or "").strip()
+    if not raw or not any(marker in raw for marker in _INTERNAL_TERMINAL_DETAIL_MARKERS):
+        return raw
+    return {
+        "planning_incomplete": "计划尚未完整结束，以下回答仅保留已核验结果，并明确说明未完成的步骤",
+        "planning_generation_failed": "研究计划未能完整生成，本轮没有绕过计划直接执行工具",
+        "planning_contract_validation_failed": "计划步骤的结果校验未通过，以下回答仅保留已核验部分",
+    }.get(
+        str(error_code or ""),
+        "本轮执行未完整结束，以下回答仅保留已核验部分，并明确说明执行缺口",
+    )
 
 
 def finalize_terminal_answer(
@@ -1230,9 +1256,15 @@ def finalize_terminal_answer(
         "agent_runtime_failed": "运行过程中断，回答只覆盖已完成的部分",
         "structured_output_incomplete": "模型未能在有限修订次数内提交符合要求的结构化回答",
         "source_fallback_incomplete": "来源恢复后仍未取得支持回答的有效证据",
+        "planning_incomplete": "计划尚未完整结束，以下回答仅保留已核验结果，并明确说明未完成的步骤",
+        "planning_generation_failed": "研究计划未能完整生成，本轮没有绕过计划直接执行工具",
+        "planning_contract_validation_failed": "计划步骤的结果校验未通过，以下回答仅保留已核验部分",
         "cancelled": "本轮任务已停止",
     }
-    reason = str(detail or "").strip() or defaults.get(error_code or "", "本轮核验未完整结束")
+    reason = _user_safe_terminal_detail(detail, error_code) or defaults.get(
+        error_code or "",
+        "本轮核验未完整结束",
+    )
     marker = f"{_PARTIAL_DIAGNOSTIC_PREFIX}{reason}]"
     return f"{normalized}\n\n{marker}".strip()
 

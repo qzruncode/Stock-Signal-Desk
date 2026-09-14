@@ -64,6 +64,17 @@ def test_prompt_context_does_not_remove_any_registered_operation() -> None:
     )
 
 
+def test_planner_catalog_omits_worker_schema_and_source_payload() -> None:
+    entry = ToolCatalog(_registry()).planner_catalog()[0]
+
+    assert entry == {
+        "operation": "search_source",
+        "description": "从一个来源检索公开材料",
+        "effect": "read",
+    }
+    assert "fields" not in entry and "sources" not in entry
+
+
 def test_native_tool_result_envelope_is_json_even_with_date_like_provider_values() -> None:
     encoded = _native_tool_result_envelope(
         {"success": True, "result": {"retrieved_at": datetime(2026, 9, 12, 8, 30)}},

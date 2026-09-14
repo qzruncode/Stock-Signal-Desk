@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type React from 'react';
 import { Activity, CheckCircle2, Copy, Database, Link2, LoaderCircle, ShieldCheck, TriangleAlert } from 'lucide-react';
 import type { AgentBehaviorAudit, AgentSourceSampleResponse } from '../../api/runExplorer';
+import type { AgentPlanningTrace } from '../../api/agent';
+import { AssistantMarkdown } from '../assistant-ui/AssistantMarkdownText';
 import { Badge, Card } from '../common';
 import { cn } from '../../utils/cn';
 import {
@@ -22,6 +24,75 @@ import {
   text,
   uniqueStrings,
 } from './RunDetailUtils';
+
+/** Display the persisted model reports, not summaries inferred from tool counts. */
+export function PlanningAuditCard({ planning }: { planning?: AgentPlanningTrace }) {
+  if (!planning) return null;
+  const plan = record(planning.plan);
+  const steps = arrayFrom(plan.steps).map(record);
+  const reports = planning.stepReports ?? [];
+  const labels: Record<string, string> = {
+    completed: '已完成核验', running: '执行中', pending: '尚未执行', blocked: '存在缺口',
+    partial: '未完整完成', executing: '执行中', finalizing: '最终核验中', not_required: '直接执行',
+  };
+  const revisions = (planning.updates ?? []).filter((event) => (
+    text(field(event.details, ['planningPhase', 'planning_phase'])) === 'replanned' && event.status === 'completed'
+  ));
+  const stepIds = new Set(steps.map((s) => text(field(s, ['stepId', 'step_id']))));
+  const historicalReports = reports.filter((r) => !stepIds.has(text(field(r, ['stepId', 'step_id']))));
+  const goalReport = [...reports].reverse().find((r) => arrayFrom(field(r, ['goalChecks', 'goal_checks'])).length > 0);
+  const renderReport = (r: Record<string, unknown>, index: number) => (
+    <div key={index} className="space-y-1 border-t border-border/60 pt-2">
+      <p>{labels[text(r.status)] ?? text(r.status)} · 版本 {text(field(r, ['planRevision', 'plan_revision'])) || '1'}</p>
+      <AssistantMarkdown text={text(field(r, ['completedSummary', 'completed_summary']))} />
+      {arrayFrom(field(r, ['criteriaChecks', 'criteria_checks'])).map((raw, j) => {
+        const check = record(raw);
+        return <p key={j}>{check.satisfied === true ? '通过' : '未满足'}：{text(check.criterion)} — {text(check.explanation)}</p>;
+      })}
+      <p>关联证据：{stringList(field(r, ['evidenceIds', 'evidence_ids'])).join('、') || '无'}</p>
+      {text(field(r, ['nextStepHint', 'next_step_hint'])) ? <p>{text(field(r, ['nextStepHint', 'next_step_hint']))}</p> : null}
+    </div>
+  );
+  return <Card padding="none" className="rounded-xl p-3" title="计划与步骤核验" subtitle="任务判断、真实步骤报告与计划调整记录">
+    <div className="space-y-3 text-sm leading-6">
+      <p>{labels[planning.status] ?? planning.status}{planning.revision > 0 ? ` · 计划版本 ${planning.revision}` : ''}</p>
+      {planning.decision?.reason ? <p>{planning.decision.reason}</p> : null}
+      {text(plan.goal) ? <p>{text(plan.goal)}</p> : null}
+      {planning.error ? <p className="text-warning">{planning.error}</p> : null}
+      {goalReport ? <details className="rounded-lg border border-border/70 p-3">
+        <summary className="cursor-pointer font-medium">最近一次总体目标核验</summary>
+        {arrayFrom(field(goalReport, ['goalChecks', 'goal_checks'])).map((raw, index) => {
+          const check = record(raw);
+          return <div key={index} className="mt-2">
+            <p>{check.satisfied === true ? '通过' : '未满足'}：{text(check.criterion)} — {text(check.explanation)}</p>
+            <p>关联证据：{stringList(field(check, ['evidenceIds', 'evidence_ids'])).join('、') || '无'}</p>
+          </div>;
+        })}
+      </details> : null}
+      {steps.map((step, index) => {
+        const id = text(field(step, ['stepId', 'step_id']));
+        const related = reports.filter((r) => text(field(r, ['stepId', 'step_id'])) === id);
+        return <details key={id || index} className="rounded-lg border border-border/70 p-3">
+          <summary className="cursor-pointer font-medium">{index + 1}. {text(step.objective)} · {labels[text(step.status)] ?? text(step.status)}</summary>
+          <div className="mt-2 space-y-2">
+            <p>完成条件：{stringList(field(step, ['completionCriteria', 'completion_criteria'])).join('；')}</p>
+            {related.map(renderReport)}
+          </div>
+        </details>;
+      })}
+      {historicalReports.length > 0 ? <details className="rounded-lg border border-border/70 p-3">
+        <summary className="cursor-pointer font-medium">被替换步骤的历史报告</summary>
+        {historicalReports.map(renderReport)}
+      </details> : null}
+      {revisions.map((event, index) => <details key={index} className="rounded-lg border border-border/70 p-3">
+        <summary className="cursor-pointer">计划调整 · 版本 {text(event.details?.revision)}</summary>
+        <p>{text(event.details?.reason)}</p>
+        <p>保留步骤：{stringList(field(event.details, ['completedStepIds', 'completed_step_ids'])).join('、') || '无'}</p>
+        <p>调整后步骤：{arrayFrom(field(event.details, ['replacementSteps', 'replacement_steps'])).map((s) => text(record(s).objective)).filter(Boolean).join('；')}</p>
+      </details>)}
+    </div>
+  </Card>;
+}
 
 export function ToolObservationDetails({
   result,

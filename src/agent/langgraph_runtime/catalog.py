@@ -80,6 +80,17 @@ class ToolDescriptor:
             entry["sources"] = list(self.sources)
         return entry
 
+    def planner_entry(self) -> dict[str, str]:
+        """Return the bounded capability summary used by the Planning call."""
+        entry = {
+            "operation": self.name,
+            "description": self.description[:360],
+            "effect": self.effect,
+        }
+        if self.category != "data":
+            entry["category"] = self.category
+        return entry
+
 
 class ToolCatalog:
     """Static view of all model-callable operations and their source IDs."""
@@ -117,6 +128,10 @@ class ToolCatalog:
     def compact_catalog(self) -> list[dict[str, Any]]:
         """Compatibility name for the complete, non-ranked operation directory."""
         return [item.compact() for item in self._descriptors]
+
+    def planner_catalog(self) -> list[dict[str, str]]:
+        """Return operation capabilities without duplicating worker schemas."""
+        return [item.planner_entry() for item in self._descriptors]
 
     def descriptor(self, name: str) -> dict[str, Any] | None:
         item = self._by_name.get(str(name))

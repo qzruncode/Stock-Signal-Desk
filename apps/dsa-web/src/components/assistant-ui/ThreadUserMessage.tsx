@@ -100,7 +100,7 @@ export const UserMessage: FC<{ onDeleteTurn?: (messageId: string) => void }> = (
             data-chat-question-bubble="true"
             tabIndex={-1}
             className={cn(
-              'min-w-0 max-w-full scroll-mt-16 overflow-hidden rounded-xl rounded-br-md bg-primary/[0.06] px-3 py-2 text-sm leading-6 text-foreground outline-none [overflow-wrap:anywhere]',
+              'min-w-0 max-w-full scroll-mt-16 overflow-hidden rounded-xl rounded-br-md bg-primary/[0.06] px-3 py-2 text-[17px] leading-7 text-foreground outline-none [overflow-wrap:anywhere]',
               'transition-[background-color,box-shadow] duration-300 data-[chat-question-located=true]:bg-primary/[0.12] data-[chat-question-located=true]:shadow-[0_0_0_3px_hsl(var(--primary)/0.28)]',
             )}
           >
