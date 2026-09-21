@@ -3,6 +3,7 @@ import { useCallback, useId, useMemo, useState } from 'react';
 import { useMessage } from '@assistant-ui/react';
 import { ChevronRightIcon, CircleAlertIcon, Loader2Icon, UsersRoundIcon } from 'lucide-react';
 import { AssistantMarkdown } from './AssistantMarkdownText';
+import { AssistantTypingIndicator } from './AssistantTypingIndicator';
 import { cn } from '../../utils/cn';
 import { useTeamBoardState } from './TeamBoardState';
 import { teamMemberFlowFromParts, teamModelProjectionsFromParts, type TeamBoardModel, type TeamFailureModel, type TeamMemberFlowItem, type TeamModelProjection, type TeamMemberModel } from './TeamBoardUtils';
@@ -274,35 +275,7 @@ export const TeamCollaborationView: FC = () => {
           );
         })}
         {active && !model.failure && !reviewIsRunning ? (
-          <div
-            className="flex min-h-7 items-center justify-start py-1"
-            role="status"
-            aria-label="主 Agent 回复生成中"
-            aria-live="polite"
-            data-team-coordinator-loading
-          >
-            <span
-              className="inline-flex items-center gap-1 pl-1"
-              aria-hidden="true"
-              data-team-typing-indicator
-            >
-              <span
-                className="size-1.5 animate-bounce rounded-full bg-primary/65 motion-reduce:animate-none"
-                data-team-typing-dot
-                style={{ animationDelay: '-240ms' }}
-              />
-              <span
-                className="size-1.5 animate-bounce rounded-full bg-primary/65 motion-reduce:animate-none"
-                data-team-typing-dot
-                style={{ animationDelay: '-120ms' }}
-              />
-              <span
-                className="size-1.5 animate-bounce rounded-full bg-primary/65 motion-reduce:animate-none"
-                data-team-typing-dot
-              />
-            </span>
-            <span className="sr-only">主 Agent 正在生成模型回复</span>
-          </div>
+          <AssistantTypingIndicator />
         ) : null}
       </div>
     </div>

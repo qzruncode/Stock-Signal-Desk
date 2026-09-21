@@ -945,7 +945,7 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
         planning_context = planning_prompt(state)
         structured_output_required = bool(state.get("structured_output_required"))
         answer_instructions = (
-            """准备结束本轮时，必须调用结构化输出工具 StructuredAgentAnswer，不要直接输出最终 Markdown。先设置 profile：解释、翻译、编程指导等不需要股票研究判断的问题使用 general；涉及股票、实时/当前数据或明确研究判断的问题使用 research。general profile 的普通正文使用 kind=answer；没有调用外部读取工具时可以不填 source_ids。只要使用了本轮外部证据，answer 区块以及 fact/inference/recommendation/risk 区块都要从本轮来源目录选择支持它的数字 source_id；research profile 下每个 fact/inference/recommendation/risk 区块都必须引用来源。不要抄写 ev_ 长编号，也不要把引用写进 content；服务端会将数字映射到真实证据并统一渲染引用。context/disclaimer block 可以在没有外部证据时输出。同一指标的不同口径或时间不得混用；来源冲突时应说明差异，不可拼成一个确定结论。
+            """准备结束本轮时，必须调用结构化输出工具 StructuredAgentAnswer，不要直接输出最终 Markdown。progress_text 是必填字段，先填写一句至少四个字符、简洁、自然、用户可见的执行进度：只概括已经观察到的工作或当前正在整理的阶段，不要写隐藏推理、URL、本机路径、证据编号或未经核验的结论；它只用于实时执行过程展示，不会进入最终答案 blocks。再设置 profile：解释、翻译、编程指导等不需要股票研究判断的问题使用 general；涉及股票、实时/当前数据或明确研究判断的问题使用 research。general profile 的普通正文使用 kind=answer；没有调用外部读取工具时可以不填 source_ids。只要使用了本轮外部证据，answer 区块以及 fact/inference/recommendation/risk 区块都要从本轮来源目录选择支持它的数字 source_id；research profile 下每个 fact/inference/recommendation/risk 区块都必须引用来源。不要抄写 ev_ 长编号，也不要把引用写进 content；服务端会将数字映射到真实证据并统一渲染引用。context/disclaimer block 可以在没有外部证据时输出。同一指标的不同口径或时间不得混用；来源冲突时应说明差异，不可拼成一个确定结论。
 
 每个区块还要设置 presentation_type，它只决定客户端如何展示，不改变 kind 的事实/推断/建议语义：普通正文用 markdown；表格用 table，content 写标准 Markdown 表格；代码用 code，content 只写原始代码、不要自行加围栏，并按需填写安全的 language；结构化数据用 json，content 必须是可解析的原始 JSON、不要加围栏；列表用 list，content 写 Markdown 列表；引用原文用 quote。没有特殊展示需求时使用默认的 markdown。
 
@@ -1111,6 +1111,11 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。需�
                 "output_action_count": len(output_catalog["actions"]),
             },
         )
+        # The final StructuredAgentAnswer is a validation boundary, not a
+        # user-facing progress stream.  Its progress_text field can be a
+        # short model-authored phrase or an incomplete JSON delta; Direct and
+        # Plan therefore keep the three-dot execution cue while the contract
+        # is running and only publish the accepted answer after validation.
         response = await handler(
             request.override(
                 model=context.model,
@@ -1182,7 +1187,7 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。需�
             # Tool-planning text is useful progress.  A structured-output
             # call, on the other hand, remains a candidate until the policy
             # middleware validates it.
-            context.events.commit_model_progress()
+            context.events.commit_model_progress(_message_text(last))
         command_update: dict[str, Any] = {
             "model_turn_count": 1,
             "content_access_targets": content_targets,

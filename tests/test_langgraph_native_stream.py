@@ -7,10 +7,12 @@ from typing import Any, TypedDict
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.outputs import ChatGenerationChunk
 from langgraph.graph import END, START, StateGraph
 
 from src.agent.langgraph_runtime.events import GraphEventBridge, project_stage_history_for_client
 from src.agent.langgraph_runtime.model import LiteLLMChatModel, LiteLLMGateway
+from src.agent.langgraph_runtime.model_projection import StructuredContractProjectionCallback
 from src.agent.langgraph_runtime.planning import PlanningRoute
 from src.agent.langgraph_runtime.team.events import TeamWorkerEventBridge
 
@@ -211,6 +213,80 @@ def test_structured_output_uses_exact_tool_and_non_streaming_request() -> None:
     asyncio.run(scenario())
 
 
+def test_structured_projection_callback_survives_native_tool_binding() -> None:
+    async def scenario() -> None:
+        class Events:
+            def __init__(self) -> None:
+                self.projections: list[str] = []
+
+            def publish_model_projection(self, text: str, **_: Any) -> None:
+                self.projections.append(text)
+
+        async def completion(**_: Any) -> _AsyncProviderStream:
+            return _AsyncProviderStream([
+                {
+                    "id": "projection-1",
+                    "model": "test-model",
+                    "choices": [{"delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "projection-call",
+                        "function": {
+                            "name": "StructuredAgentAnswer",
+                            "arguments": '{"progress_text":"已完成取证，',
+                        },
+                    }]}}],
+                },
+                {
+                    "choices": [{"delta": {"tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "arguments": '正在整理答案。","blocks":[]}',
+                        },
+                    }]}}],
+                },
+            ])
+
+        events = Events()
+        callback = StructuredContractProjectionCallback(
+            events,
+            projection_id="run-direct:answer:1",
+            scope="direct",
+            collaboration_id="",
+            agent_id="",
+            task_id="",
+            phase="answer",
+            kind="answer-progress",
+            target_tool_name="StructuredAgentAnswer",
+            display_part_name="agent-model-projection",
+        )
+        gateway = LiteLLMGateway(
+            llm_config={"model": "test-model"},
+            database=None,
+            run_id="run-projection",
+            worker_id="worker",
+            completion=completion,
+        )
+        model = LiteLLMChatModel(gateway=gateway, llm_config={"model": "test-model"})
+        # LangGraph binds tools after middleware returns.  Keeping the
+        # callback on the chat-model instance is the part that must survive
+        # that native binding step.
+        model = model.model_copy(update={"callbacks": [callback]})
+        await model.bind_tools(
+            [{
+                "type": "function",
+                "function": {
+                    "name": "StructuredAgentAnswer",
+                    "parameters": {"type": "object"},
+                },
+            }],
+            tool_choice="required",
+        ).ainvoke([HumanMessage(content="生成结构化回答")])
+
+        assert events.projections == ["已完成取证，", "已完成取证，正在整理答案。"]
+
+    asyncio.run(scenario())
+
+
 def test_litellm_gateway_requires_a_model_from_configuration() -> None:
     with pytest.raises(ValueError, match="configured model settings"):
         LiteLLMGateway(
@@ -248,9 +324,13 @@ def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answ
     class Controller:
         def __init__(self) -> None:
             self.texts: list[str] = []
+            self.data: list[dict[str, Any]] = []
 
         def append_text(self, value: str) -> None:
             self.texts.append(value)
+
+        def add_data(self, value: dict[str, Any]) -> None:
+            self.data.append(value)
 
     controller = Controller()
     events = GraphEventBridge(controller, run_id="run-events")
@@ -264,13 +344,23 @@ def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answ
             ],
         )
     )
+    # Domain-tool detection is only the semantic boundary.  The raw chunks
+    # remain buffered until the completed AIMessage is available, so a
+    # provisional provider fragment can never become visible prose.
+    assert controller.texts == []
+    assert controller.data == []
     events.model_message(
         AIMessage(
             content="先规划：先查资料。",
             tool_calls=[{"name": "search_source", "args": {}, "id": "call-1", "type": "tool_call"}],
         )
     )
-    events.commit_model_progress()
+    events.commit_model_progress("先规划：先查资料。")
+
+    assert controller.texts == []
+    assert len(controller.data) == 1
+    assert controller.data[0]["part"]["name"] == "agent-model-projection"
+    assert controller.data[0]["part"]["data"]["text"] == "先规划：先查资料。"
 
     events.begin_model_turn(2)
     events.model_message(AIMessageChunk(content="未核验候选答案"))
@@ -278,8 +368,6 @@ def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answ
     events.text("已核验的最终答案")
 
     assert controller.texts == [
-        "先规划：",
-        "先查资料。",
         "已核验的最终答案",
     ]
 
@@ -288,6 +376,156 @@ def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answ
     events.commit_model_answer("最终答案")
 
     assert controller.texts[-1:] == ["最终答案"]
+
+
+def test_graph_event_bridge_does_not_stream_structured_answer_candidate() -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        def append_text(self, value: str) -> None:
+            self.texts.append(value)
+
+    controller = Controller()
+    events = GraphEventBridge(controller, run_id="run-structured-candidate")
+    events.begin_model_turn(1)
+    events.model_message(
+        AIMessageChunk(
+            content="候选答案不应提前展示",
+            tool_call_chunks=[
+                {
+                    "name": "StructuredAgentAnswer",
+                    "args": "{\"progress_text\":\"正在整理，",
+                    "id": "answer-call",
+                    "index": 0,
+                }
+            ],
+        )
+    )
+    events.commit_model_progress()
+
+    assert controller.texts == []
+    events.commit_model_answer("验收后的最终答案")
+    assert controller.texts == ["验收后的最终答案"]
+
+
+def test_graph_event_bridge_drops_incomplete_tool_progress_projection() -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+            self.data: list[dict[str, Any]] = []
+
+        def append_text(self, value: str) -> None:
+            self.texts.append(value)
+
+        def add_data(self, value: dict[str, Any]) -> None:
+            self.data.append(value)
+
+    controller = Controller()
+    events = GraphEventBridge(controller, run_id="run-progress-boundary")
+    events.begin_model_turn(1)
+    events.model_message(AIMessageChunk(
+        content="我来查询通威股份（600438）的最新实时",
+        tool_call_chunks=[{
+            "name": "read_realtime_quote",
+            "args": "{}",
+            "id": "call-1",
+            "index": 0,
+        }],
+    ))
+    events.commit_model_progress("我来查询通威股份（600438）的最新实时")
+    assert controller.data == []
+
+    events.begin_model_turn(2)
+    events.model_message(AIMessageChunk(
+        content="通威股份（600438买入。",
+        tool_call_chunks=[{
+            "name": "read_realtime_quote",
+            "args": "{}",
+            "id": "call-2",
+            "index": 0,
+        }],
+    ))
+    events.commit_model_progress("通威股份（600438买入。")
+    assert controller.data == []
+
+    events.begin_model_turn(3)
+    events.model_message(AIMessageChunk(
+        content="我来查询通威股份（600438）的最新实时行情。",
+        tool_call_chunks=[{
+            "name": "read_realtime_quote",
+            "args": "{}",
+            "id": "call-3",
+            "index": 0,
+        }],
+    ))
+    events.commit_model_progress("我来查询通威股份（600438）的最新实时行情。")
+    assert len(controller.data) == 1
+    assert controller.data[0]["part"]["data"]["text"] == "我来查询通威股份（600438）的最新实时行情。"
+
+
+def test_structured_contract_projection_streams_only_the_explicit_direct_progress_field() -> None:
+    class Events:
+        def __init__(self) -> None:
+            self.projections: list[dict[str, Any]] = []
+
+        def publish_model_projection(self, text: str, **kwargs: Any) -> None:
+            self.projections.append({"text": text, **kwargs})
+
+    async def scenario() -> None:
+        events = Events()
+        callback = StructuredContractProjectionCallback(
+            events,
+            projection_id="run-direct:answer:1",
+            scope="direct",
+            collaboration_id="",
+            agent_id="",
+            task_id="",
+            phase="answer",
+            kind="answer-progress",
+            target_tool_name="StructuredAgentAnswer",
+            display_part_name="agent-model-projection",
+        )
+        await callback.on_llm_new_token(
+            "",
+            chunk=ChatGenerationChunk(message=AIMessageChunk(
+                content="",
+                tool_call_chunks=[{
+                    "name": "StructuredAgentAnswer",
+                    "args": '{"progress_text":"我已经完成取证，',
+                    "index": 0,
+                }],
+            )),
+        )
+        await callback.on_llm_new_token(
+            "",
+            chunk=ChatGenerationChunk(message=AIMessageChunk(
+                content="",
+                tool_call_chunks=[{
+                    "args": '正在整理答案。","profile":"research"}',
+                    "index": 0,
+                }],
+            )),
+        )
+        await callback.on_llm_new_token(
+            "",
+            chunk=ChatGenerationChunk(message=AIMessageChunk(
+                content="",
+                tool_call_chunks=[{
+                    "name": "search_source",
+                    "args": '{"progress_text":"不应展示"}',
+                    "index": 1,
+                }],
+            )),
+        )
+
+        assert [item["text"] for item in events.projections] == [
+            "我已经完成取证，",
+            "我已经完成取证，正在整理答案。",
+        ]
+        assert all(item["display_part_name"] == "agent-model-projection" for item in events.projections)
+
+    asyncio.run(scenario())
 
 
 def test_graph_event_bridge_keeps_structured_answer_blocks_markdown_separated() -> None:

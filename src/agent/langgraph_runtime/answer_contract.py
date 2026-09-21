@@ -188,6 +188,22 @@ class StructuredAgentAnswer(TypedDict):
 
     __pydantic_config__ = ConfigDict(extra="forbid")
 
+    progress_text: Annotated[
+        str,
+        Field(
+            default="",
+            min_length=4,
+            max_length=1_800,
+            description=(
+                "Optional short user-facing progress sentence streamed while this typed answer is being built. "
+                "New model responses should always provide it; the empty default preserves compatibility with "
+                "historical typed answers that predate this display field. "
+                "Describe only already observed work or the current handoff; never include hidden reasoning, "
+                "URLs, local paths, evidence ids, or unverified conclusions. This field is execution display "
+                "metadata and is not part of the final answer blocks."
+            ),
+        ),
+    ]
     profile: Annotated[
         AnswerProfile,
         Field(
@@ -295,6 +311,11 @@ def _display_title(value: Any, fallback: str) -> str:
     # needs a human label, never the directory portion of an artifact path.
     title = title.replace("\\", "/").rsplit("/", 1)[-1]
     return title or fallback
+
+
+def _is_title_only_content(title: str, content: str) -> bool:
+    """Avoid rendering a title twice when a model echoes it in block content."""
+    return bool(title and content.strip().lstrip("# ").strip() == title)
 
 
 def _chart_title_for_block(block: Mapping[str, Any], current: Any) -> str:
@@ -1242,6 +1263,8 @@ def render_structured_answer(
             previous_section = section
 
         content = str(block.get("content") or "").strip()
+        if not previous_section and _is_title_only_content(title, content):
+            content = ""
         output_references = _render_output_references(
             block,
             include_charts=include_chart_fallback,
@@ -1309,6 +1332,8 @@ def structured_answer_display_parts(
             seen_section_numbers,
         )
         content = str(block.get("content") or "").strip()
+        if not emitted_text and not section and _is_title_only_content(title, content):
+            content = ""
         # Native tool-call parts already occupy their original positions in
         # the ordered stream.  Do not duplicate them as an action list inside
         # the terminal answer; the Markdown renderer keeps that fallback for
@@ -1325,7 +1350,7 @@ def structured_answer_display_parts(
             and not isinstance(raw_charts, (str, bytes, bytearray))
             else []
         )
-        if not content and not output_references and not charts:
+        if not content and not output_references and not charts and not (title and not emitted_text):
             continue
 
         lines: list[str] = []

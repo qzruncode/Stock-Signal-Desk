@@ -60,7 +60,7 @@ class TeamWorkerEventBridge(GraphEventBridge):
         self.scope = str(scope or "expert").strip().lower()
         self.attempt = max(1, int(attempt or 1))
 
-    def commit_model_progress(self) -> None:
+    def commit_model_progress(self, text: str | None = None) -> None:
         """Forward one completed worker model turn to the parent lane.
 
         Child model chunks are intentionally buffered until the existing
@@ -71,7 +71,7 @@ class TeamWorkerEventBridge(GraphEventBridge):
         """
         if self._model_progress_committed:
             return
-        text = "".join(self._model_text_buffer).strip()
+        text = str(text if text is not None else "".join(self._model_text_buffer)).strip()
         # The reviewer/synthesizer has a different publication contract from
         # a research worker: its model turn is the candidate final answer.
         # Forwarding that candidate as an expert projection makes the user

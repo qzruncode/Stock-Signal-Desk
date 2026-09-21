@@ -273,6 +273,32 @@ def test_broadcaster_replays_one_model_projection_for_same_part_id() -> None:
     assert parts[0]["data"]["text"] == "我已经拆分独立证据方向，现在开始并行核验。"
 
 
+def test_broadcaster_replays_one_direct_model_projection_for_same_part_id() -> None:
+    broadcaster = RunBroadcaster(run_id="run-direct-model-projection")
+    for sequence, text in enumerate(("我已经完成取证，", "我已经完成取证，正在整理答案。"), start=1):
+        broadcaster.add_data({
+            "event": "agent_display_part",
+            "part": {
+                "type": "data",
+                "name": "agent-model-projection",
+                "part_id": "run-direct:answer:1",
+                "data": {
+                    "projection_source": "model",
+                    "projection_id": "run-direct:answer:1",
+                    "scope": "direct",
+                    "text": text,
+                    "sequence": sequence,
+                },
+            },
+        })
+
+    parts = broadcaster.display_parts_snapshot()
+
+    assert len(parts) == 1
+    assert parts[0]["name"] == "agent-model-projection"
+    assert parts[0]["data"]["text"] == "我已经完成取证，正在整理答案。"
+
+
 def test_terminal_snapshot_anchors_late_chart_to_its_tool_result() -> None:
     broadcaster = RunBroadcaster(run_id="run-chart-anchor")
     broadcaster.append_text("先确认行情数据。")

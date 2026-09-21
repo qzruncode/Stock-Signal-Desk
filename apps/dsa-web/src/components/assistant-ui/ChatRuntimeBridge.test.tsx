@@ -194,6 +194,42 @@ describe('ChatRuntimeBridge', () => {
     expect(content[5]?.text).toBe('最终回答');
   });
 
+  it('rehydrates the Direct model projection before the committed answer', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '最终回答';
+    detail.executionTrace = {
+      displayParts: [
+        {
+          type: 'data',
+          name: 'agent-model-projection',
+          partId: 'run-direct:answer:1',
+          data: {
+            projection_source: 'model',
+            scope: 'direct',
+            text: '我已经完成取证，正在整理答案。',
+          },
+        },
+        { type: 'text', text: '最终回答', displayKind: 'answer' },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'run-direct',
+      '最终回答',
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content.map((part) => part.type)).toEqual(['data', 'text']);
+    expect(content[0]?.name).toBe('agent-model-projection');
+    expect((content[0]?.data as Record<string, unknown>).text).toBe('我已经完成取证，正在整理答案。');
+    expect(content[1]?.text).toBe('最终回答');
+  });
+
   it('uses the complete committed Team answer rather than a truncated trace prefix', () => {
     const detail = makeDetail(false);
     const answer = '# 买入评估\n\n## 结论\n有条件的判断。\n\n## 行情\n行情证据。\n\n## 基本面\n财务证据。\n\n## 新闻\n新闻证据。';

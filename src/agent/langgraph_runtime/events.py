@@ -10,7 +10,11 @@ from typing import Any, Mapping, Sequence
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
-from .answer_contract import render_structured_answer, structured_answer_display_parts
+from .answer_contract import (
+    STRUCTURED_OUTPUT_TOOL_NAME,
+    render_structured_answer,
+    structured_answer_display_parts,
+)
 
 
 _CLIENT_STAGE_HISTORY_MAX_EVENTS = 120
@@ -18,6 +22,16 @@ _CLIENT_STAGE_HISTORY_MAX_BYTES = 160_000
 _CLIENT_STAGE_DETAIL_MAX_BYTES = 24_000
 _PROGRESS_NEAR_DUPLICATE_MIN_LENGTH = 24
 _PROGRESS_NEAR_DUPLICATE_THRESHOLD = 0.84
+_MODEL_PROGRESS_ENDINGS = ("。", "！", "？", ".", "!", "?")
+_MODEL_PROGRESS_DELIMITERS = {
+    "(": ")",
+    "（": "）",
+    "[": "]",
+    "［": "］",
+    "【": "】",
+    "{": "}",
+    "｛": "｝",
+}
 
 
 def _client_stage_value(value: Any, *, depth: int = 0) -> Any:
@@ -45,6 +59,22 @@ def _client_stage_value(value: Any, *, depth: int = 0) -> Any:
             for item in list(value)[:24]
         ]
     return str(value)[:600]
+
+
+def _is_complete_model_progress(text: str) -> bool:
+    """Reject visibly incomplete model narration before it becomes UI copy."""
+    normalized = str(text or "").strip()
+    if not normalized or not normalized.endswith(_MODEL_PROGRESS_ENDINGS):
+        return False
+    closing = set(_MODEL_PROGRESS_DELIMITERS.values())
+    stack: list[str] = []
+    for char in normalized:
+        if char in _MODEL_PROGRESS_DELIMITERS:
+            stack.append(_MODEL_PROGRESS_DELIMITERS[char])
+        elif char in closing:
+            if not stack or stack.pop() != char:
+                return False
+    return not stack
 
 
 def _client_stage_details(details: Mapping[str, Any]) -> dict[str, Any]:
@@ -176,15 +206,15 @@ class GraphEventBridge:
         # branches into one synthetic phase.
         self._collaboration_sequence = 0
         self._round_id: str | None = None
-        # Model text is provisional until the application validates the model
-        # turn.  Publishing it immediately makes an invalid answer impossible
-        # to retract from an append-only assistant stream and was the source
-        # of repeated full answers during repair loops.  Tool-progress text is
-        # flushed explicitly after the completed model turn; final text is
-        # flushed only by ``commit_model_answer``.
+        # All model-authored prose is provisional until the application has a
+        # complete model turn.  Tool-planning narration is useful progress,
+        # but it must use the typed projection path below rather than the
+        # append-only answer text channel.
         self._model_text_buffer: list[str] = []
         self._model_text_published = ""
         self._model_chunks_seen = False
+        self._model_tool_names: set[str] = set()
+        self._model_domain_tool_seen = False
         self._model_progress_committed = False
         self._last_committed_answer: str | None = None
         self._displayed_structured_answer_key: str | None = None
@@ -236,20 +266,57 @@ class GraphEventBridge:
         self._model_text_buffer = []
         self._model_text_published = ""
         self._model_chunks_seen = False
+        self._model_tool_names.clear()
+        self._model_domain_tool_seen = False
         self._model_progress_committed = False
         self._last_committed_answer = None
         self._displayed_structured_answer_key = None
 
+    @staticmethod
+    def _tool_call_name(value: Any) -> str:
+        if isinstance(value, Mapping):
+            return str(value.get("name") or "").strip()
+        return str(getattr(value, "name", "") or "").strip()
+
+    def _observe_tool_calls(self, message: Any) -> bool:
+        """Return whether this model turn contains a non-answer tool call."""
+        raw_chunks = getattr(message, "tool_call_chunks", None) or []
+        raw_calls = getattr(message, "tool_calls", None) or []
+        for raw_call in (*raw_chunks, *raw_calls):
+            name = self._tool_call_name(raw_call)
+            if name:
+                self._model_tool_names.add(name)
+        self._model_domain_tool_seen = any(
+            name != STRUCTURED_OUTPUT_TOOL_NAME
+            for name in self._model_tool_names
+        )
+        return self._model_domain_tool_seen
+
     def model_message(self, message: AIMessage | AIMessageChunk) -> None:
-        """Buffer native LangChain text until the turn's owner validates it."""
+        """Buffer one model turn until its complete message is available.
+
+        Provider message chunks are append-only transport fragments, not a
+        user-facing progress contract.  In particular, a tool-call stream can
+        interleave text and tool deltas, and a provider adapter may expose the
+        same logical prefix across different chunk boundaries.  Publishing
+        those fragments directly through ``append_text`` makes the browser
+        render a provisional sentence as if it were durable prose.
+
+        Keep the fragments for the audit/compatibility path, but publish the
+        canonical text only from the completed ``AIMessage`` in the middleware
+        turn boundary.  The accepted text is emitted as a typed projection,
+        which is the same stable-part contract used by Team workers.
+        """
         if isinstance(message, AIMessageChunk):
             self._model_chunks_seen = True
+            self._observe_tool_calls(message)
             text = self._message_text(message)
             if text:
                 self._model_text_buffer.append(text)
             return
         if not isinstance(message, AIMessage):
             return
+        self._observe_tool_calls(message)
         # The final AIMessage follows callback chunks in LangGraph's standard
         # ``messages`` stream.  Only use its content when no chunks were
         # delivered (for example a deterministic test/adapter model).
@@ -258,20 +325,37 @@ class GraphEventBridge:
             if text:
                 self._model_text_buffer.append(text)
 
-    def commit_model_progress(self) -> None:
-        """Publish buffered text belonging to a model tool-planning turn."""
+    def commit_model_progress(self, text: str | None = None) -> None:
+        """Publish one complete model tool-planning turn as a typed part.
+
+        ``text`` should be the final merged ``AIMessage.content`` when the
+        caller has it.  Falling back to the locally buffered chunks keeps
+        deterministic adapters and Team child tests compatible, while the
+        production Direct/Plan path uses the canonical message explicitly.
+        """
         if self._model_progress_committed:
             return
-        for text in self._model_text_buffer:
-            # Model planning output is provisional progress, not the accepted
-            # answer.  Send it through the same projection gate as stage
-            # progress so a repair turn that restates the same observation is
-            # not appended as another full paragraph.  Keep individual
-            # provider chunks separate for smooth live rendering.
-            published = self._publish_progress_projection(text)
-            if published:
-                self._model_text_published += published
+        if not self._model_domain_tool_seen:
+            # A structured-answer call is also a native tool call, but its
+            # content is a candidate final answer and must stay behind the
+            # validation gate.
+            self._model_text_buffer = []
+            self._model_progress_committed = True
+            return
+        normalized = str(text if text is not None else "".join(self._model_text_buffer)).strip()
         self._model_text_buffer = []
+        if normalized and _is_complete_model_progress(normalized):
+            self.publish_model_projection(
+                normalized,
+                display_part_name="agent-model-projection",
+                scope="direct",
+                phase="model",
+                kind="tool-progress",
+                projection_id=(
+                    f"{self.run_id}:model:{self._round_id or 'turn'}:projection"
+                )[:192],
+            )
+            self._model_text_published = normalized
         self._model_progress_committed = True
 
     def commit_model_answer(
@@ -496,6 +580,7 @@ class GraphEventBridge:
         self,
         text: str,
         *,
+        display_part_name: str = "team-model-projection",
         scope: str = "coordinator",
         collaboration_id: str = "",
         agent_id: str = "",
@@ -517,6 +602,9 @@ class GraphEventBridge:
         normalized = str(text or "").strip()
         if not normalized:
             return
+        safe_display_part_name = str(display_part_name or "team-model-projection").strip()[:96]
+        if not safe_display_part_name:
+            safe_display_part_name = "team-model-projection"
         safe_scope = str(scope or "coordinator").strip()[:32]
         safe_collaboration_id = str(collaboration_id or "").strip()[:96]
         safe_agent_id = str(agent_id or "").strip()[:96]
@@ -536,7 +624,11 @@ class GraphEventBridge:
         self._model_projection_sequence += 1
         projection_sequence = self._model_projection_sequence
         projection = {
-            "schema_version": "team.v1",
+            "schema_version": (
+                "team.v1"
+                if safe_display_part_name == "team-model-projection"
+                else "agent.v1"
+            ),
             "run_id": self.run_id,
             "text": normalized[:1_800],
             "projection_source": "model",
@@ -557,6 +649,7 @@ class GraphEventBridge:
         identity = ":".join(
             value for value in (
                 self.run_id,
+                safe_display_part_name,
                 safe_collaboration_id,
                 safe_scope,
                 safe_agent_id,
@@ -583,7 +676,7 @@ class GraphEventBridge:
                     return
             self._model_projection_texts[part_id] = normalized
         self._emit_display_part(
-            name="team-model-projection",
+            name=safe_display_part_name,
             data=projection,
             part_id=part_id,
         )

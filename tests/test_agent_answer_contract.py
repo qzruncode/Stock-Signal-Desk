@@ -129,6 +129,25 @@ def test_renderer_uses_only_typed_block_evidence_ids() -> None:
     assert "ev_invented" not in rendered
 
 
+def test_renderer_does_not_repeat_title_echoed_by_first_block() -> None:
+    answer = {
+        "title": "事件驱动架构的解耦机制",
+        "blocks": [{
+            "content": "事件驱动架构的解耦机制",
+        }],
+    }
+
+    rendered = render_structured_answer(answer)
+    display_text = "\n".join(
+        str(part.get("text") or "")
+        for part in structured_answer_display_parts(answer)
+        if part.get("type") == "text"
+    )
+
+    assert rendered == "# 事件驱动架构的解耦机制"
+    assert display_text == "# 事件驱动架构的解耦机制"
+
+
 def test_renderer_keeps_semantics_separate_from_code_json_and_quote_presentation() -> None:
     answer = {
         "profile": "general",

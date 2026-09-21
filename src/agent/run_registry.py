@@ -76,6 +76,10 @@ _REASONING_STREAM_TRUNCATION_NOTICE = "\n（其余内部过程已截断；执行
 _DISPLAY_PARTS_MAX_ITEMS = 240
 _DISPLAY_PARTS_MAX_BYTES = 120_000
 _DISPLAY_PART_ARGS_MAX_CHARACTERS = 8_000
+_MODEL_PROJECTION_PART_NAMES = frozenset({
+    "team-model-projection",
+    "agent-model-projection",
+})
 
 
 def _serialized_bytes(value: Any) -> int:
@@ -640,7 +644,7 @@ class RunBroadcaster:
                     part_id = str(part.get("part_id") or "").strip()
                     if part_id:
                         item["part_id"] = part_id[:192]
-                    if name == "team-model-projection" and part_id:
+                    if name in _MODEL_PROJECTION_PART_NAMES and part_id:
                         existing_index = projection_indices.get(part_id)
                         if existing_index is not None:
                             existing = parts[existing_index]

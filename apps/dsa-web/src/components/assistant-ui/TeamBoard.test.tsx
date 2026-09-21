@@ -485,7 +485,7 @@ describe('TeamBoard', () => {
     expect(document.querySelectorAll('[data-team-child-member]')).toHaveLength(3);
     expect(document.querySelectorAll('[data-team-expert-lane]')).toHaveLength(0);
     expect(screen.queryByText('行情方向开始核验')).not.toBeInTheDocument();
-    expect(document.querySelector('[data-team-typing-indicator]')).toBeInTheDocument();
+    expect(document.querySelector('[data-assistant-typing-indicator]')).toBeInTheDocument();
     expect(screen.queryByText('我现在开始核验行情方向的信息。')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '展开行情分析工作区' })).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('button', { name: '展开基本面分析工作区' })).toHaveAttribute('aria-expanded', 'false');
@@ -519,11 +519,11 @@ describe('TeamBoard', () => {
     const loading = screen.getByRole('status', { name: '主 Agent 回复生成中' });
     expect(loading).toHaveClass('justify-start');
     expect(loading.querySelector('.animate-spin')).not.toBeInTheDocument();
-    const typingIndicator = loading.querySelector('[data-team-typing-indicator]');
+    const typingIndicator = loading.querySelector('[data-assistant-typing-dots]');
     expect(typingIndicator).toHaveClass('inline-flex');
     expect(typingIndicator).not.toHaveClass('rounded-full');
     expect(typingIndicator).not.toHaveClass('shadow-sm');
-    expect(typingIndicator?.querySelectorAll('[data-team-typing-dot]')).toHaveLength(3);
+    expect(typingIndicator?.querySelectorAll('[data-assistant-typing-dot]')).toHaveLength(3);
   });
 
   it('keeps the main model narrative free of timeline rails and markers', () => {
@@ -594,7 +594,7 @@ describe('TeamBoard', () => {
     }, { timeout: 2_500 });
     const loading = screen.getByRole('status', { name: '主 Agent 回复生成中' });
     expect(loading).toBeInTheDocument();
-    expect(loading.querySelectorAll('[data-team-typing-dot]')).toHaveLength(3);
+    expect(loading.querySelectorAll('[data-assistant-typing-dot]')).toHaveLength(3);
   });
 
   it('keeps the main narrative chronological while nesting each child flow at the delegation point', async () => {

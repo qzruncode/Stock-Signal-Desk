@@ -1,5 +1,13 @@
 import type { ErrorInfo, FC, ReactNode } from 'react';
-import { Component, useId, useMemo, useRef, useState } from 'react';
+import {
+  Component,
+  createContext,
+  useContext,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AuiIf,
@@ -15,7 +23,6 @@ import type { DataMessagePartProps, TextMessagePartProps } from '@assistant-ui/r
 import {
   ChevronDownIcon,
   ChevronRightIcon,
-  Loader2Icon,
   CopyIcon,
   RefreshCwIcon,
   DownloadIcon,
@@ -44,10 +51,10 @@ import { cn } from '../../utils/cn';
 import {
   agentStageDurationMs,
   agentStageEvents,
-  reconcileTerminalStageEvents,
 } from '../../utils/agentStage';
 import { formatElapsedDuration } from '../../utils/format';
 import { AgentExecutionTimeline, AgentStageIndicator, AgentToolCallPart } from './AgentReasoning';
+import { AssistantTypingIndicator } from './AssistantTypingIndicator';
 import { Composer } from './ThreadComposer';
 import { EmptyState } from './ThreadEmptyState';
 import { UserMessage } from './ThreadUserMessage';
@@ -239,9 +246,27 @@ const NativeTextPart: FC<TextMessagePartProps> = (part) => (
   <NativeTextPartContent {...part} />
 );
 
+const NativeAnswerAnimationContext = createContext(false);
+
 const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const active = messageStatus === 'running' || messageStatus === 'requires-action';
+  const animateAcceptedAnswer = useContext(NativeAnswerAnimationContext);
+  // TextDeltaChunk intentionally carries only text, so the live answer's
+  // display kind cannot be recovered from the text part itself.  The server
+  // emits a boundary immediately before the accepted answer; use the ordered
+  // part position to identify the text that follows it. Hydrated history
+  // drops that marker, so completed messages do not replay the animation.
+  const isLiveAnswerText = useMessage((state) => {
+    let afterAnswerBoundary = false;
+    return state.content.some((item) => {
+      if (item.type === 'data' && item.name === 'agent-answer-boundary') {
+        afterAnswerBoundary = true;
+        return false;
+      }
+      return afterAnswerBoundary && item.type === 'text' && item.text === part.text;
+    });
+  });
   const executionTrace = useMessage((state) => (
     state.metadata?.custom?.agent_execution_trace
       ?? state.metadata?.custom?.agentExecutionTrace
@@ -252,7 +277,10 @@ const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
         stripStructuredAnswerReferenceFallbacks(part.text, structuredAnswer),
       )
     : part.text;
-  return <AssistantMarkdownText {...part} text={text} evidence={executionTrace} animate={active} />;
+  const animate = active || isLiveAnswerText || (
+    animateAcceptedAnswer && displayKindOf(part) === 'answer'
+  );
+  return <AssistantMarkdownText {...part} text={text} evidence={executionTrace} animate={animate} />;
 };
 
 const TeamProgressParts: FC = () => {
@@ -271,10 +299,6 @@ const NativeExecutionDisclosure: FC<{
   const messageTiming = useMessageTiming();
   const persistedDuration = useMessage((state) => state.metadata?.custom?.agent_run_duration_ms);
   const stageData = useMessage((state) => state.metadata?.unstable_data);
-  const events = useMemo(
-    () => reconcileTerminalStageEvents(agentStageEvents(stageData)),
-    [stageData],
-  );
   const eventDurationMs = useMemo(() => agentStageDurationMs(agentStageEvents(stageData)), [stageData]);
   const streamDurationMs = typeof messageTiming?.totalStreamTime === 'number'
     && Number.isFinite(messageTiming.totalStreamTime)
@@ -349,27 +373,94 @@ const NativeStockChartPart: FC<DataMessagePartProps> = ({ data }) => {
   );
 };
 
+const modelProgressDelimiters: Record<string, string> = {
+  '(': ')',
+  '（': '）',
+  '[': ']',
+  '［': '］',
+  '【': '】',
+  '{': '}',
+  '｛': '｝',
+};
+
+/** Hide legacy/provisional model projections that are visibly incomplete. */
+const isRenderableModelProgress = (value: string): boolean => {
+  const text = value.trim();
+  if (!/[。！？!?.]$/.test(text)) return false;
+  const closing = new Set(Object.values(modelProgressDelimiters));
+  const stack: string[] = [];
+  for (const character of text) {
+    if (modelProgressDelimiters[character]) {
+      stack.push(modelProgressDelimiters[character]);
+    } else if (closing.has(character)) {
+      if (stack.pop() !== character) return false;
+    }
+  }
+  return stack.length === 0;
+};
+
+const NativeAgentModelProjectionPart: FC<DataMessagePartProps> = ({ data }) => {
+  const active = useMessage((state) => (
+    state.status?.type === 'running' || state.status?.type === 'requires-action'
+  ));
+  const projectionData = isRecord(data) ? data : null;
+  const projectionIdValue = projectionData?.projection_id ?? projectionData?.projectionId;
+  const projectionId = typeof projectionIdValue === 'string' ? projectionIdValue : '';
+  const projectionSequence = typeof projectionData?.sequence === 'number'
+    ? projectionData.sequence
+    : 0;
+  const isLatestProjection = useMessage((state) => {
+    if (!projectionId) return true;
+    return !state.content.some((part) => {
+      if (part.type !== 'data' || part.name !== 'agent-model-projection' || !isRecord(part.data)) {
+        return false;
+      }
+      const partIdValue = part.data.projection_id ?? part.data.projectionId;
+      const partId = typeof partIdValue === 'string' ? partIdValue : '';
+      const partSequence = typeof part.data.sequence === 'number' ? part.data.sequence : 0;
+      return partId === projectionId && partSequence > projectionSequence;
+    });
+  });
+  if (!projectionData || !isLatestProjection) return null;
+  const projectionSource = projectionData.projection_source ?? projectionData.projectionSource;
+  if (projectionSource !== 'model') return null;
+  const text = typeof projectionData.text === 'string' ? projectionData.text.trim() : '';
+  if (!text || !isRenderableModelProgress(text)) return null;
+  return (
+    <div data-agent-display-part="model-projection">
+      <AssistantMarkdown text={text} animate={active} />
+    </div>
+  );
+};
+
 const NativeAnswerBoundaryPart: FC<DataMessagePartProps> = () => null;
 
-const NativeAssistantParts: FC = () => {
-  return <MessagePrimitive.Parts
-    unstable_showEmptyOnNonTextEnd={false}
-    components={{
-      Text: NativeTextPart,
-      Reasoning: () => null,
-      tools: { Fallback: AgentToolCallPart },
-      data: {
-        by_name: {
-          'agent-stage': NativeAgentStagePart,
-          'stock-chart': NativeStockChartPart,
-          'agent-answer-boundary': NativeAnswerBoundaryPart,
-        },
-        Fallback: () => null,
-      },
-      ToolGroup: NativeToolGroup,
-      ReasoningGroup: InlineMessagePartGroup,
-    }}
-  />;
+const NativeAssistantParts: FC<{ animateAcceptedAnswer?: boolean }> = ({
+  animateAcceptedAnswer = false,
+}) => {
+  return (
+    <NativeAnswerAnimationContext.Provider value={animateAcceptedAnswer}>
+      <MessagePrimitive.Parts
+        unstable_showEmptyOnNonTextEnd={false}
+        components={{
+          Text: NativeTextPart,
+          Reasoning: () => null,
+          tools: { Fallback: AgentToolCallPart },
+          data: {
+            by_name: {
+              'agent-stage': NativeAgentStagePart,
+              'stock-chart': NativeStockChartPart,
+              'agent-model-projection': NativeAgentModelProjectionPart,
+              'agent-answer-boundary': NativeAnswerBoundaryPart,
+            },
+            Fallback: () => null,
+          },
+          ToolGroup: NativeToolGroup,
+          ReasoningGroup: InlineMessagePartGroup,
+        }}
+      />
+    </NativeAnswerAnimationContext.Provider>
+  );
 };
 
 const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }) => {
@@ -432,15 +523,16 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
   // only when the answer appears after mount. A hydrated historical message
   // already has answer text on its first render and therefore does not replay
   // the typewriter animation after refresh.
-  const answerPresentOnMount = useRef(Boolean(displayAnswerText.trim()));
-  const answerArrivedAfterMount = Boolean(displayAnswerText.trim()) && !answerPresentOnMount.current;
+  const [answerPresentOnMount] = useState(() => Boolean(publishedAnswerText.trim()));
+  const answerArrivedAfterMount = Boolean(publishedAnswerText.trim()) && !answerPresentOnMount;
   const animateAnswer = isActive || answerArrivedAfterMount;
   const hasOrderedPart = useMessage((s) => s.content.some((part) => {
     if (part.type === 'tool-call') return true;
     if (part.type === 'data') {
       return part.name === 'agent-stage'
         || part.name === 'stock-chart'
-        || part.name === 'team-model-projection';
+        || part.name === 'team-model-projection'
+        || part.name === 'agent-model-projection';
     }
     // The default assistant-ui reasoning renderer is intentionally hidden;
     // private reasoning alone must not suppress the pending/stage fallback.
@@ -453,6 +545,7 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
       return part.name === 'agent-stage'
         || part.name === 'stock-chart'
         || part.name === 'team-model-projection'
+        || part.name === 'agent-model-projection'
         || part.name === 'agent-answer-boundary';
     }
     if (part.type === 'text') {
@@ -467,7 +560,9 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
   const hasNativeProcessPart = useMessage((s) => s.content.some((part) => {
     if (part.type === 'tool-call') return true;
     if (part.type === 'data') {
-      return part.name === 'agent-stage' || part.name === 'team-model-projection';
+      return part.name === 'agent-stage'
+        || part.name === 'team-model-projection'
+        || part.name === 'agent-model-projection';
     }
     if (part.type === 'text') {
       return displayKindOf(part) !== 'answer' && part.text.trim().length > 0;
@@ -538,8 +633,11 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
             </>
           ) : isActive || hasNativeDisplayPart ? (
             <>
+              {isActive && !hasNativeAnswerPart ? (
+                <AssistantTypingIndicator />
+              ) : null}
               {hasNativeDisplayPart ? (
-                <NativeAssistantParts />
+                <NativeAssistantParts animateAcceptedAnswer={answerArrivedAfterMount} />
               ) : hasNativeProcessPart ? (
                 <NativeExecutionDisclosure>
                   <AgentExecutionTimeline
@@ -564,9 +662,6 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
               />
               {isActive && !hasNativeDisplayPart && !hasOrderedPart && hasExecutionRecord && hasActiveExecutionDetail ? (
                 <AgentExecutionTimeline reasoningText={reasoningText} />
-              ) : null}
-              {isActive && !hasNativeDisplayPart && !hasOrderedPart && !hasNativeProcessPart && !hasVisibleContent && !hasActiveExecutionDetail ? (
-                <AssistantPendingIndicator />
               ) : null}
             </>
           ) : (
@@ -642,17 +737,6 @@ const AssistantActionBar: FC = () => (
       <RefreshCwIcon className="size-3" />
     </ActionBarPrimitive.Reload>
   </ActionBarPrimitive.Root>
-);
-
-const AssistantPendingIndicator: FC = () => (
-  <div
-    className="flex min-h-8 items-center gap-2 text-sm text-muted-foreground"
-    role="status"
-    aria-live="polite"
-  >
-    <Loader2Icon className="size-4 shrink-0 animate-spin text-primary/80 motion-reduce:animate-none" aria-hidden="true" />
-    <span>正在思考</span>
-  </div>
 );
 
 export default Thread;

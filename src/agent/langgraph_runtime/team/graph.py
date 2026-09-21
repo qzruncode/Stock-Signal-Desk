@@ -15,7 +15,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Callable
 
-from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
@@ -31,6 +30,7 @@ from ..answer_contract import evidence_source_catalog, finalize_terminal_answer,
 from ..catalog import ToolCatalog
 from ..events import GraphEventBridge
 from ..graph import build_agent_graph
+from ..model_projection import StructuredContractProjectionCallback
 from ..state import AgentState, GraphContext
 from .contracts import (
     AgentResult,
@@ -287,144 +287,6 @@ def _contract_projection_id(context: GraphContext, action_prefix: str) -> str:
     return f"{context.events.run_id}:team-contract:{action_prefix}:projection"[:192]
 
 
-def _partial_json_string_field(payload: str, field_name: str) -> str:
-    """Read a possibly incomplete JSON string field from tool-call args.
-
-    Provider tool-call arguments arrive as JSON fragments.  Parsing the whole
-    object would delay the projection until the contract is complete, which
-    recreates the spinner-only behavior.  This deliberately extracts only the
-    explicitly named user-facing field and never exposes arbitrary JSON or
-    reasoning content.
-    """
-    marker = re.search(rf'"{re.escape(field_name)}"\s*:\s*"', payload)
-    if marker is None:
-        return ""
-    start = marker.end()
-    index = start
-    escaped = False
-    end = len(payload)
-    while index < len(payload):
-        char = payload[index]
-        if escaped:
-            escaped = False
-        elif char == "\\":
-            escaped = True
-        elif char == '"':
-            end = index
-            break
-        index += 1
-    fragment = payload[start:end]
-    if not fragment:
-        return ""
-    try:
-        # Wrapping the fragment recreates the JSON string's escape handling
-        # when the closing quote is already present.
-        return str(json.loads(f'"{fragment}"'))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        # While a provider is still streaming, an escape sequence can be
-        # split across chunks.  Keep this fallback conservative: decode only
-        # the escapes used by model-authored prose and leave other characters
-        # untouched rather than applying a broad unicode escape codec.
-        return (
-            fragment
-            .replace(r"\\n", "\n")
-            .replace(r"\\r", "\r")
-            .replace(r"\\t", "\t")
-            .replace(r'\\"', '"')
-            .replace(r"\\\\", "\\")
-        )
-
-
-class _StructuredContractProjectionCallback(AsyncCallbackHandler):
-    """Project only the contract's explicit ``progress_text`` while streaming."""
-
-    def __init__(
-        self,
-        context: GraphContext,
-        *,
-        projection_id: str,
-        scope: str,
-        collaboration_id: str,
-        agent_id: str,
-        task_id: str,
-        phase: str,
-        kind: str,
-        attempt: int = 0,
-    ) -> None:
-        self.context = context
-        self.projection_id = projection_id
-        self.scope = scope
-        self.collaboration_id = collaboration_id
-        self.agent_id = agent_id
-        self.task_id = task_id
-        self.phase = phase
-        self.kind = kind
-        self.attempt = max(0, int(attempt or 0))
-        self._args_by_index: dict[int, str] = {}
-        self._published = ""
-
-    def reset(self, attempt: int) -> None:
-        self.attempt = max(0, int(attempt or 0))
-        self._args_by_index.clear()
-
-    @staticmethod
-    def _chunk_message(chunk: Any) -> Any:
-        message = getattr(chunk, "message", None)
-        return message if message is not None else chunk
-
-    @staticmethod
-    def _chunk_value(value: Any, key: str, default: Any = None) -> Any:
-        if isinstance(value, Mapping):
-            return value.get(key, default)
-        return getattr(value, key, default)
-
-    async def on_llm_new_token(self, token: str, *, chunk: Any = None, **_: Any) -> None:
-        del token
-        message = self._chunk_message(chunk)
-        raw_chunks = getattr(message, "tool_call_chunks", None) or []
-        for position, raw_chunk in enumerate(raw_chunks):
-            index_value = self._chunk_value(raw_chunk, "index", position)
-            try:
-                index = int(index_value)
-            except (TypeError, ValueError):
-                index = position
-            args = self._chunk_value(raw_chunk, "args", "")
-            if args:
-                self._args_by_index[index] = self._args_by_index.get(index, "") + str(args)
-
-        if not self._args_by_index:
-            return
-        payload = self._args_by_index[min(self._args_by_index)]
-        progress = _partial_json_string_field(payload, "progress_text")
-        safe_progress = _safe_text(progress, 1_800).strip()
-        if not safe_progress or safe_progress == self._published:
-            return
-        # Avoid putting a one-character fragment in the conversation while a
-        # provider is opening the JSON string. The stable part identity makes
-        # later updates replace this same projection in the client.
-        if len(safe_progress) < 4 and not safe_progress.endswith(("。", ".", "！", "!", "？", "?")):
-            return
-        # A provider may emit one tool-argument fragment per token. Keep the
-        # live animation smooth without turning each character into a durable
-        # event; the accepted contract below still publishes the full text.
-        if self._published and len(safe_progress) - len(self._published) < 12 and not safe_progress.endswith(
-            ("。", ".", "！", "!", "？", "?")
-        ):
-            return
-        self.context.events.publish_model_projection(
-            safe_progress,
-            scope=self.scope,
-            collaboration_id=self.collaboration_id,
-            agent_id=self.agent_id,
-            task_id=self.task_id,
-            phase=self.phase,
-            kind=self.kind,
-            attempt=self.attempt,
-            projection_id=self.projection_id,
-        )
-        self._published = safe_progress
-
-
 def _publish_contract_projection(
     context: GraphContext,
     value: Any,
@@ -624,7 +486,7 @@ async def _invoke_contract(
     resolved_phase = projection_phase or stage
     resolved_kind = projection_kind or schema.__name__
     projection_id = _contract_projection_id(context, action_prefix)
-    projection_callback = _StructuredContractProjectionCallback(
+    projection_callback = StructuredContractProjectionCallback(
         context,
         projection_id=projection_id,
         scope=resolved_scope,
@@ -634,6 +496,7 @@ async def _invoke_contract(
         phase=resolved_phase,
         kind=resolved_kind,
         attempt=projection_attempt,
+        target_tool_name=schema.__name__,
     )
     model = model.with_config({"callbacks": [projection_callback]})
     try:
