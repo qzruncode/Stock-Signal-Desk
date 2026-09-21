@@ -28,6 +28,7 @@ export interface CompactSelectProps {
   onChange: (value: string) => void;
   ariaLabel: string;
   className?: string;
+  triggerClassName?: string;
   disabled?: boolean;
   renderOptionAction?: (option: CompactSelectOption) => CompactSelectOptionAction | undefined;
   menuBehavior?: CompactSelectMenuBehavior;
@@ -52,6 +53,7 @@ export function CompactSelect({
   onChange,
   ariaLabel,
   className,
+  triggerClassName,
   disabled = false,
   renderOptionAction,
   menuBehavior = 'overlay',
@@ -179,10 +181,11 @@ export function CompactSelect({
           className={cn(
             isRegular
               ? 'flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-colors'
-              : 'flex h-8 w-full items-center justify-between gap-1.5 rounded-md border border-input bg-background px-2 text-[11px] text-foreground shadow-sm transition-colors',
+            : 'flex h-8 w-full items-center justify-between gap-1.5 rounded-md border border-input bg-background px-2 text-[11px] text-foreground shadow-sm transition-colors',
             'group hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1',
             'data-[state=open]:border-primary/50 data-[state=open]:bg-accent/30',
             'disabled:cursor-not-allowed disabled:opacity-60',
+            triggerClassName,
           )}
         >
           <SelectPrimitive.Value placeholder="请选择" />

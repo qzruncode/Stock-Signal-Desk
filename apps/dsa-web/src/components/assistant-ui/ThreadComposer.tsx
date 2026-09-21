@@ -67,7 +67,6 @@ export const Composer: FC<{
               onChange={onAgentModeChange}
               disabled={isRunning}
             />
-            <span className="hidden text-xs text-muted-foreground sm:inline">实时数据工具会自动按需调用</span>
           </div>
 
           {isRunning ? (

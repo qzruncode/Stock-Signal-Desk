@@ -18,8 +18,7 @@ export const AgentModeSelector: FC<AgentModeSelectorProps> = ({
   onChange,
   disabled = false,
 }) => (
-  <div className="flex items-center gap-1.5" title={`${agentModeLabel(value)}：本轮固定执行路径`}>
-    <span className="hidden text-[10px] text-muted-foreground sm:inline">工作模式</span>
+  <div className="flex items-center" title={`${agentModeLabel(value)}：本轮固定执行路径`}>
     <CompactSelect
       id="agent-product-mode"
       value={value}
@@ -27,7 +26,8 @@ export const AgentModeSelector: FC<AgentModeSelectorProps> = ({
       onChange={(nextValue) => onChange(nextValue as AgentProductMode)}
       ariaLabel="选择 Agent 工作模式"
       disabled={disabled}
-      className="w-[116px] sm:w-[132px]"
+      className="w-fit"
+      triggerClassName="w-auto border-0 bg-transparent px-1 shadow-none hover:border-transparent hover:bg-muted/60 focus:ring-0 focus:ring-offset-0 data-[state=open]:border-transparent data-[state=open]:bg-muted/70"
     />
   </div>
 );
