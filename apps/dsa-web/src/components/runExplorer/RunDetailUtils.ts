@@ -38,6 +38,26 @@ export const errorStringList = (value: unknown): string[] => (
 export const errorDetailsFrom = (value: unknown) => {
   const item = record(value);
   const nestedResult = record(item.result);
+  const runtimeErrors = [
+    ...sourceAttemptList(item.runtimeErrors ?? item.runtime_errors),
+    record(item.runtimeError ?? item.runtime_error),
+    ...sourceAttemptList(nestedResult.runtimeErrors ?? nestedResult.runtime_errors),
+    record(nestedResult.runtimeError ?? nestedResult.runtime_error),
+  ].filter((entry) => Object.keys(entry).length > 0);
+  const runtimeDetails = runtimeErrors.flatMap((entry) => {
+    const code = errorString(entry.errorCode) || errorString(entry.error_code);
+    const type = errorString(entry.exceptionType) || errorString(entry.exception_type);
+    const message = errorString(entry.message) || errorString(entry.error);
+    const fallback = errorString(entry.fallbackStatus) || errorString(entry.fallback_status);
+    const retryable = entry.retryable === true ? '可重试' : '';
+    return [
+      code ? `运行时错误码：${code}` : '',
+      type ? `异常类型：${type}` : '',
+      message ? `运行时原因：${message}` : '',
+      fallback ? `网页兜底：${fallback}` : '',
+      retryable,
+    ].filter(Boolean);
+  });
   return uniqueStrings([
     ...errorStringList(item.errors),
     ...errorStringList(item.errorMessages),
@@ -51,15 +71,22 @@ export const errorDetailsFrom = (value: unknown) => {
     errorString(nestedResult.error_detail),
     errorString(nestedResult.error),
     errorString(nestedResult.message),
+    ...runtimeDetails,
   ].filter(Boolean));
 };
 export const errorCodeFrom = (value: unknown) => {
   const item = record(value);
   const nestedResult = record(item.result);
+  const runtimeError = [
+    record(item.runtimeError ?? item.runtime_error),
+    ...sourceAttemptList(item.runtimeErrors ?? item.runtime_errors),
+  ].find((entry) => Object.keys(entry).length > 0) ?? {};
   return errorString(item.errorCode)
     || errorString(item.error_code)
     || errorString(nestedResult.errorCode)
-    || errorString(nestedResult.error_code);
+    || errorString(nestedResult.error_code)
+    || errorString(runtimeError.errorCode)
+    || errorString(runtimeError.error_code);
 };
 export const isHttpUrl = (value: string) => /^https?:\/\//i.test(value);
 export const REFERENCE_ONLY_TOOLS = new Set(['read_company_research_reports_akshare', 'read_company_news_akshare']);
@@ -259,17 +286,21 @@ export function buildQualityIssues(
   const hasActionableExecutionFinding = behaviorAudit?.findings.some((finding) => (
     finding.category === 'execution' && finding.disposition !== 'advisory'
   ));
-  const hasFailedTools = failedToolResults.length > 0 || failedSteps.length > 0;
+  const hasFailedTools = (failedToolResults.length > 0 || failedSteps.length > 0) && (
+    !behaviorAudit || behaviorAudit.findings.some((finding) => (
+      finding.code === 'tool_execution_failed' && finding.disposition !== 'advisory'
+    ))
+  );
   if (
     (behaviorAudit
       ? hasActionableExecutionFinding
       : failedToolResults.length > 0 || failedSteps.length > 0)
     || (execution && execution.score < 1)
   ) {
-    const failedTools = uniqueStrings([
+    const failedTools = hasFailedTools ? uniqueStrings([
       ...failedToolResults.map((item) => text(item.toolName)),
       ...failedSteps.map((item) => text(item.toolName) || text(item.tool_name)),
-    ].filter(Boolean));
+    ].filter(Boolean)) : [];
     const status = text(field(dimensionDetails(score, 'execution'), ['status']));
     issues.push({
       key: 'execution',

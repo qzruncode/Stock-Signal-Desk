@@ -14,7 +14,94 @@ from assistant_stream.assistant_stream_chunk import (
 )
 
 from src.agent.run_registry import ActiveRun, RunBroadcaster
-from src.agent.run_streaming import subscriber_stream, timeline_presentation_stream
+from src.agent import run_registry as run_registry_module
+from src.agent.run_streaming import (
+    OrderedDataStreamEncoder,
+    subscriber_stream,
+    timeline_presentation_stream,
+)
+
+
+def test_review_report_stays_typed_and_complete_in_live_and_terminal_replay(monkeypatch) -> None:
+    from src.agent.langgraph_runtime.events import GraphEventBridge
+
+    monkeypatch.setattr(run_registry_module, "_DISPLAY_PARTS_MAX_BYTES", 200)
+    monkeypatch.setattr(run_registry_module, "_DISPLAY_PARTS_MAX_ITEMS", 1)
+    broadcaster = RunBroadcaster()
+    bridge = GraphEventBridge(broadcaster, run_id="review-replay")
+    content = "已交接观察。" * 600 + "核验记录末尾"
+    bridge.publish_team_review_report(
+        {"title": "研究交接与核验记录", "blocks": [{"section": "行情核验", "content": content}]},
+        collaboration_id="review-replay",
+    )
+    bridge.commit_model_answer("针对用户问题的最终回答", structured_answer={
+        "profile": "general", "blocks": [{"kind": "answer", "content": "针对用户问题的最终回答"}],
+    })
+
+    parts = broadcaster.display_parts_snapshot()
+    report = next(part for part in parts if part.get("name") == "team-review-report")
+    assert report["data"]["scope"] == "review"
+    assert report["data"]["blocks"][0]["content"] == content
+    answer = "".join(part.get("text", "") for part in parts if part.get("display_kind") == "answer")
+    assert answer == "针对用户问题的最终回答"
+    assert "已交接观察" not in answer
+
+
+def test_terminal_answer_survives_trace_byte_and_item_budgets(monkeypatch) -> None:
+    monkeypatch.setattr(run_registry_module, "_DISPLAY_PARTS_MAX_BYTES", 800)
+    monkeypatch.setattr(run_registry_module, "_DISPLAY_PARTS_MAX_ITEMS", 3)
+    broadcaster = RunBroadcaster()
+    for index in range(5):
+        broadcaster.add_data({
+            "event": "agent_display_part",
+            "part": {"name": "team-model-projection", "data": {"text": "过程" * 300, "index": index}},
+        })
+    broadcaster.add_data({"event": "agent_display_part", "part": {"name": "agent-answer-boundary"}})
+    broadcaster.append_text("## 结论\n保留有效结论。\n")
+    broadcaster.add_data({
+        "event": "agent_display_part",
+        "part": {"name": "stock-chart", "data": {"chart_id": "large", "data": ["数据" * 300]}},
+    })
+    broadcaster.append_text("## 基本面\n" + "已核验的内容。" * 2000 + "\n## 新闻\n最后一段也必须保留。")
+
+    parts = broadcaster.display_parts_snapshot()
+    answer = "".join(item["text"] for item in parts if item.get("display_kind") == "answer")
+    assert answer.startswith("## 结论\n保留有效结论。")
+    assert answer.endswith("## 新闻\n最后一段也必须保留。")
+    assert answer.count("已核验的内容。") == 2000
+    assert len([item for item in parts if item.get("display_kind") == "answer"]) == 2
+
+
+def test_terminal_snapshot_preserves_visible_narrative_before_budgeting_details(monkeypatch) -> None:
+    monkeypatch.setattr(run_registry_module, "_DISPLAY_PARTS_MAX_BYTES", 800)
+    monkeypatch.setattr(run_registry_module, "_DISPLAY_PARTS_MAX_ITEMS", 2)
+    broadcaster = RunBroadcaster()
+    tool = asyncio.run(broadcaster.add_tool_call("read_source", "call-large"))
+    tool.set_response({"success": True, "rows": ["结果" * 400] * 24})
+    narrative = "已经收到三个专家的完整报告。" * 120
+    broadcaster.add_data({
+        "event": "agent_display_part",
+        "part": {
+            "name": "team-model-projection",
+            "part_id": "team:draft",
+            "data": {
+                "projection_source": "model", "scope": "coordinator",
+                "phase": "aggregation", "kind": "draft", "text": narrative,
+            },
+        },
+    })
+    broadcaster.add_data({"event": "agent_display_part", "part": {"name": "agent-answer-boundary"}})
+    broadcaster.append_text("最终回答")
+
+    parts = broadcaster.display_parts_snapshot()
+
+    assert [item.get("name") or item.get("display_kind") or item["type"] for item in parts] == ["tool-call", "team-model-projection", "answer"]
+    assert parts[0]["tool_call_id"] == "call-large"
+    assert parts[0]["result"]["success"] is True
+    assert parts[0]["result"]["_stream_presentation"]["truncated"] is True
+    assert parts[1]["part_id"] == "team:draft"
+    assert parts[1]["data"]["text"] == narrative
+    assert parts[2]["text"] == "最终回答"
 
 
 def test_timeline_projection_preserves_native_parts_and_their_order() -> None:
@@ -92,3 +179,150 @@ def test_broadcaster_projects_terminal_parts_from_the_ordered_stream() -> None:
     assert parts[2]["round_id"] == "2"
     assert parts[3]["text"] == "最终结论"
     assert parts[3]["display_kind"] == "answer"
+
+
+def test_broadcaster_keeps_typed_stage_and_chart_parts_in_stream_order() -> None:
+    broadcaster = RunBroadcaster(run_id="run-ordered-display")
+    broadcaster.append_text("先确认行情数据。")
+    broadcaster.add_data({
+        "event": "agent_display_part",
+        "part": {
+            "type": "data",
+            "name": "agent-stage",
+            "part_id": "team:market:worker:1",
+            "data": {
+                "event": "agent_stage",
+                "run_id": "run-ordered-display",
+                "stage": "planning",
+                "status": "completed",
+                "summary": "行情方向已完成交接",
+            },
+        },
+    })
+    broadcaster.append_text("行情证据已经整理完成。")
+    tool = asyncio.run(broadcaster.add_tool_call("read_source", "call-ordered"))
+    tool.set_response({"success": True})
+    broadcaster.append_text("下面展示对应的资金变化。")
+    broadcaster.add_data({
+        "event": "agent_display_part",
+        "part": {
+            "type": "data",
+            "name": "stock-chart",
+            "part_id": "chart-ordered",
+            "data": {
+                "chart_id": "chart-ordered",
+                "chart_type": "line",
+                "title": "资金变化",
+                "series": [{"key": "close", "label": "收盘价"}],
+                "data": [{"x": "2026-09-16", "close": 12.3}],
+            },
+        },
+    })
+    broadcaster.append_text("图表之后继续说明结论。")
+
+    parts = broadcaster.display_parts_snapshot()
+
+    assert [part["type"] for part in parts] == [
+        "text",
+        "data",
+        "text",
+        "tool-call",
+        "text",
+        "data",
+        "text",
+    ]
+    assert parts[1]["name"] == "agent-stage"
+    assert parts[3]["tool_call_id"] == "call-ordered"
+    assert parts[5]["name"] == "stock-chart"
+    assert parts[6]["text"] == "图表之后继续说明结论。"
+
+
+def test_broadcaster_replays_one_model_projection_for_same_part_id() -> None:
+    broadcaster = RunBroadcaster(run_id="run-single-model-projection")
+    broadcaster.add_data({
+        "event": "agent_display_part",
+        "part": {
+            "type": "data",
+            "name": "team-model-projection",
+            "part_id": "team-1:plan",
+            "data": {
+                "projection_source": "model",
+                "text": "我已经拆分独立证据方向，现在开始并行核验。",
+                "projection_id": "team-1:plan",
+            },
+        },
+    })
+    broadcaster.add_data({
+        "event": "agent_display_part",
+        "part": {
+            "type": "data",
+            "name": "team-model-projection",
+            "part_id": "team-1:plan",
+            "data": {
+                "projection_source": "model",
+                "text": "开始并行核验。",
+                "projection_id": "team-1:plan",
+            },
+        },
+    })
+
+    parts = broadcaster.display_parts_snapshot()
+
+    assert len(parts) == 1
+    assert parts[0]["name"] == "team-model-projection"
+    assert parts[0]["data"]["text"] == "我已经拆分独立证据方向，现在开始并行核验。"
+
+
+def test_terminal_snapshot_anchors_late_chart_to_its_tool_result() -> None:
+    broadcaster = RunBroadcaster(run_id="run-chart-anchor")
+    broadcaster.append_text("先确认行情数据。")
+    tool = asyncio.run(
+        broadcaster.add_tool_call(
+            "read_recent_kline",
+            "call-chart-anchor",
+            parent_id="action-chart-anchor",
+        )
+    )
+    tool.set_response({"success": True})
+    broadcaster.append_text("行情数据已核验，下面给出对应图表。")
+    broadcaster.add_data({
+        "event": "agent_display_part",
+        "part": {
+            "type": "data",
+            "name": "stock-chart",
+            "part_id": "chart-late",
+            "data": {
+                "chart_id": "chart-late",
+                "action_id": "action-chart-anchor",
+                "chart_type": "line",
+                "title": "行情走势",
+                "series": [{"key": "close", "label": "收盘价"}],
+                "data": [{"x": "2026-09-16", "close": 12.3}],
+            },
+        },
+    })
+
+    parts = broadcaster.display_parts_snapshot()
+
+    assert [part["type"] for part in parts] == [
+        "text",
+        "tool-call",
+        "data",
+        "text",
+    ]
+    assert parts[2]["name"] == "stock-chart"
+    assert parts[2]["data"]["action_id"] == "action-chart-anchor"
+
+
+def test_ordered_data_encoder_uses_assistant_ui_data_parts_without_changing_legacy_data() -> None:
+    encoder = OrderedDataStreamEncoder()
+
+    ordered = encoder.encode_chunk(DataChunk(data={
+        "event": "agent_display_part",
+        "part": {"type": "data", "name": "stock-chart", "data": {"chart_id": "c-1"}},
+    }))
+    legacy = encoder.encode_chunk(DataChunk(data={"event": "agent_stage", "stage": "publish"}))
+
+    assert ordered.startswith("aui-data:")
+    assert '"name": "stock-chart"' in ordered
+    assert legacy.startswith("2:")

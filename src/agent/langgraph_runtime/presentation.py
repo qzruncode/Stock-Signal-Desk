@@ -422,9 +422,9 @@ def _trace_values(value: Any) -> list[Any]:
 
 def _trace_record_identities(record: Mapping[str, Any]) -> tuple[str, str, str]:
     return (
-        _text(record.get("evidence_id") or record.get("evidenceId"), 96),
-        _text(record.get("action_id") or record.get("actionId"), 96),
-        _text(record.get("tool_call_id") or record.get("toolCallId"), 128),
+        str(record.get("evidence_id") or record.get("evidenceId") or ""),
+        str(record.get("action_id") or record.get("actionId") or ""),
+        str(record.get("tool_call_id") or record.get("toolCallId") or ""),
     )
 
 

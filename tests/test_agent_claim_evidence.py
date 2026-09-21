@@ -196,6 +196,22 @@ def test_claim_ledger_rejects_unmatched_identifier_and_time() -> None:
     assert claim["checks"]["time"] is False
 
 
+def test_claim_ledger_does_not_extract_decimal_prefixes_as_entity_identifiers() -> None:
+    ledger = build_claim_evidence_ledger(
+        "ROE-15.17%，EPS-1.14元，其他指标ABC-12.34【证据 ev_robot】",
+        [_evidence(result={"ROE": -15.17, "EPS": -1.14, "ABC": -12.34})],
+        [_tool_result()],
+    )
+    assert ledger["issues"] == []
+
+    unmatched = build_claim_evidence_ledger(
+        "代码 ABC-15 和 600438 的新公告【证据 ev_robot】",
+        [_evidence()],
+        [_tool_result()],
+    )
+    assert any("ABC-15" in issue and "600438" in issue for issue in unmatched["issues"])
+
+
 def test_claim_ledger_requires_source_data_time_for_latest_answer_scope() -> None:
     ledger = build_claim_evidence_ledger(
         "基于最新公开资料，人形机器人产业链出现新进展。【证据 ev_robot】",

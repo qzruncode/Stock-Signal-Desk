@@ -114,8 +114,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
       isGenerating || conversationDetail.resumeState?.active === true
     );
     const latestStage = conversationDetail.resumeState?.latestStage;
-    const executionTrace = conversationDetail.executionTrace
-      ?? conversationDetail.resumeState?.executionTrace;
+    const executionTrace = conversationDetail.executionTrace;
     const shouldReplayStream = !isWaitingForApproval && canReplayStream;
     const pendingId = `${conversationDetail.id}${PENDING_ASSISTANT_SUFFIX}`;
     const messagesWithoutPending = conversationDetail.messages.filter((m) => m.id !== pendingId);

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from market_data_service.akshare_isolation import call_akshare_isolated
+
 from .common import fetch_frame, section_envelope
 
 
@@ -164,7 +166,9 @@ def get_ownership_evidence(symbol: str, *, days: int = 730) -> dict[str, Any]:
         "control_structure": fetch_frame(
             "stock_hold_control_cninfo",
             f"market:control_structure:{datetime.now().astimezone().date().isoformat()}",
-            lambda: ak.stock_hold_control_cninfo(symbol="全部"),
+            lambda: call_akshare_isolated(
+                "stock_hold_control_cninfo", symbol="全部"
+            ),
             ttl_seconds=24 * 3600,
             symbol=code,
             limit=20,

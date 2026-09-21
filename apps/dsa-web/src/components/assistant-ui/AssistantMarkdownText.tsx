@@ -20,6 +20,8 @@ type AssistantMarkdownProps = {
    * leave this disabled so a conversation does not replay on hydration.
    */
   animate?: boolean;
+  /** Notify a parent when the animated text is fully visible. */
+  onAnimationComplete?: () => void;
 };
 
 const TEXT_REVEAL_MIN_DURATION_MS = 240;
@@ -37,7 +39,11 @@ const textRevealDurationMs = (text: string): number => Math.min(
  * live assistant response in the chat. This is deliberately a UI-only
  * reveal: it never invents text or changes the persisted message.
  */
-const useProgressiveText = (text: string, animate: boolean): string => {
+const useProgressiveText = (
+  text: string,
+  animate: boolean,
+  onAnimationComplete?: () => void,
+): string => {
   const shouldAnimate = animate
     && typeof window !== 'undefined'
     && !(typeof window !== 'undefined'
@@ -47,17 +53,39 @@ const useProgressiveText = (text: string, animate: boolean): string => {
   const initialText = shouldAnimate ? '' : text;
   const [visibleText, setVisibleText] = useState(initialText);
   const visibleTextRef = useRef(initialText);
+  const onAnimationCompleteRef = useRef(onAnimationComplete);
+
+  useEffect(() => {
+    onAnimationCompleteRef.current = onAnimationComplete;
+  }, [onAnimationComplete]);
 
   useEffect(() => {
     if (!shouldAnimate || !text) {
+      if (shouldAnimate && visibleTextRef.current !== text) {
+        setVisibleText(text);
+      }
       visibleTextRef.current = text;
+      onAnimationCompleteRef.current?.();
       return undefined;
     }
 
     const currentText = visibleTextRef.current;
-    const startLength = text.startsWith(currentText) ? currentText.length : 0;
+    if (!text.startsWith(currentText)) {
+      // A structured streaming update can replace a provisional sentence
+      // instead of extending it. Keep the completed visible text stable and
+      // switch to the replacement in one render; never replay from character
+      // one after a contract update.
+      visibleTextRef.current = text;
+      setVisibleText(text);
+      onAnimationCompleteRef.current?.();
+      return undefined;
+    }
+    const startLength = currentText.length;
     const remainingLength = text.length - startLength;
-    if (remainingLength <= 0) return undefined;
+    if (remainingLength <= 0) {
+      onAnimationCompleteRef.current?.();
+      return undefined;
+    }
 
     const startedAt = window.performance?.now() ?? Date.now();
     const duration = textRevealDurationMs(text.slice(startLength));
@@ -81,6 +109,8 @@ const useProgressiveText = (text: string, animate: boolean): string => {
       }
       if (nextLength < text.length) {
         frameId = window.requestAnimationFrame(reveal);
+      } else {
+        onAnimationCompleteRef.current?.();
       }
     };
 
@@ -88,6 +118,9 @@ const useProgressiveText = (text: string, animate: boolean): string => {
     return () => window.cancelAnimationFrame(frameId);
   }, [shouldAnimate, text]);
 
+  if (shouldAnimate && text && !text.startsWith(visibleTextRef.current)) {
+    return text;
+  }
   return shouldAnimate ? visibleText : text;
 };
 
@@ -275,8 +308,13 @@ const EvidenceCitation: FC<{
   );
 };
 
-export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({ text, evidence, animate = false }) => {
-  const renderedText = useProgressiveText(text, animate);
+export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({
+  text,
+  evidence,
+  animate = false,
+  onAnimationComplete,
+}) => {
+  const renderedText = useProgressiveText(text, animate, onAnimationComplete);
   const { content, stopped } = splitAssistantText(renderedText);
   const evidenceIndex = useMemo(() => assistantEvidenceIndexFromTrace(evidence), [evidence]);
   const renderedContent = useMemo(
@@ -378,6 +416,10 @@ export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({ text, evidence, 
 };
 
 /** Adapter kept for assistant-ui part registries outside the chat timeline. */
-export const AssistantMarkdownText: FC<TextMessagePartProps & { animate?: boolean }> = ({ text, animate = false }) => (
-  <AssistantMarkdown text={text} animate={animate} />
+export const AssistantMarkdownText: FC<TextMessagePartProps & { animate?: boolean; evidence?: unknown }> = ({
+  text,
+  animate = false,
+  evidence,
+}) => (
+  <AssistantMarkdown text={text} evidence={evidence} animate={animate} />
 );

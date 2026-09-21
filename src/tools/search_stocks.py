@@ -143,6 +143,7 @@ TOOL = ToolSpec(
     ),
     executor=search_stocks,
     category="data",
+    web_fallback=False,
 )
 
 

@@ -13,6 +13,7 @@ const ChatHomePage = () => {
     approvalDecision, approvalError, handleInterruptDecision, pendingConversationDeletion,
     confirmDeleteConversation, setPendingConversationDeletion, confirmBatchDeleteConversations, setPendingBatchDeletion,
     isConfirmingClearAll, confirmClearAllConversations, setIsConfirmingClearAll,
+    agentMode, setAgentMode,
   } = useChatController();
   const batchDeletionMessage = pendingBatchDeletion
     ? [
@@ -55,6 +56,8 @@ const ChatHomePage = () => {
           approvalDecision,
           approvalError,
           onInterruptDecision: handleInterruptDecision,
+          agentMode,
+          onAgentModeChange: setAgentMode,
         }}
       />
       <ConfirmDialog

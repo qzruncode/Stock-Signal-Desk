@@ -47,6 +47,7 @@ TOOL = ToolSpec(
     ),
     executor=search_analysis_history,
     category="analysis",
+    web_fallback=False,
 )
 
 

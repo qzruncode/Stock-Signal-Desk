@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from typing import Any
 import httpx
+from market_data_service.akshare_isolation import call_akshare_isolated
 from market_data_service.data_provider.utils import is_bse_code
 from market_data_service.providers.common import (
     bare_local_symbol,
@@ -70,9 +71,7 @@ def _market(code: str) -> tuple[str, int]:
 
 
 def _fetch_cninfo(code: str) -> dict[str, Any]:
-    import akshare as ak
-
-    frame = ak.stock_profile_cninfo(symbol=code)
+    frame = call_akshare_isolated("stock_profile_cninfo", symbol=code)
     if frame is None or frame.empty:
         raise RuntimeError("巨潮资讯没有返回公司概况")
     row = frame.iloc[0].to_dict()

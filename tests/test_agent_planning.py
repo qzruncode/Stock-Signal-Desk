@@ -250,6 +250,7 @@ async def _run_extra(responses, *, mode="planned", user_text="测试问题", reg
             model=model,
             executor=executor,
             planning_mode=mode,
+            agent_mode="plan" if mode == "planned" else "direct" if mode == "direct" else "auto",
         )
         return result, model, executor
     finally:
@@ -534,6 +535,7 @@ def test_planned_approval_resume_does_not_repeat_planning_or_execution():
                 owner_id="owner",
                 executor=executor,
                 planning_mode="planned",
+                agent_mode="plan",
                 model=ScriptedChatModel(responses=[_planner_call("plan", [step]), _request_action()]),
             )
             assert result.interrupted and not executor.calls
@@ -570,9 +572,9 @@ def test_blocked_plan_publishes_one_partial_answer_not_success_then_duplicate(mo
     accepted = []
     original = GraphEventBridge.commit_model_answer
 
-    def capture(self, answer):
+    def capture(self, answer, **kwargs):
         accepted.append(answer)
-        return original(self, answer)
+        return original(self, answer, **kwargs)
 
     monkeypatch.setattr(GraphEventBridge, "commit_model_answer", capture)
 
@@ -704,6 +706,7 @@ def test_planned_run_exposes_plan_step_goal_check_and_finalization_in_order() ->
                 model=model,
                 executor=executor,
                 planning_mode="planned",
+                agent_mode="plan",
             )
         finally:
             await manager.close()
@@ -789,6 +792,7 @@ def test_failed_step_replans_remaining_work_and_preserves_partial_observation() 
                 model=model,
                 executor=executor,
                 planning_mode="planned",
+                agent_mode="plan",
             )
         finally:
             await manager.close()
@@ -869,6 +873,7 @@ def test_model_only_step_uses_existing_observations_without_repeating_a_tool() -
                 model=model,
                 executor=executor,
                 planning_mode="planned",
+                agent_mode="plan",
             )
         finally:
             await manager.close()
@@ -922,6 +927,7 @@ def test_planning_does_not_publish_a_success_when_a_step_returns_no_observation(
                 owner_id="owner",
                 model=model,
                 planning_mode="planned",
+                agent_mode="plan",
             )
         finally:
             await manager.close()

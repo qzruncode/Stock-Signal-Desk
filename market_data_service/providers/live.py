@@ -7,15 +7,14 @@ from pydantic import Field
 import pandas as pd
 
 from market_data_service.calendar import latest_completed_trade_day, trade_dates
+from market_data_service.akshare_isolation import call_akshare_isolated
 from market_data_service.providers.common import bare_symbol, frame_records, json_value
 from market_data_service.settings import get_settings
 
 
 class LiveProvider:
     def calendar(self):
-        import akshare as ak
-
-        values = ak.tool_trade_date_hist_sina()
+        values = call_akshare_isolated("tool_trade_date_hist_sina")
         if values is None or values.empty:
             raise RuntimeError("上游交易日历为空")
         return sorted(
@@ -122,7 +121,8 @@ class LiveProvider:
                             pd.to_numeric(frame.volume, errors="coerce") * 100
                         )
                 elif source == "sina":
-                    frame = ak.stock_zh_a_daily(
+                    frame = call_akshare_isolated(
+                        "stock_zh_a_daily",
                         symbol=prefix + code,
                         start_date=start.strftime("%Y%m%d"),
                         end_date=end.strftime("%Y%m%d"),

@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, AsyncIterator, Mapping
 
 from assistant_stream.assistant_stream_chunk import AssistantStreamChunk
+from assistant_stream.serialization.assistant_stream_response import AssistantStreamResponse
+from assistant_stream.serialization.data_stream import DataStreamEncoder, StateProxyJSONEncoder
 
 from src.agent.run_registry import (
     ActiveRun,
@@ -17,6 +20,42 @@ from src.storage import DatabaseManager
 
 
 logger = logging.getLogger(__name__)
+
+
+class OrderedDataStreamEncoder(DataStreamEncoder):
+    """Keep assistant-ui data parts in the same stream position as text/tools."""
+
+    def encode_chunk(self, chunk: AssistantStreamChunk) -> str:
+        if chunk.type == "data" and isinstance(getattr(chunk, "data", None), Mapping):
+            envelope = chunk.data
+            if envelope.get("event") == "agent_display_part":
+                part = envelope.get("part")
+                if isinstance(part, Mapping):
+                    name = str(part.get("name") or "").strip()
+                    if name:
+                        payload: dict[str, Any] = {
+                            "name": name,
+                            "data": part.get("data"),
+                        }
+                        parent_id = part.get("parent_id") or part.get("parentId")
+                        if parent_id:
+                            payload["parentId"] = str(parent_id)
+                        part_id = part.get("part_id") or part.get("partId")
+                        if part_id:
+                            payload["partId"] = str(part_id)
+                        return (
+                            "aui-data:"
+                            + json.dumps(payload, ensure_ascii=False, cls=StateProxyJSONEncoder)
+                            + "\n"
+                        )
+        return super().encode_chunk(chunk)
+
+
+class OrderedDataStreamResponse(AssistantStreamResponse):
+    """Data-stream response with the assistant-ui ordered data-part extension."""
+
+    def __init__(self, stream: AsyncIterator[AssistantStreamChunk]):
+        super().__init__(stream, OrderedDataStreamEncoder())
 
 _TERMINAL_STATUSES = frozenset(
     {
@@ -121,6 +160,8 @@ async def durable_subscriber_stream(
 
 __all__ = [
     "durable_subscriber_stream",
+    "OrderedDataStreamEncoder",
+    "OrderedDataStreamResponse",
     "subscriber_stream",
     "timeline_presentation_stream",
 ]

@@ -1,6 +1,7 @@
 export type AssistantContentPart = {
   readonly type: string;
   readonly text?: string;
+  readonly name?: string;
   readonly providerMetadata?: unknown;
 };
 
@@ -23,14 +24,34 @@ export const hasAssistantDisplayMetadata = (
   part: Pick<AssistantContentPart, 'providerMetadata'>,
 ): boolean => assistantDisplayKindOf(part) !== null;
 
-const publishedAnswerTextFromContent = (content: readonly AssistantContentPart[]): string => (
-  content
-    .map((part) => (
-      part.type === 'text' && assistantDisplayKindOf(part) === 'answer' ? part.text || '' : ''
-    ))
-    .filter(Boolean)
-    .join('\n')
-);
+export const assistantPublishedAnswerTextFromContent = (
+  content: readonly AssistantContentPart[],
+): string => {
+  // ``agent-answer-boundary`` is emitted immediately before the accepted
+  // answer. Select the latest boundary instead of concatenating every
+  // answer-looking text part; repair attempts and terminal hydration can
+  // otherwise make an older full answer reappear before the final one.
+  const latestBoundary = content.reduce(
+    (index, part, currentIndex) => (
+      part.type === 'data' && part.name === 'agent-answer-boundary' ? currentIndex : index
+    ),
+    -1,
+  );
+  const scoped = latestBoundary >= 0 ? content.slice(latestBoundary + 1) : content;
+  const typed = scoped
+    .filter((part) => part.type === 'text' && assistantDisplayKindOf(part) === 'answer')
+    .map((part) => part.text || '')
+    .filter(Boolean);
+  if (typed.length > 0) return typed.join('\n\n');
+  if (latestBoundary >= 0) {
+    return scoped
+      .filter((part) => part.type === 'text' && !assistantDisplayKindOf(part))
+      .map((part) => part.text || '')
+      .filter(Boolean)
+      .join('');
+  }
+  return '';
+};
 
 /**
  * A terminal run can contain a substantive no-tool candidate before the
@@ -59,7 +80,7 @@ export const assistantPostToolBodyText = (
 export const assistantAnswerTextFromContent = (
   content: readonly AssistantContentPart[],
 ): string => {
-  const publishedAnswer = publishedAnswerTextFromContent(content);
+  const publishedAnswer = assistantPublishedAnswerTextFromContent(content);
   // `displayKind: answer` is the server-owned publication boundary.  A
   // terminal trace can also contain a substantive progress fragment before
   // that boundary (for example the model's pre-repair draft), but combining
@@ -79,5 +100,5 @@ export const assistantAnswerTextFromContent = (
     .slice(lastToolPart + 1)
     .map((part) => (part.type === 'text' ? part.text || '' : ''))
     .filter(Boolean)
-    .join('\n');
+    .join('\n\n');
 };

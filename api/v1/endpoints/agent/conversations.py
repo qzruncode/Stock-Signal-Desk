@@ -27,20 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 def _client_evidence_is_resolvable(item: Mapping[str, Any]) -> bool:
-    """Allow only explicit evidence, plus id-only records from old traces."""
-    if evidence_record_is_eligible(item):
-        return True
-    # Before the semantic result contract, the terminal trace persisted only
-    # the canonical id.  It is safe to preserve that exact historical marker;
-    # a record that explicitly says success/has_data/evidence_eligible=False
-    # must still be rejected by the current contract.
-    return bool(
-        str(item.get("evidence_id") or item.get("id") or "").strip()
-        and not any(
-            key in item
-            for key in ("success", "has_data", "evidence_eligible")
-        )
-    )
+    """Allow only evidence records that satisfy the current result contract."""
+    return evidence_record_is_eligible(item)
 
 
 def _stage_history_from_events(
@@ -184,12 +172,11 @@ def _conversation_presentation(
     *,
     evidence: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] = (),
 ) -> dict[str, Any]:
-    """Exclude an obsolete assistant-ui snapshot from browser responses.
+    """Return the canonical conversation and execution trace for the browser.
 
     Canonical messages plus the durable LangGraph trace are the display
-    contract.  The legacy snapshot remains persisted for a read-only
-    compatibility exporter, but sending it with every detail response can
-    freeze the browser before React has a chance to ignore it.
+    contract.  The assistant-ui snapshot is not part of the conversation
+    response and is never reintroduced into the current rendering path.
     """
     payload = dict(conversation)
     payload.pop("thread_state", None)
@@ -366,10 +353,9 @@ def get_agent_conversation(
     )
     assistant_text, _ = prepare_answer_for_client(assistant_text, trace_evidence)
 
-    # A conversation can contain several completed turns.  Keep the latest
-    # trace for backwards compatibility, but also expose a bounded per-run
-    # projection so the client can attach each execution process to the
-    # assistant message that produced it.  A failure to read historical
+    # A conversation can contain several completed turns. Expose a bounded
+    # per-run projection so the client can attach each execution process to
+    # the assistant message that produced it. A failure to read historical
     # observability data must never prevent the conversation answer itself
     # from loading.
     execution_trace_history: list[dict[str, Any]] = []
@@ -586,19 +572,17 @@ async def sync_agent_conversation_snapshot(
             status_code=exc.status_code,
             detail={"error": exc.code, "message": str(exc)},
         ) from exc
-    # ``thread_state`` was an assistant-ui renderer export, not durable Agent
-    # state.  Older clients may still send it, but accepting it here lets an
-    # arbitrarily large historical tool tree re-enter storage and later cost a
-    # browser a deep JSON walk.  Replace any legacy value with an empty marker;
-    # the canonical transcript and LangGraph checkpoint remain authoritative.
+    # ``thread_state`` is an assistant-ui renderer export, not durable Agent
+    # state. Never write it back into the current conversation contract; the
+    # canonical transcript and LangGraph checkpoint remain authoritative.
     prune_checkpoint = bool(payload.get("prune_agent_context_to_messages"))
     async with conversation_transition(db_manager, conversation_id):
         if not service.get_conversation(conversation_id):
             raise HTTPException(status_code=404, detail="对话不存在")
         if messages is not None:
-            # A transcript replacement is a history mutation even for older
-            # clients that omit the pruning flag. Neither a stopped writer
-            # nor a new admission may race the checkpoint/transcript update.
+            # A transcript replacement is a history mutation. Neither a
+            # stopped writer nor a new admission may race the checkpoint or
+            # transcript update.
             await _cancel_conversation_run_before_history_change(conversation_id, db_manager)
             if agent_graph_runtime.initialized:
                 await agent_graph_runtime.replace_checkpoint_messages(conversation_id, messages)

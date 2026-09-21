@@ -3,6 +3,7 @@
 from __future__ import annotations
 from datetime import datetime
 from typing import Any
+from market_data_service.akshare_isolation import call_akshare_isolated
 from market_data_service.providers.market_index_catalog import A_SHARE_INDEX_MAP
 from market_data_service.providers.common import cached_call
 from market_data_service.providers._macro_common import (
@@ -14,9 +15,9 @@ INDEX_MAP = A_SHARE_INDEX_MAP
 
 
 def _daily_frame(index_code: str):
-    import akshare as ak
-
-    return ak.stock_zh_index_daily(symbol=INDEX_MAP[index_code][1])
+    return call_akshare_isolated(
+        "stock_zh_index_daily", symbol=INDEX_MAP[index_code][1]
+    )
 
 
 def _spot_frame():

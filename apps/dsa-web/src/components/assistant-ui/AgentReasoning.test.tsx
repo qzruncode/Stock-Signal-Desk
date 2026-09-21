@@ -416,6 +416,185 @@ describe('AgentExecutionTimeline', () => {
     expect(screen.queryByText(/计划目标：|约束：|步骤序列：/)).not.toBeInTheDocument();
   });
 
+  it('renders Team control stages as natural progress instead of reviewer names', () => {
+    render(
+      <TimelineStageRow
+        row={{
+          key: 'team-critic',
+          kind: 'stage',
+          event: {
+            event: 'agent_stage',
+            runId: 'run-readable-team',
+            stage: 'reflection',
+            status: 'completed',
+            summary: 'CriticReviewer 完成',
+            details: {
+              team_id: 'team-readable',
+              reviewer: 'CriticReviewer',
+              user_message: '独立复核完成，我正在判断是否需要进一步对照看多和看空证据。',
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('独立复核完成，我正在判断是否需要进一步对照看多和看空证据。')).toBeInTheDocument();
+    expect(screen.queryByText('CriticReviewer 完成')).not.toBeInTheDocument();
+  });
+
+  it('renders Team worker and tool status beside native progress', () => {
+    mockMessage({
+      status: { type: 'running' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-team-worker-status',
+            stage: 'planning',
+            status: 'started',
+            action_id: 'team:market:task:worker',
+            summary: 'market worker started',
+            details: {
+              team_id: 'team-worker-status',
+              expert_id: 'market',
+              user_message: '我现在开始核验行情方向的信息。',
+            },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-team-worker-status',
+            stage: 'tool',
+            status: 'started',
+            action_id: 'team:market:task:call-1',
+            summary: '执行原子工具 read_realtime_quote',
+            details: {
+              team_id: 'team-worker-status',
+              expert_id: 'market',
+              tool_name: 'read_realtime_quote',
+            },
+          },
+        ],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline presentation="inline" stageOnly nativeProgress />);
+
+    expect(screen.getByText('行情方向')).toBeInTheDocument();
+    expect(screen.getAllByText('进行中').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('行情方向的数据核验')).toBeInTheDocument();
+    expect(screen.getByText('正在读取一项数据')).toBeInTheDocument();
+    expect(screen.queryByText(/执行原子工具|read_realtime_quote/)).not.toBeInTheDocument();
+  });
+
+  it('does not replay an orphan Team tool spinner after terminal completion', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-team-terminal-orphan',
+            stage: 'tool',
+            status: 'started',
+            action_id: 'team:news:task:call-1',
+            summary: '执行原子工具 search_news',
+            details: {
+              team_id: 'team-terminal-orphan',
+              expert_id: 'news',
+              tool_name: 'search_news',
+            },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-team-terminal-orphan',
+            stage: 'planning',
+            status: 'failed',
+            action_id: 'team:news:task:worker',
+            summary: 'news worker incomplete',
+            error_code: 'team_worker_incomplete',
+            details: {
+              team_id: 'team-terminal-orphan',
+              expert_id: 'news',
+            },
+          },
+        ],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline presentation="inline" stageOnly nativeProgress />);
+
+    expect(screen.getByText('新闻方向')).toBeInTheDocument();
+    expect(screen.getByText('有缺口')).toBeInTheDocument();
+    expect(screen.queryByText('正在读取一项数据')).not.toBeInTheDocument();
+  });
+
+  it('does not duplicate Team progress beside native parts', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-team-stage-only',
+            stage: 'reflection',
+            status: 'completed',
+            summary: 'BullCaseReviewer 完成',
+            details: {
+              team_id: 'team-stage-only',
+              user_message: '看多角度的独立审查已经完成，我正在等待另一侧证据对照。',
+            },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-team-stage-only',
+            stage: 'reflection',
+            status: 'failed',
+            summary: 'BearCaseReviewer 未完成',
+            error_code: 'team_bear_case_failed',
+            details: {
+              team_id: 'team-stage-only',
+              user_message: '看空角度的独立审查没有完成，我会保留这个风险缺口。',
+            },
+          },
+        ],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline presentation="inline" stageOnly nativeProgress />);
+
+    expect(screen.queryByText('看多角度的独立审查已经完成，我正在等待另一侧证据对照。')).not.toBeInTheDocument();
+    expect(screen.queryByText('看空角度的独立审查没有完成，我会保留这个风险缺口。')).not.toBeInTheDocument();
+    expect(screen.queryByText(/BullCaseReviewer|BearCaseReviewer/)).not.toBeInTheDocument();
+  });
+
+  it('keeps a Team failure readable for a legacy stage-only trace', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [{
+          event: 'agent_stage',
+          run_id: 'run-team-legacy-failure',
+          stage: 'reflection',
+          status: 'failed',
+          summary: 'BearCaseReviewer 未完成',
+          error_code: 'team_bear_case_failed',
+          details: {
+            team_id: 'team-legacy-failure',
+            user_message: '看空角度的独立审查没有完成，我会保留这个风险缺口。',
+          },
+        }],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline presentation="inline" stageOnly />);
+
+    expect(screen.getByText('看空角度的独立审查没有完成，我会保留这个风险缺口。')).toBeInTheDocument();
+  });
+
   it('does not duplicate Planning rows beside native stream parts', () => {
     mockMessage({
       status: { type: 'complete' },
@@ -450,57 +629,8 @@ describe('AgentExecutionTimeline', () => {
         custom: {},
       },
     });
-    render(<AgentExecutionTimeline presentation="inline" stageOnly includePlanning={false} />);
+    render(<AgentExecutionTimeline presentation="inline" stageOnly />);
     expect(screen.getByText('步骤报告未通过核验，不能宣称完成')).toBeInTheDocument();
-  });
-
-  it('keeps Planning readable for terminal records without native progress parts', () => {
-    mockMessage({
-      status: { type: 'complete' },
-      metadata: {
-        unstable_data: [
-          {
-            event: 'agent_stage',
-            run_id: 'run-legacy-planning',
-            stage: 'planning',
-            status: 'completed',
-            summary: '已生成研究计划，共 2 个步骤',
-            details: {
-              planning_phase: 'plan_created',
-              progress_text: '先确认证券身份，再根据核验结果获取最新行情。',
-              step_count: 2,
-              steps: [{ objective: '核验证券身份' }, { objective: '获取最新行情' }],
-            },
-          },
-          {
-            event: 'agent_stage',
-            run_id: 'run-legacy-planning',
-            stage: 'evidence',
-            status: 'completed',
-            summary: '已关联证据',
-          },
-          {
-            event: 'agent_stage',
-            run_id: 'run-legacy-planning',
-            stage: 'planning',
-            status: 'completed',
-            summary: '已完成当前步骤：核验证券身份：已获得 1 条工具观察。',
-            details: {
-              planning_phase: 'step_completed',
-              progress_text: '已经确认 600519 对应贵州茅台，下一步继续获取最新行情。',
-            },
-          },
-        ],
-        custom: {},
-      },
-      content: [],
-    });
-
-    render(<AgentExecutionTimeline presentation="inline" stageOnly includePlanning />);
-
-    expect(screen.getByText('先确认证券身份，再根据核验结果获取最新行情。')).toBeInTheDocument();
-    expect(screen.getByText('已关联证据')).toBeInTheDocument();
-    expect(screen.getByText('已经确认 600519 对应贵州茅台，下一步继续获取最新行情。')).toBeInTheDocument();
   });
 
   it('keeps the candidate-answer stage but does not duplicate its body', () => {
@@ -1045,7 +1175,7 @@ describe('AgentExecutionTimeline', () => {
     expect(screen.queryByRole('button', { name: /展开用时/ })).not.toBeInTheDocument();
   });
 
-  it('prefers assistant-ui message timing when it is available', () => {
+  it('uses assistant-ui timing only when durable event timing is unavailable', () => {
     vi.mocked(useMessageTiming).mockReturnValue({
       streamStartTime: 1,
       totalStreamTime: 67 * 60 * 1_000 + 3_000,
@@ -1069,5 +1199,22 @@ describe('AgentExecutionTimeline', () => {
     render(<AgentExecutionTimeline />);
 
     expect(screen.getByRole('button', { name: '展开用时 1h 7m 3s' })).toBeInTheDocument();
+  });
+
+  it('uses the persisted run interval instead of an inflated hydration timer', () => {
+    vi.mocked(useMessageTiming).mockReturnValue({
+      streamStartTime: 1, totalStreamTime: 471 * 60 * 60 * 1000, totalChunks: 1, toolCallCount: 0,
+    });
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          { event: 'agent_stage', run_id: 'run-timing', stage: 'planning', status: 'started', summary: '开始', occurred_at: '2026-09-20T22:58:03+08:00' },
+          { event: 'agent_stage', run_id: 'run-timing', stage: 'publish', status: 'completed', summary: '完成', occurred_at: '2026-09-20T23:08:28+08:00' },
+        ], custom: {},
+      },
+    });
+    render(<AgentExecutionTimeline />);
+    expect(screen.getByRole('button', { name: '展开用时 10m 25s' })).toBeInTheDocument();
   });
 });

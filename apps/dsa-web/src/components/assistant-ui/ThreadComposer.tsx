@@ -11,8 +11,14 @@ import {
   ComposerAttachments,
 } from './attachment';
 import { cn } from '../../utils/cn';
+import { AgentModeSelector } from './AgentModeSelector';
+import type { AgentProductMode } from '../../utils/agentMode';
 
-export const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
+export const Composer: FC<{
+  onUserCancel?: () => void;
+  agentMode: AgentProductMode;
+  onAgentModeChange: (mode: AgentProductMode) => void;
+}> = ({ onUserCancel, agentMode, onAgentModeChange }) => {
   const isRunning = useThread((s) => s.isRunning);
   return (
     <div className="shrink-0 border-t border-border/70 bg-background/90 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
@@ -56,6 +62,11 @@ export const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) =>
                 <span className="absolute right-1.5 top-1.5 size-1.5 animate-pulse rounded-full bg-red-500" />
               </ComposerPrimitive.StopDictation>
             </AuiIf>
+            <AgentModeSelector
+              value={agentMode}
+              onChange={onAgentModeChange}
+              disabled={isRunning}
+            />
             <span className="hidden text-xs text-muted-foreground sm:inline">实时数据工具会自动按需调用</span>
           </div>
 

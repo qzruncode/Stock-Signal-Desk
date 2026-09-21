@@ -9,6 +9,10 @@ export type AgentStageStatus =
 export interface AgentStageEvent {
   event: 'agent_stage' | 'agent_stage_v2';
   runId: string;
+  schemaVersion?: string | null;
+  collaborationId?: string | null;
+  sequence?: number | null;
+  scope?: 'coordinator' | 'expert' | 'review' | string | null;
   stage: string;
   status: AgentStageStatus;
   actionId?: string | null;
@@ -123,6 +127,22 @@ function parseAgentStageEvent(raw: Record<string, unknown>): AgentStageEvent | n
   const parsed: AgentStageEvent = {
     event: raw.event,
     runId,
+    schemaVersion: typeof raw.schema_version === 'string'
+      ? raw.schema_version
+      : typeof raw.schemaVersion === 'string'
+        ? raw.schemaVersion
+        : null,
+    collaborationId: typeof raw.collaboration_id === 'string'
+      ? raw.collaboration_id
+      : typeof raw.collaborationId === 'string'
+        ? raw.collaborationId
+        : null,
+    sequence: typeof raw.sequence === 'number'
+      ? raw.sequence
+      : typeof raw.sequence === 'string' && Number.isFinite(Number(raw.sequence))
+        ? Number(raw.sequence)
+        : null,
+    scope: typeof raw.scope === 'string' ? raw.scope : null,
     stage,
     status: status as AgentStageStatus,
     actionId: typeof raw.action_id === 'string'

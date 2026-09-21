@@ -3,6 +3,7 @@ import { Activity, CheckCircle2, Clock3, Database, ListChecks, LoaderCircle, Thu
 import type { AgentRunDetail, AgentSourceSampleResponse } from '../../api/runExplorer';
 import { Badge, Card } from '../common';
 import { cn } from '../../utils/cn';
+import { agentModeLabel } from '../../utils/agentMode';
 import { formatDateTime } from '../../utils/format';
 import {
   STATUS_LABELS,
@@ -32,6 +33,7 @@ import {
   EvidenceRow,
   Metric,
   PlanningAuditCard,
+  TeamAuditCard,
   ToolObservationDetails,
 } from './RunDetailCards';
 
@@ -64,6 +66,15 @@ export function RunDetailContent({
 }: RunDetailContentProps) {
   const run = detail.snapshot.run ?? {};
   const projection = detail.snapshot.qualityProjection ?? {};
+  const selectedAgentMode = text(projection.agentMode)
+    || (projection.team ? 'team' : projection.planning ? 'plan' : '');
+  const resolvedAgentMode = text(projection.resolvedAgentMode)
+    || (projection.team ? text(projection.team.resolvedAgentMode) : '');
+  const modeLabel = selectedAgentMode
+    ? selectedAgentMode === 'auto' && resolvedAgentMode
+      ? `Auto → ${agentModeLabel(resolvedAgentMode)}`
+      : agentModeLabel(resolvedAgentMode || selectedAgentMode)
+    : '';
   const behaviorAudit = detail.snapshot.behaviorAudit;
   const toolResults = projection.toolResults ?? [];
   const evidence = projection.evidence ?? [];
@@ -92,6 +103,8 @@ export function RunDetailContent({
   const observedCallIds = new Set(toolResults.flatMap(callIds));
   const unobservedFailedSteps = failedSteps.filter((step) => !callIds(step).some((id) => observedCallIds.has(id)));
   const failedCallCount = failedToolResults.length + unobservedFailedSteps.length;
+  const blockedRetryCount = [...failedToolResults, ...unobservedFailedSteps]
+    .filter((item) => errorCodeFrom(item) === 'repeated_failed_source').length;
   const runErrorCodes = uniqueStrings([
     errorCodeFrom(run),
     errorCodeFrom(detail.snapshot.trace),
@@ -141,6 +154,7 @@ export function RunDetailContent({
             <div className="flex flex-wrap items-center gap-1.5">
               <h2 className="text-sm font-semibold text-foreground">回答结果</h2>
               <Badge variant={statusVariant(text(run.status))}>{STATUS_LABELS[text(run.status)] ?? text(run.status)}</Badge>
+              {modeLabel ? <Badge variant="info">{modeLabel}</Badge> : null}
             </div>
             <p className="mt-1.5 text-xs text-secondary-text">生成于 {formatDateTime(text(run.createdAt))}</p>
           </div>
@@ -191,11 +205,13 @@ export function RunDetailContent({
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <p className="text-xs font-semibold text-foreground">
-                {runStatus === 'completed' ? `已完成，有 ${failedCallCount} 次工具调用失败` : `有 ${failedCallCount} 次工具调用失败`}
+                {blockedRetryCount > 0
+                  ? `${failedCallCount - blockedRetryCount} 次工具失败，${blockedRetryCount} 次重复请求已拦截`
+                  : runStatus === 'completed' ? `已完成，有 ${failedCallCount} 次工具调用失败` : `有 ${failedCallCount} 次工具调用失败`}
               </p>
               <p className="mt-0.5 text-[11px] text-foreground/70">失败尝试及恢复情况保留在执行诊断中，可展开查看调用错误。</p>
             </div>
-            <Badge variant={toolFailureNeedsAttention ? 'warning' : 'info'}>{failedCallCount} 次失败尝试</Badge>
+            <Badge variant={toolFailureNeedsAttention ? 'warning' : 'info'}>{failedCallCount} 次{blockedRetryCount > 0 ? '失败或拦截' : '失败尝试'}</Badge>
           </div>
           <ErrorDetails title="查看工具调用错误" errorCode={toolErrorCodes.join('、')} details={toolErrorDetails} fallback="请查看对应工具的调用记录。" />
         </div> : null}
@@ -211,6 +227,8 @@ export function RunDetailContent({
       <BehaviorAuditCard audit={behaviorAudit} onSampleSources={onSampleSources} sourceSampling={sourceSampling} sourceSample={sourceSample} />
 
       <PlanningAuditCard planning={projection.planning} />
+
+      <TeamAuditCard team={projection.team} />
 
       <ClaimEvidenceCard claims={claimEvidence} />
 

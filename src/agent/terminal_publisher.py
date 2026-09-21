@@ -16,6 +16,7 @@ from src.agent.langgraph_runtime.answer_contract import (
 )
 from src.agent.langgraph_runtime.reflection import reflection_review_projection
 from src.agent.langgraph_runtime.planning import planning_trace
+from src.agent.langgraph_runtime.team.trace import team_trace
 from src.agent.langgraph_runtime.presentation import (
     enrich_execution_trace_with_result_previews,
     project_arguments_for_timeline,
@@ -31,6 +32,7 @@ from src.agent.langgraph_runtime.evidence_identity import prepare_answer_for_cli
 from src.tools.base import evidence_record_is_eligible
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
+from src.storage.mixins.agent_run_trace import redact_agent_trace
 
 
 def _short_text(value: Any, limit: int = 500) -> str:
@@ -135,8 +137,20 @@ def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         fallback_used = value("fallback_used", "fallbackUsed")
         projected.append(
             {
-                "action_id": _short_text(item.get("action_id") or item.get("id"), 96),
-                "tool_call_id": _short_text(item.get("tool_call_id"), 128) or None,
+                # Join keys must be lossless. In particular, nested reader
+                # calls differ at the *end* of a task-scoped action id.
+                "action_id": str(item.get("action_id") or item.get("id") or ""),
+                "tool_call_id": str(item.get("tool_call_id") or "") or None,
+                "model_tool_call_id": str(item.get("model_tool_call_id") or "") or None,
+                "task_id": item.get("task_id"),
+                "agent_id": item.get("agent_id"),
+                "expert_id": item.get("expert_id"),
+                "fallback_request_id": item.get("fallback_request_id"),
+                "fallback_for_action_id": item.get("fallback_for_action_id"),
+                "runtime_errors": redact_agent_trace([
+                    dict(receipt) for receipt in item.get("runtime_errors") or []
+                    if isinstance(receipt, Mapping)
+                ]),
                 "tool_name": _short_text(item.get("tool_name"), 128),
                 "effect": _short_text(item.get("effect"), 32) or "read",
                 "arguments": arguments,
@@ -213,9 +227,9 @@ def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, 
 def _trace_evidence(evidence: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
-            "evidence_id": _short_text(item.get("evidence_id") or item.get("id"), 96),
-            "action_id": _short_text(item.get("action_id"), 96),
-            "tool_call_id": _short_text(item.get("tool_call_id"), 128) or None,
+            "evidence_id": str(item.get("evidence_id") or item.get("id") or ""),
+            "action_id": str(item.get("action_id") or ""),
+            "tool_call_id": str(item.get("tool_call_id") or "") or None,
             "tool_name": _short_text(item.get("tool_name"), 128),
             "success": item.get("success") is True,
             "partial": bool(item.get("partial")),
@@ -245,12 +259,8 @@ def _trace_claim_evidence(claims: Sequence[Mapping[str, Any]]) -> list[dict[str,
                 "claim_id": _short_text(item.get("claim_id"), 96),
                 "text": _short_text(item.get("text"), 2_000),
                 "kind": _short_text(item.get("kind"), 32),
-                "evidence_ids": _short_list(item.get("evidence_ids"), item_limit=16, text_limit=96),
-                "unresolved_evidence_ids": _short_list(
-                    item.get("unresolved_evidence_ids"),
-                    item_limit=16,
-                    text_limit=96,
-                ),
+                "evidence_ids": [str(value) for value in (item.get("evidence_ids") or [])[:16]],
+                "unresolved_evidence_ids": [str(value) for value in (item.get("unresolved_evidence_ids") or [])[:16]],
                 "entity_fields": _short_list(item.get("entity_fields"), item_limit=24, text_limit=96),
                 "time_references": _short_list(item.get("time_references"), item_limit=12, text_limit=96),
                 "uses_relative_time": bool(item.get("uses_relative_time")),
@@ -262,7 +272,7 @@ def _trace_claim_evidence(claims: Sequence[Mapping[str, Any]]) -> list[dict[str,
                 },
                 "evidence": [
                     {
-                        "evidence_id": _short_text(entry.get("evidence_id"), 96),
+                        "evidence_id": str(entry.get("evidence_id") or ""),
                         "tool_name": _short_text(entry.get("tool_name"), 128),
                         "data_time": _short_text(entry.get("data_time"), 160) or None,
                         "source_refs": _short_list(entry.get("source_refs"), item_limit=8, text_limit=240),
@@ -286,18 +296,31 @@ def _execution_trace(
     structured_answer: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     projected = {
+        "agent_mode": _short_text(state.get("agent_mode"), 24) or "auto",
+        "resolved_agent_mode": _short_text(state.get("resolved_agent_mode"), 24) or None,
         "stages": project_stage_history_for_client(
             [item for item in stage_history if isinstance(item, Mapping)],
         ),
         # This is the bounded native assistant-stream projection used for
         # terminal hydration.  The ordered event log and tool ledger remain
         # the authoritative sources for audit and detailed inspection.
+        "display_parts_version": 2,
         "display_parts": [
             dict(item)
             for item in display_parts[:240]
             if isinstance(item, Mapping)
         ],
         "tool_results": _trace_tool_results(tool_results),
+        "runtime_errors": [
+            dict(item)
+            for item in (state.get("runtime_errors") or [])[:80]
+            if isinstance(item, Mapping)
+        ],
+        "source_fallback_attempts": [
+            dict(item)
+            for item in (state.get("source_fallback_attempts") or [])[:40]
+            if isinstance(item, Mapping)
+        ],
         "evidence": _trace_evidence(evidence),
         "claim_evidence": _trace_claim_evidence(claim_evidence),
         "loop": {
@@ -327,6 +350,9 @@ def _execution_trace(
     planning = planning_trace(state)
     if planning is not None:
         projected["planning"] = planning
+    team = team_trace(state)
+    if team is not None:
+        projected["team"] = team
     if structured_answer:
         projected["structured_answer"] = dict(structured_answer)
     reflection = _reflection_trace(state)
@@ -379,12 +405,37 @@ class AgentTerminalPublisher:
             detail=error_detail,
         )
         await self.controller.drain()
+        tool_results = [
+            dict(item)
+            for item in (state.get("tool_results") or [])
+            if isinstance(item, Mapping)
+        ]
+        evidence = [
+            dict(item)
+            for item in (state.get("evidence") or [])
+            if isinstance(item, Mapping)
+        ]
+        claim_evidence = [
+            dict(item)
+            for item in (state.get("claim_evidence") or [])
+            if isinstance(item, Mapping)
+        ]
+        structured_answer = project_structured_answer(
+            state.get("structured_answer"),
+            evidence,
+            tool_results,
+        )
         if stage_history is None:
             snapshot = getattr(self.controller, "stage_history_snapshot", None)
             stage_history = snapshot() if callable(snapshot) else []
         display_parts_snapshot = getattr(self.controller, "display_parts_snapshot", None)
         display_parts = (
-            display_parts_snapshot(final_text=final_text)
+            display_parts_snapshot(
+                final_text=final_text,
+                structured_answer=structured_answer,
+                evidence=evidence,
+                tool_results=tool_results,
+            )
             if callable(display_parts_snapshot)
             else []
         )
@@ -410,26 +461,6 @@ class AgentTerminalPublisher:
             ),
             "",
         )
-        tool_results = [
-            dict(item)
-            for item in (state.get("tool_results") or [])
-            if isinstance(item, Mapping)
-        ]
-        evidence = [
-            dict(item)
-            for item in (state.get("evidence") or [])
-            if isinstance(item, Mapping)
-        ]
-        claim_evidence = [
-            dict(item)
-            for item in (state.get("claim_evidence") or [])
-            if isinstance(item, Mapping)
-        ]
-        structured_answer = project_structured_answer(
-            state.get("structured_answer"),
-            evidence,
-            tool_results,
-        )
         execution_trace = _execution_trace(
             stage_history=stage_history,
             display_parts=display_parts,
@@ -442,6 +473,8 @@ class AgentTerminalPublisher:
         quality_projection = {
             "engine": "langgraph_agent_loop",
             "inspection_schema_version": INSPECTION_SCHEMA_VERSION,
+            "agent_mode": execution_trace["agent_mode"],
+            "resolved_agent_mode": execution_trace["resolved_agent_mode"],
             # The quality projection is the bounded, user-safe run contract.
             # Full provider payloads remain in the durable step ledger and are
             # loaded only when the explorer requests them.
@@ -460,11 +493,15 @@ class AgentTerminalPublisher:
                 "response_repair_limit": int(state.get("response_repair_limit") or 0),
                 "fallback_repair_count": int(state.get("fallback_repair_count") or 0),
                 "fallback_repair_limit": int(state.get("fallback_repair_limit") or 0),
+                "source_fallback_attempt_count": len(state.get("source_fallback_attempts") or []),
+                "runtime_error_count": len(state.get("runtime_errors") or []),
             },
             "execution_trace": execution_trace,
         }
         if execution_trace.get("planning") is not None:
             quality_projection["planning"] = execution_trace["planning"]
+        if execution_trace.get("team") is not None:
+            quality_projection["team"] = execution_trace["team"]
         reflection = _reflection_trace(state)
         if reflection:
             quality_projection["reflection"] = reflection

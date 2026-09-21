@@ -8,7 +8,6 @@ from api.v1.endpoints.agent.tools import (
     MAX_TEXT_CHARACTERS,
     _compact_tool_result,
     _format_result,
-    _maybe_attach_search_fallback,
 )
 
 
@@ -76,13 +75,3 @@ def test_generic_projection_enforces_a_total_browser_payload_budget() -> None:
     assert projected["_tool_payload_meta"]["original_serialized_characters"] > (
         MAX_SERIALIZED_RESULT_CHARACTERS
     )
-
-
-def test_compatibility_fallback_hook_never_hides_failure_or_calls_another_source() -> None:
-    failure = {
-        "success": False,
-        "errors": ["upstream unavailable"],
-        "error_code": "provider_unavailable",
-    }
-    assert _maybe_attach_search_fallback("source_a", {"query": "x"}, failure) is failure
-    assert "search_fallback" not in failure

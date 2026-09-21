@@ -22,6 +22,8 @@ import {
   actionId,
   argumentSummary,
   groupTimelinePhases,
+  isTeamStage,
+  isTeamWorkerStage,
   isRecoverablePlanningRetry,
   isRecord,
   phaseHasActiveDetails,
@@ -30,8 +32,10 @@ import {
   stageKey,
   toolDetails,
   toolPartLabel,
+  teamRoleLabel,
   type TimelineRow,
 } from './AgentReasoningUtils';
+import { teamToolEventForPart, type TeamPartRecord } from './TeamBoardUtils';
 
 import {
   StatusIcon,
@@ -51,7 +55,7 @@ import {
  * for the safe, user-facing summary; raw tool arguments/results stay out of
  * this live fallback.
  */
-export const AgentToolCallPart: FC<ToolCallMessagePartProps> = ({
+export const AgentToolCallPart: FC<ToolCallMessagePartProps & { compact?: boolean }> = ({
   toolName: name,
   toolCallId,
   args,
@@ -59,14 +63,27 @@ export const AgentToolCallPart: FC<ToolCallMessagePartProps> = ({
   result,
   isError,
   approval,
+  compact = false,
 }) => {
   const stageData = useMessage((message) => message.metadata?.unstable_data);
   const event = useMemo(
-    () => agentStageEvents(stageData)
-      .filter((candidate) => (
-        candidate.toolCallId === toolCallId || candidate.actionId === toolCallId
-      ))
-      .at(-1) ?? null,
+    () => {
+      const events = agentStageEvents(stageData);
+      const teamEvent = teamToolEventForPart(
+        {
+          type: 'tool-call',
+          toolCallId,
+        } as TeamPartRecord,
+        events,
+      );
+      return teamEvent
+        ?? events
+          .filter((candidate) => (
+            candidate.toolCallId === toolCallId || candidate.actionId === toolCallId
+          ))
+          .at(-1)
+        ?? null;
+    },
     [stageData, toolCallId],
   );
   const resultFailed = isRecord(result) && result.success === false;
@@ -82,9 +99,12 @@ export const AgentToolCallPart: FC<ToolCallMessagePartProps> = ({
     ? '该操作需要用户确认后才能继续'
     : event?.summary
       || (hasResult ? `${name} 已返回` : `执行原子工具 ${name}`);
+  const displaySummary = event && isTeamStage(event)
+    ? `${teamRoleLabel(event)}方向 · ${summary}`
+    : summary;
   const label = toolPartLabel({
     name,
-    summary,
+    summary: displaySummary,
     waitingForApproval,
     problem,
     hasResult,
@@ -94,8 +114,8 @@ export const AgentToolCallPart: FC<ToolCallMessagePartProps> = ({
     const nativeResult = isRecord(result) ? result : undefined;
     const lines = toolDetails(nativeResult, event ?? undefined);
     // The durable tool stage normally already carries the redacted request.
-    // Only use the native stream arguments when an old/incomplete trace does
-    // not have that line; otherwise the same request is shown twice.
+    // Use the native stream arguments only when the current event has not
+    // emitted that detail yet; otherwise the same request is shown twice.
     return lines.some((line) => line.key === 'request') || !request
       ? lines
       : [{ key: 'request', text: `请求：${request}` }, ...lines];
@@ -116,7 +136,10 @@ export const AgentToolCallPart: FC<ToolCallMessagePartProps> = ({
         aria-controls={detailId}
         aria-label={`${expanded ? '收起' : '展开'}工具 ${name} 详情`}
         onClick={() => setExpanded((value) => !value)}
-        className="flex w-full min-w-0 items-start gap-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+        className={cn(
+          'flex w-full min-w-0 items-start gap-2 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25',
+          compact ? 'py-1 text-xs' : 'py-2 text-sm',
+        )}
       >
         <ToolIcon
           className={cn(
@@ -147,7 +170,9 @@ export const AgentToolCallPart: FC<ToolCallMessagePartProps> = ({
       >
         <div className="min-h-0 overflow-hidden">
           <div className={cn(
-            'pb-2 pl-6 text-xs text-muted-foreground transition-opacity duration-300 ease-out',
+            compact
+              ? 'pb-1 pl-5 text-[11px] text-muted-foreground transition-opacity duration-300 ease-out'
+              : 'pb-2 pl-6 text-xs text-muted-foreground transition-opacity duration-300 ease-out',
             expanded ? 'opacity-100' : 'opacity-0',
           )}>
             {detailLines.length > 0
@@ -167,29 +192,24 @@ const visibleReasoningText = (rawText: string): string => (
 export const AgentExecutionTimeline: FC<{
   reasoningText?: string;
   processText?: string;
-  /** Legacy traces have no native parts; render them inline while they are
-   * being upgraded instead of hiding the whole run behind one process card. */
   presentation?: 'inline' | 'disclosure';
   /** Native assistant parts already render tool calls in chronological order.
    * In that mode keep only the durable control stages (evidence/reflection/
    * approval) so those checks remain visible without duplicating tool rows. */
   stageOnly?: boolean;
-  /**
-   * Terminal records created before Planning progress became native stream
-   * text have no interleaved progress parts. Include their compact Planning
-   * projection as a compatibility fallback while still avoiding tool rows.
-   */
-  includePlanning?: boolean;
+  /** Whether the caller already has the ordered native progress stream. */
+  nativeProgress?: boolean;
 }> = ({
   reasoningText = '',
   processText = '',
   presentation = 'disclosure',
   stageOnly = false,
-  includePlanning = false,
+  nativeProgress = false,
 }) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const messageActive = messageStatus === 'running' || messageStatus === 'requires-action';
   const messageTiming = useMessageTiming();
+  const persistedDuration = useMessage((state) => state.metadata?.custom?.agent_run_duration_ms);
   const stageData = useMessage((state) => state.metadata?.unstable_data);
   const traceData = useMessage((state) => (
     state.metadata?.custom?.agent_execution_trace
@@ -235,6 +255,9 @@ export const AgentExecutionTimeline: FC<{
         result,
         kind: isTool ? 'tool' : 'stage',
         modelTurn,
+        compactTeamWorkerStatus: Boolean(
+          stageOnly && nativeProgress && !isTool && isTeamWorkerStage(event),
+        ),
       };
     });
     results.forEach((result, resultIndex) => {
@@ -242,14 +265,36 @@ export const AgentExecutionTimeline: FC<{
       if (key && includedResults.has(key)) return;
       output.push({ key: `tool:${key || `unmatched-${resultIndex}`}`, result, kind: 'tool' });
     });
-    return stageOnly
-      ? output.filter((row) => row.kind === 'stage'
-        && row.event
-        && !['model', 'publish', 'routing'].includes(row.event.stage)
-        && (includePlanning || row.event.stage !== 'planning'
-          || ['failed', 'blocked', 'cancelled'].includes(row.event.status)))
-      : output;
-  }, [events, results, stageOnly, includePlanning]);
+    if (!stageOnly) return output;
+    return output.filter((row) => {
+      if (row.kind === 'tool') {
+        // Worker child tool chunks are intentionally kept off the native
+        // assistant message. Reuse their safe parent projection here so a
+        // live Team run still shows the same compact tool progress as Plan.
+        // A terminal trace can contain an orphaned child ``started`` event
+        // when the worker was interrupted between tool execution and its
+        // handoff. The parent worker status/terminal outcome is authoritative
+        // then; do not replay an obsolete spinner as if it were still live.
+        return nativeProgress
+          && Boolean(row.event && isTeamStage(row.event))
+          && (messageActive || row.event?.status !== 'started');
+      }
+      if (!row.event) return false;
+      const event = row.event;
+      // Team phase text is already emitted as ordered native text. Keep the
+      // domain-worker lifecycle row beside it so users can see which
+      // parallel direction is running or has a gap.
+      if (isTeamStage(event)) {
+        if (nativeProgress) return isTeamWorkerStage(event);
+        return event.status === 'failed'
+          || event.status === 'blocked'
+          || event.status === 'cancelled';
+      }
+      return !['model', 'publish', 'routing'].includes(event.stage)
+        && (event.stage !== 'planning'
+          || ['failed', 'blocked', 'cancelled'].includes(event.status));
+    });
+  }, [events, results, stageOnly, nativeProgress, messageActive]);
   const phases = useMemo(() => groupTimelinePhases(rows), [rows]);
   // A model.started event is an internal lifecycle marker, not user-facing
   // progress. During a live run, do not turn that marker into a separate
@@ -278,18 +323,17 @@ export const AgentExecutionTimeline: FC<{
   // makes the whole run incomplete; the individual tool row keeps its own
   // warning state and explanation.
   const hasProblem = problemSummary.length > 0;
-  const eventDurationMs = useMemo(() => agentStageDurationMs(events), [events]);
+  const eventDurationMs = useMemo(() => agentStageDurationMs(agentStageEvents(stageData)), [stageData]);
   const streamDurationMs = typeof messageTiming?.totalStreamTime === 'number'
     && Number.isFinite(messageTiming.totalStreamTime)
     && messageTiming.totalStreamTime >= 0
     ? messageTiming.totalStreamTime
     : undefined;
-  // A terminal trace placeholder has no local stream timer and assistant-ui
-  // reports 0. Prefer the durable event interval when it contains real time.
-  const durationMs = streamDurationMs !== undefined
-    && (streamDurationMs > 0 || eventDurationMs === undefined)
-    ? streamDurationMs
-    : eventDurationMs;
+  // Server events measure this run, independently of client reconnects and
+  // history hydration. The local stream timer is only a fallback.
+  const durationMs = typeof persistedDuration === 'number' && Number.isFinite(persistedDuration) && persistedDuration >= 0
+    ? persistedDuration
+    : eventDurationMs ?? streamDurationMs;
   const durationLabel = durationMs == null ? null : formatElapsedDuration(durationMs);
   const compactLabel = hasProblem && !messageActive
     ? `执行未完成${durationLabel ? ` · 用时 ${durationLabel}` : ''}`

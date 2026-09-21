@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from market_data_service.akshare_isolation import call_akshare_isolated
+
 from .common import fetch_frame, section_envelope
 
 
@@ -70,7 +72,7 @@ def get_trading_evidence(symbol: str, *, days: int = 30) -> dict[str, Any]:
         "chip_distribution": fetch_frame(
             "stock_cyq_em",
             f"company:chip_distribution:{code}",
-            lambda: ak.stock_cyq_em(symbol=code, adjust=""),
+            lambda: call_akshare_isolated("stock_cyq_em", symbol=code, adjust=""),
             ttl_seconds=1800,
             limit=120,
         ),

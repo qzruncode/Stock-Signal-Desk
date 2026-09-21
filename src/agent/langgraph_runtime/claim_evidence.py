@@ -60,7 +60,11 @@ _FRESHNESS_DISCLAIMER = re.compile(
     r"不宜(?:直接)?(?:表述|称|当作)|不能(?:直接)?(?:表述|称|当作))",
     re.IGNORECASE,
 )
-_COMPACT_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]+[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*|\d{6,})(?![A-Za-z0-9_])")
+# Do not extract an integer prefix from a decimal-valued expression (for
+# example ROE-15.17 -> ROE-15). This is a lexical boundary, not an allowlist of
+# financial terms; whole identifiers such as ABC-15 and 600438 still require
+# matching source evidence.
+_COMPACT_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]+[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*|\d{6,})(?![A-Za-z0-9_]|\.\d)")
 _NON_ENTITY_IDENTIFIER = re.compile(
     r"^(?:Q[1-4](?:-Q[1-4])?|[1-4]Q(?:-[1-4]Q)?|"
     r"(?:MA|EMA|SMA|RSI|ATR|PE|PB|PEG)\d*|FY\d{2,4}|H[12])$",

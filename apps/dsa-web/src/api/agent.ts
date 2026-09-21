@@ -133,8 +133,110 @@ export interface AgentPlanningTrace {
   updates?: PersistedAgentStage[];
 }
 
+export interface AgentTeamResult {
+  taskId?: string;
+  agentId?: string;
+  agentNode?: string;
+  role?: string;
+  status?: string;
+  /** Server-owned retry attempt for this logical task. */
+  attempt?: number;
+  summary?: string;
+  findings?: string[];
+  findingEvidenceIds?: string[][];
+  limitations?: string[];
+  openQuestions?: string[];
+  confidence?: string;
+  failureStrategy?: string;
+  evidenceIds?: string[];
+  toolCallCount?: number;
+  modelTurnCount?: number;
+  assessmentStatus?: string;
+  criteriaStatus?: string;
+  criteriaChecks?: Record<string, unknown>[];
+  unmetCriteria?: string[];
+  errorCode?: string | null;
+  errorDetail?: string | null;
+  [key: string]: unknown;
+}
+
+export interface AgentTeamWorkerHandoff {
+  status?: string;
+  taskIds?: string[];
+  incompleteTaskIds?: string[];
+  error?: string | null;
+}
+
+export interface AgentTeamFailurePolicy {
+  action?: string;
+  taskIds?: string[];
+  status?: string;
+  error?: string | null;
+}
+
+export interface AgentTeamFailure {
+  status?: string;
+  errorCode?: string | null;
+  detail?: string | null;
+  phase?: string | null;
+  dispatchStatus?: string | null;
+}
+
+export interface AgentTeamTrace {
+  agentMode?: string;
+  resolvedAgentMode?: string;
+  mode: string;
+  requestedMode?: string;
+  route?: string;
+  executionStrategy?: string;
+  routeReason?: string;
+  teamId?: string;
+  status?: string;
+  workerCount?: number;
+  completedWorkerCount?: number;
+  planSource?: string;
+  planError?: string | null;
+  contractCallCount?: number;
+  plan?: Record<string, unknown> | null;
+  results?: AgentTeamResult[];
+  review?: Record<string, unknown> | null;
+  reviewStatus?: string;
+  reviewError?: string | null;
+  evidenceMerge?: Record<string, unknown> | null;
+  evidenceMergeStatus?: string;
+  conflict?: Record<string, unknown> | null;
+  conflictStatus?: string;
+  critic?: Record<string, unknown> | null;
+  criticStatus?: string;
+  criteriaAssessment?: Record<string, unknown> | null;
+  criteriaStatus?: string;
+  criteriaError?: string | null;
+  bullCase?: Record<string, unknown> | null;
+  bullCaseStatus?: string;
+  bullCaseError?: string | null;
+  bearCase?: Record<string, unknown> | null;
+  bearCaseStatus?: string;
+  bearCaseError?: string | null;
+  consensus?: Record<string, unknown> | null;
+  consensusStatus?: string;
+  dispatchedTaskIds?: string[];
+  dispatchRound?: number;
+  taskAttempts?: Record<string, number>;
+  workerHandoff?: AgentTeamWorkerHandoff | null;
+  failurePolicy?: AgentTeamFailurePolicy | null;
+  planningHandoff?: Record<string, unknown> | null;
+  planningHandoffStatus?: string;
+  planningHandoffError?: string | null;
+  failure?: AgentTeamFailure | null;
+}
+
 export interface AgentExecutionTrace {
+  /** Product mode selected for this turn: auto, direct, plan, or team. */
+  agentMode?: string;
+  /** Effective route selected by Auto, when Auto was requested. */
+  resolvedAgentMode?: string | null;
   /** Ordered, bounded assistant-stream parts used for terminal replay. */
+  displayPartsVersion?: number;
   displayParts?: Record<string, unknown>[];
   stages?: PersistedAgentStage[];
   actions?: Record<string, unknown>[];
@@ -143,9 +245,10 @@ export interface AgentExecutionTrace {
   claimEvidence?: Record<string, unknown>[];
   structuredAnswer?: StructuredAnswerProjection | null;
   planning?: AgentPlanningTrace | null;
+  team?: AgentTeamTrace | null;
   loop?: Record<string, unknown>;
   completedToolCallIds?: string[];
-  /** Defensive marker when a legacy or malformed API response was compacted for rendering. */
+  /** Defensive marker when a malformed API response was compacted for rendering. */
   clientTraceTruncated?: boolean;
 }
 
@@ -176,6 +279,8 @@ export interface AgentCheckpointMetadata {
 }
 
 export interface AgentCheckpointStateSummary {
+  agentMode?: string;
+  resolvedAgentMode?: string | null;
   runId?: string | null;
   conversationId?: string | null;
   status?: string | null;
@@ -249,28 +354,42 @@ export interface ChatConversationDetail extends ChatConversationItem {
     assistantText: string;
     hasToolEvents?: boolean;
     latestStage?: PersistedAgentStage | null;
-    /** @deprecated The canonical trace is the conversation-level executionTrace. */
-    executionTrace?: AgentExecutionTrace | null;
     pendingInterrupt?: PendingAgentInterrupt | null;
   };
   pendingInterrupt?: PendingAgentInterrupt | null;
 }
 
-// Conversation detail is a rendering boundary, not an audit export.  The
-// server emits a compact execution trace for normal LangGraph runs, but a
-// rolling deployment or an old stored record can still return a raw trace.
-// Project it before camelcase-keys walks the payload so one oversized tool
-// result cannot freeze the whole chat page during hydration.
-const CLIENT_TRACE_MAX_CHARACTERS = 180_000;
+// Conversation detail is a rendering boundary, not an audit export. Project
+// the current execution trace before camelcase-keys walks the payload so one
+// oversized tool result cannot freeze the chat page during hydration.
+// Bound each typed projection independently. A large transcript must not
+// consume the evidence catalog's budget (turning valid citations into false
+// "unresolved" warnings), or erase Team status. Field/array/depth caps still
+// bound the whole response; raw audit payloads never enter the page state.
+const CLIENT_TRACE_FIELD_MAX_CHARACTERS = 180_000;
+// Stage status is the source of truth for the process projection. Keep a
+// separate slice of the client budget for it so verbose tool/evidence payloads
+// cannot erase the final Worker outcome during terminal replay.
+const CLIENT_STAGE_HISTORY_RESERVE = 64_000;
 const CLIENT_TRACE_MAX_DEPTH = 7;
 const CLIENT_STRUCTURED_ANSWER_MAX_DEPTH = 10;
 const CLIENT_TRACE_MAX_OBJECT_KEYS = 24;
+// Team is a typed process projection. Its top-level contract contains more
+// than the generic trace object limit (plan/results plus every review status),
+// so applying the generic 24-key cap silently turns later phases into
+// "queued" during history replay. Keep the Team object bounded, but large
+// enough to retain its complete lifecycle contract.
+const CLIENT_TEAM_MAX_OBJECT_KEYS = 96;
 const CLIENT_TRACE_MAX_TEXT = 1_600;
 const CLIENT_DISPLAY_PART_TEXT = 12_000;
 const CLIENT_STRUCTURED_ANSWER_TEXT = 12_000;
 const CLIENT_STRUCTURED_ANSWER_ARRAY_LIMIT = 120;
 const CLIENT_TRACE_FIELD_LIMITS: Array<[string, string, number]> = [
   ['display_parts', 'displayParts', 240],
+  // Team member results drive the independent workspaces. Project them before
+  // verbose tool/evidence payloads so a large research answer cannot erase the
+  // per-member terminal status during refresh replay.
+  ['team', 'team', 1],
   // Citations are part of the final answer contract.  Keep the compact
   // evidence/result projections before the verbose stage history so a long
   // run cannot make every hover degrade to "details unavailable" merely
@@ -350,6 +469,7 @@ const projectTraceValue = (
   textLimit = CLIENT_TRACE_MAX_TEXT,
   maxDepth = CLIENT_TRACE_MAX_DEPTH,
   nestedArrayLimit = 16,
+  maxObjectKeys = CLIENT_TRACE_MAX_OBJECT_KEYS,
 ): unknown => {
   if (budget.remaining <= 0) {
     budget.exhausted = true;
@@ -385,7 +505,7 @@ const projectTraceValue = (
     let keyCount = 0;
     for (const key in value) {
       if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-      if (keyCount >= CLIENT_TRACE_MAX_OBJECT_KEYS || budget.remaining <= 0) {
+      if (keyCount >= maxObjectKeys || budget.remaining <= 0) {
         projected._clientTruncated = true;
         budget.exhausted = true;
         break;
@@ -400,6 +520,7 @@ const projectTraceValue = (
         textLimit,
         maxDepth,
         nestedArrayLimit,
+        maxObjectKeys,
       );
       keyCount += 1;
     }
@@ -410,13 +531,226 @@ const projectTraceValue = (
   return projected;
 };
 
+const CLIENT_STAGE_TOP_LEVEL_KEYS = [
+  'event',
+  'run_id',
+  'runId',
+  'engine',
+  'stage',
+  'status',
+  'action_id',
+  'actionId',
+  'task_id',
+  'taskId',
+  'tool_call_id',
+  'toolCallId',
+  'round_id',
+  'roundId',
+  'error_code',
+  'errorCode',
+  // Details is intentionally inserted before the human summary. Worker role
+  // and Team identity must survive even when one event reaches its cap.
+  'details',
+  'summary',
+  'occurred_at',
+  'occurredAt',
+] as const;
+
+const CLIENT_STAGE_DETAIL_KEYS = [
+  'team_id',
+  'teamId',
+  'task_id',
+  'taskId',
+  'agent_id',
+  'agentId',
+  'agent_node',
+  'agentNode',
+  'expert_id',
+  'expertId',
+  'attempt',
+  'max_attempts',
+  'maxAttempts',
+  'attempts',
+  'dispatcher',
+  'handoff',
+  'policy',
+  'action',
+  'round',
+  'ready_task_ids',
+  'readyTaskIds',
+  'dispatched_task_ids',
+  'dispatchedTaskIds',
+  'retry_task_ids',
+  'retryTaskIds',
+  'dispatch_task_ids',
+  'dispatchTaskIds',
+  'incomplete_task_ids',
+  'incompleteTaskIds',
+  'missing_task_ids',
+  'missingTaskIds',
+  'task_ids',
+  'taskIds',
+  'statuses',
+  'progress_kind',
+  'progressKind',
+  'planning_phase',
+  'planningPhase',
+  'phase',
+  'step_id',
+  'stepId',
+  'objective',
+  'goal',
+  'initial_state',
+  'initialState',
+  'completed_summary',
+  'completedSummary',
+  'next_step_id',
+  'nextStepId',
+  'next_step_reason',
+  'nextStepReason',
+  'completion_criteria',
+  'completionCriteria',
+  'criteria_status',
+  'criteriaStatus',
+  'missing_items',
+  'missingItems',
+  'observed_facts',
+  'observedFacts',
+  'evidence_ids',
+  'evidenceIds',
+  'evidence_id',
+  'evidenceId',
+  'verdict',
+  'reflection_round',
+  'reflectionRound',
+  'reviewer_mode',
+  'reviewerMode',
+  'issues',
+  'tool_name',
+  'toolName',
+  'tool_call_id',
+  'toolCallId',
+  'progress_text',
+  'progressText',
+  'user_message',
+  'userMessage',
+  'model_summary',
+  'modelSummary',
+  'progress_preview',
+  'progressPreview',
+  'model_turn',
+  'modelTurn',
+  'error_code',
+  'errorCode',
+  'status',
+  'claim_count',
+  'claimCount',
+  'fact_claim_count',
+  'factClaimCount',
+  'inference_claim_count',
+  'inferenceClaimCount',
+  'reason',
+  'result_summary',
+  'resultSummary',
+  'data_time',
+  'dataTime',
+  'result_count',
+  'resultCount',
+  'omitted_result_count',
+  'omittedResultCount',
+  'source_labels',
+  'sourceLabels',
+  'reference_links',
+  'referenceLinks',
+  'result_items',
+  'resultItems',
+  'errors',
+  'success',
+  'arguments',
+  'argument_keys',
+  'argumentKeys',
+] as const;
+
+/**
+ * Keep every lifecycle event addressable while compacting verbose details.
+ * A tail-only fallback would preserve the final status but break chronological
+ * Team/Plan replay, so each event receives a small independent allowance.
+ */
+const projectStageHistoryForClient = (
+  value: unknown,
+  maxCharacters: number,
+): unknown[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const eventBudget = Math.min(
+    1_200,
+    Math.max(480, Math.floor(maxCharacters / Math.max(value.length, 1))),
+  );
+  return value.map((rawStage) => {
+    if (!isRecord(rawStage)) return rawStage;
+    const stage: Record<string, unknown> = {};
+    CLIENT_STAGE_TOP_LEVEL_KEYS.forEach((key) => {
+      if (
+        key !== 'details'
+        && key !== 'summary'
+        && key !== 'occurred_at'
+        && key !== 'occurredAt'
+        && rawStage[key] !== undefined
+      ) {
+        stage[key] = rawStage[key];
+      }
+    });
+    const rawDetails = rawStage.details;
+    if (isRecord(rawDetails)) {
+      const details: Record<string, unknown> = {};
+      CLIENT_STAGE_DETAIL_KEYS.forEach((key) => {
+        if (rawDetails[key] !== undefined) details[key] = rawDetails[key];
+      });
+      if (Object.keys(details).length > 0) {
+        stage.details = projectTraceValue(
+          details,
+          {
+            remaining: Math.max(240, Math.floor(eventBudget * 0.55)),
+            exhausted: false,
+          },
+          0,
+          8,
+          360,
+          4,
+          8,
+        );
+      }
+    }
+    if (rawStage.summary !== undefined) stage.summary = rawStage.summary;
+    if (rawStage.occurred_at !== undefined) stage.occurred_at = rawStage.occurred_at;
+    if (rawStage.occurredAt !== undefined) stage.occurredAt = rawStage.occurredAt;
+    return projectTraceValue(
+      stage,
+      { remaining: eventBudget, exhausted: false },
+      0,
+      8,
+      360,
+      4,
+      8,
+    );
+  });
+};
+
 const projectExecutionTraceForClient = (value: unknown): Record<string, unknown> | undefined => {
   if (!isRecord(value)) return undefined;
-  const budget: TraceBudget = { remaining: CLIENT_TRACE_MAX_CHARACTERS, exhausted: false };
+  const rawStages = value.stages;
+  const stageHistory = Array.isArray(rawStages)
+    ? projectStageHistoryForClient(rawStages, CLIENT_STAGE_HISTORY_RESERVE)
+    : undefined;
+  let truncated = false;
   const projected: Record<string, unknown> = {};
   for (const [snakeKey, camelKey, arrayLimit] of CLIENT_TRACE_FIELD_LIMITS) {
+    if (snakeKey === 'stages') continue;
     const raw = value[snakeKey] ?? value[camelKey];
     if (raw === undefined) continue;
+    const fieldBudget: TraceBudget = {
+      remaining: CLIENT_TRACE_FIELD_MAX_CHARACTERS,
+      exhausted: false,
+    };
     let textLimit = CLIENT_TRACE_MAX_TEXT;
     if (snakeKey === 'display_parts') {
       textLimit = CLIENT_DISPLAY_PART_TEXT;
@@ -425,15 +759,22 @@ const projectExecutionTraceForClient = (value: unknown): Record<string, unknown>
     }
     projected[snakeKey] = projectTraceValue(
       raw,
-      budget,
+      fieldBudget,
       0,
       arrayLimit,
       textLimit,
       snakeKey === 'structured_answer' ? CLIENT_STRUCTURED_ANSWER_MAX_DEPTH : CLIENT_TRACE_MAX_DEPTH,
       snakeKey === 'structured_answer' ? CLIENT_STRUCTURED_ANSWER_ARRAY_LIMIT : 16,
+      snakeKey === 'team' ? CLIENT_TEAM_MAX_OBJECT_KEYS : CLIENT_TRACE_MAX_OBJECT_KEYS,
     );
+    truncated ||= fieldBudget.exhausted;
   }
-  if (budget.exhausted) projected.client_trace_truncated = true;
+  const rawDisplayPartsVersion = value.display_parts_version ?? value.displayPartsVersion;
+  if (typeof rawDisplayPartsVersion === 'number' && Number.isFinite(rawDisplayPartsVersion)) {
+    projected.display_parts_version = Math.max(0, Math.floor(rawDisplayPartsVersion));
+  }
+  if (stageHistory) projected.stages = stageHistory;
+  if (truncated) projected.client_trace_truncated = true;
   return projected;
 };
 
@@ -468,14 +809,13 @@ const normalizeConversationDetail = (payload: Record<string, unknown>): ChatConv
   }
   const rawResumeState = presentationPayload.resume_state ?? presentationPayload.resumeState;
   const resumeStatePayload = isRecord(rawResumeState) ? { ...rawResumeState } : undefined;
-  const rawResumeTrace = resumeStatePayload?.execution_trace ?? resumeStatePayload?.executionTrace;
   if (resumeStatePayload) {
     delete resumeStatePayload.execution_trace;
     delete resumeStatePayload.executionTrace;
     presentationPayload.resume_state = resumeStatePayload;
     delete presentationPayload.resumeState;
   }
-  const executionTrace = projectExecutionTraceForClient(rawExecutionTrace ?? rawResumeTrace);
+  const executionTrace = projectExecutionTraceForClient(rawExecutionTrace);
   if (executionTrace) presentationPayload.execution_trace = executionTrace;
   const rawPending = presentationPayload.pending_interrupt ?? presentationPayload.pendingInterrupt;
   const data = toCamelCase<ChatConversationDetail>(presentationPayload);

@@ -8,13 +8,13 @@ import json
 import logging
 from typing import Any, Mapping
 
-from assistant_stream.serialization.data_stream import DataStreamResponse
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from api.v1.endpoints.agent.conversation_lifecycle import conversation_transition
 from src.agent.run_registry import RunBroadcaster, RunCapacityExceeded, active_run_registry
 from src.agent.run_streaming import (
+    OrderedDataStreamResponse,
     durable_subscriber_stream,
     subscriber_stream,
     timeline_presentation_stream,
@@ -145,14 +145,14 @@ async def agent_chat_impl(
                 active_run.status,
             )
             if durable_run is not None:
-                return DataStreamResponse(
+                return OrderedDataStreamResponse(
                     stream_for_client(durable_subscriber_stream(
                         db_manager,
                         durable_run,
                         replay_from=replay_from,
                     ))
                 )
-            return DataStreamResponse(
+            return OrderedDataStreamResponse(
                 stream_for_client(subscriber_stream(active_run, replay_from=replay_from))
             )
         if active_run is not None:
@@ -185,7 +185,7 @@ async def agent_chat_impl(
                 replay_from,
                 durable_run.get("status"),
             )
-            return DataStreamResponse(
+            return OrderedDataStreamResponse(
                 stream_for_client(durable_subscriber_stream(
                     db_manager,
                     durable_run,
@@ -325,7 +325,7 @@ async def agent_chat_impl(
             await active_run_registry.mark_done(conv_id, "failed", error="run_start_failed")
             logger.exception("[Agent] failed to start run_id=%s", run.run_id)
             raise HTTPException(status_code=500, detail="AI 助手任务启动失败，请重试") from exc
-        return DataStreamResponse(stream_for_client(subscriber_stream(run, first_queue)))
+        return OrderedDataStreamResponse(stream_for_client(subscriber_stream(run, first_queue)))
 
 
 __all__ = ["agent_chat_impl"]

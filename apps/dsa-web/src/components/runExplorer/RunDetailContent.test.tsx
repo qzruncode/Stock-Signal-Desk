@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentRunDetail } from '../../api/runExplorer';
 import { RunDetailContent } from './RunDetailContent';
-import { PlanningAuditCard } from './RunDetailCards';
+import { PlanningAuditCard, TeamAuditCard } from './RunDetailCards';
 
 it('shows persisted Planning reports and criterion checks independently of overall run success', () => {
   render(<PlanningAuditCard planning={{
@@ -31,6 +31,60 @@ it('keeps replaced-step reports and unmet overall criteria visible after replann
   expect(screen.getByText('未满足：两家公司口径一致 — 另一家公司仍缺少报告期')).toBeInTheDocument();
   fireEvent.click(screen.getByText('被替换步骤的历史报告'));
   expect(screen.getByText('原来源只返回了部分数据。')).toBeInTheDocument();
+});
+
+it('shows the persisted multi-agent route, worker handoffs, evidence, and review', () => {
+  render(<TeamAuditCard team={{
+    agentMode: 'team', mode: 'multi_agent_team', route: 'planned', executionStrategy: 'team', routeReason: '需要同时核验行情与基本面', status: 'completed',
+    workerCount: 2, completedWorkerCount: 2, contractCallCount: 4,
+    taskAttempts: { 'market-task': 2, 'fundamental-task': 1 },
+    workerHandoff: { status: 'completed', taskIds: ['market-task', 'fundamental-task'] },
+    failurePolicy: { action: 'merge', status: 'passed', taskIds: [] },
+    evidenceMerge: { summary: '已合并 2 条证据', status: 'completed', invalidEvidenceIds: ['ev_forged'] }, evidenceMergeStatus: 'completed',
+    planningHandoff: { planningStatus: 'completed', planningReplanCount: 1 }, planningHandoffStatus: 'completed',
+    conflict: { status: 'none', reason: '没有发现冲突', issues: [] }, conflictStatus: 'completed',
+    plan: {
+      goal: '完成两个领域核验',
+      tasks: [
+        { taskId: 'market-task', role: 'market', objective: '核验行情', allowedTools: ['read_realtime_quote'], inputContext: ['当前股票'], outputFormat: '行情观察', timeoutSeconds: 90, failureStrategy: 'partial', successCriteria: ['返回行情观察'] },
+        { taskId: 'fundamental-task', role: 'fundamental', objective: '核验基本面', allowedTools: ['get_financials'], outputFormat: '财务观察', timeoutSeconds: 120, failureStrategy: 'replan', dependsOn: ['market-task'], successCriteria: ['返回基本面观察'] },
+      ],
+    },
+    results: [{
+      taskId: 'market-task', agentNode: 'MarketAgent', role: 'market', status: 'completed', attempt: 2, summary: '行情观察已完成',
+      findings: ['价格观察'], findingEvidenceIds: [['ev_market']], evidenceIds: ['ev_market'], toolCallCount: 1, confidence: 'medium',
+    }, {
+      taskId: 'fundamental-task', agentNode: 'FundamentalAgent', role: 'fundamental', status: 'completed', summary: '基本面观察已完成',
+      findings: ['财务观察'], evidenceIds: ['ev_fundamental'], toolCallCount: 1, confidence: 'high',
+    }],
+    criteriaAssessment: {
+      status: 'passed',
+      checks: [{ criterionIndex: 1, criterion: '两个领域均有可追溯交接', verdict: 'pass', explanation: '两个 worker 均提供有效证据', evidenceIds: ['ev_market', 'ev_fundamental'] }],
+      unmetCriteria: [],
+    },
+    criteriaStatus: 'passed',
+    review: { verdict: 'pass', summary: '两个领域口径一致', issues: [] }, reviewStatus: 'completed',
+    critic: { verdict: 'pass', summary: '覆盖和证据可以安全综合', issues: [] }, criticStatus: 'completed',
+    consensus: { verdict: 'pass', conclusion: '共识结论', rationale: '证据一致', allowFinalAnswer: true, needsReplan: false },
+  }} />);
+
+  expect(screen.getByText('多智能体协作')).toBeInTheDocument();
+  expect(screen.getByText('Team · 协作')).toBeInTheDocument();
+  expect(screen.getByText('Agent 节点：MarketAgent')).toBeInTheDocument();
+  expect(screen.getByText(/证据合并：completed/)).toBeInTheDocument();
+  expect(screen.getByText('已拒绝无效证据引用：ev_forged')).toBeInTheDocument();
+  expect(screen.getByText('PlanningCoordinator 回接 · 目标检查通过')).toBeInTheDocument();
+  expect(screen.getByText('WorkerHandoff · 交接完成')).toBeInTheDocument();
+  expect(screen.getByText('WorkerFailurePolicy · 进入证据合并')).toBeInTheDocument();
+  expect(screen.getByText('计划完成条件 · 全部通过（1 / 1）')).toBeInTheDocument();
+  fireEvent.click(screen.getAllByText(/核验行情/).find((element) => element.tagName === 'SUMMARY')!);
+  expect(screen.getByText('行情观察已完成')).toBeInTheDocument();
+  expect(document.body.textContent).toContain('ev_market');
+  expect(screen.getByText('输入上下文：当前股票')).toBeInTheDocument();
+  expect(screen.getByText('观察证据映射：ev_market')).toBeInTheDocument();
+  expect(screen.getByText('执行次数：2')).toBeInTheDocument();
+  expect(screen.getByText('共识结论')).toBeInTheDocument();
+  expect(screen.getByText('复核通过')).toBeInTheDocument();
 });
 
 const detail: AgentRunDetail = {
@@ -146,6 +200,35 @@ describe('RunDetailContent', () => {
     expect(screen.getByText('工具 read_rss_source 曾失败但已恢复')).toBeInTheDocument();
     expect(screen.queryByText('工具调用存在未解决的问题')).not.toBeInTheDocument();
     expect(screen.queryByText('查看运行错误详情')).not.toBeInTheDocument();
+  });
+
+  it('does not turn recovered tools back into unresolved failures when evidence leaves the run partial', () => {
+    const audit = completedWithFailedCall.snapshot.behaviorAudit!;
+    render(<RunDetailContent detail={{
+      ...completedWithFailedCall,
+      snapshot: {
+        ...completedWithFailedCall.snapshot,
+        run: { ...completedWithFailedCall.snapshot.run, status: 'partial' },
+        behaviorAudit: { ...audit, findings: [{ ...audit.findings[0], disposition: 'advisory', severity: 'info' }] },
+      },
+      score: { ...detail.score, dimensions: { execution: { score: 0.75, weight: 0.25, details: { status: 'partial' } } } },
+    }} onFeedback={vi.fn()} />);
+    expect(screen.queryByText('工具调用存在未解决的问题')).not.toBeInTheDocument();
+    expect(screen.getByText('运行未完整完成')).toBeInTheDocument();
+  });
+
+  it('labels suppressed repeated requests separately from calls that actually failed', () => {
+    render(<RunDetailContent detail={{
+      ...completedWithFailedCall,
+      snapshot: {
+        ...completedWithFailedCall.snapshot, steps: [],
+        qualityProjection: { toolResults: [
+          { actionId: 'original', toolName: 'read_quote', success: false, errorCode: 'provider_timeout' },
+          { actionId: 'suppressed', toolName: 'read_quote', success: false, errorCode: 'repeated_failed_source' },
+        ], evidence: [] },
+      },
+    }} onFeedback={vi.fn()} />);
+    expect(screen.getByText('1 次工具失败，1 次重复请求已拦截')).toBeInTheDocument();
   });
 
   it('shows failures from historical ledger-only records without changing run status', () => {

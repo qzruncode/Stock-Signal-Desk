@@ -254,6 +254,7 @@ TOOL = ToolSpec(
     ),
     executor=read_text_document,
     category="sentiment",
+    web_fallback=False,
 )
 
 

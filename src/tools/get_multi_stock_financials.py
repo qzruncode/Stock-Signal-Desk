@@ -212,6 +212,7 @@ TOOLS = (
         ),
         executor=read_local_financial_snapshot,
         category="financials",
+        web_fallback=False,
         max_attempts=1,
     ),
     ToolSpec(
@@ -238,6 +239,7 @@ TOOLS = (
         ),
         executor=read_annual_financial_snapshot_eastmoney,
         category="financials",
+        web_fallback=True,
         max_attempts=1,
     ),
 )

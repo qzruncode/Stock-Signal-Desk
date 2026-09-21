@@ -24,6 +24,5 @@ from api.v1.endpoints.agent.chat import _registry  # noqa: E402, F401
 from api.v1.endpoints.agent.tools import (  # noqa: E402, F401
     _compact_tool_result,
     _format_result,
-    _maybe_attach_search_fallback,
 )
 from api.v1.endpoints.agent.health import _assess_tool_data_health  # noqa: E402, F401

@@ -7,12 +7,15 @@ import asyncio
 import logging
 from typing import Any
 
-from assistant_stream.serialization.data_stream import DataStreamResponse
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from src.agent.run_registry import active_run_registry
-from src.agent.run_streaming import durable_subscriber_stream, subscriber_stream
+from src.agent.run_streaming import (
+    OrderedDataStreamResponse,
+    durable_subscriber_stream,
+    subscriber_stream,
+)
 from src.agent.runtime_safety import AgentRequestValidationError, validate_chat_request_body
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
@@ -68,7 +71,7 @@ async def agent_chat_resume_impl(
             replay_from = max(0, int(body.get("after_chunk_index") or 0))
         except (TypeError, ValueError):
             replay_from = 0
-        return DataStreamResponse(
+        return OrderedDataStreamResponse(
             durable_subscriber_stream(
                 db_manager,
                 durable_run,
@@ -80,14 +83,14 @@ async def agent_chat_resume_impl(
     except (TypeError, ValueError):
         replay_from = 0
     if durable_run is not None:
-        return DataStreamResponse(
+        return OrderedDataStreamResponse(
             durable_subscriber_stream(
                 db_manager,
                 durable_run,
                 replay_from=replay_from,
             )
         )
-    return DataStreamResponse(subscriber_stream(run, replay_from=replay_from))
+    return OrderedDataStreamResponse(subscriber_stream(run, replay_from=replay_from))
 
 
 __all__ = ["agent_chat_resume_impl"]

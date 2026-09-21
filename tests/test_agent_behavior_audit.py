@@ -6,6 +6,8 @@ from src.agent.behavior_audit import (
     describe_tool_outcome,
     describe_tool_quality,
 )
+from src.agent.terminal_publisher import _trace_tool_results, _trace_evidence, _trace_claim_evidence
+from src.agent.langgraph_runtime.content_access import reference_candidates
 
 
 def _snapshot(tool_results, *, claims=None, evidence=None, final_text=""):
@@ -19,6 +21,26 @@ def _snapshot(tool_results, *, claims=None, evidence=None, final_text=""):
         },
         "steps": [],
     }
+
+
+def test_task_scoped_join_keys_are_lossless_in_trace_and_content_projection():
+    prefix = "team:" + "a" * 200
+    records = [{"action_id": f"{prefix}:content:{i}", "tool_name": "search_web_source", "success": True,
+                "content_access": {"mode": "reference_only"},
+                "display_result": {"result_count": 1},
+                "result": {"success": True, "items": [{"url": f"https://example.test/{i}", "title": "来源"}]}}
+               for i in range(2)]
+    evidence = [{"action_id": record["action_id"], "evidence_id": "ev_" + record["action_id"],
+                 "success": True, "result": record["result"]} for record in records]
+    trace = _trace_tool_results(records)
+    assert [r["action_id"] for r in trace] == [r["action_id"] for r in records]
+    assert len({r["action_id"] for r in trace}) == 2
+    assert [r["action_id"] for r in reference_candidates(records)] == [r["action_id"] for r in records]
+    assert [r["evidence_id"] for r in _trace_evidence(evidence)] == [r["evidence_id"] for r in evidence]
+    claims = _trace_claim_evidence([{"evidence_ids": [evidence[0]["evidence_id"]]}])
+    assert claims[0]["evidence_ids"] == [evidence[0]["evidence_id"]]
+    audit = build_behavior_audit(_snapshot(trace, evidence=evidence))
+    assert not any(f["code"] == "successful_result_without_evidence" for f in audit["findings"])
 
 
 def test_legacy_claim_with_invalid_citation_requires_action_despite_passing_checks() -> None:
@@ -780,6 +802,18 @@ def test_failed_tool_is_advisory_when_same_arguments_later_succeed() -> None:
     assert audit["action_required_count"] == 0
 
 
+def test_suppressed_retry_is_not_another_external_tool_failure() -> None:
+    audit = build_behavior_audit(_snapshot([{
+        "action_id": "suppressed", "tool_name": "read_index_quote_sina", "success": False,
+        "error_code": "repeated_failed_source", "errors": ["该来源和参数已经失败，本次未执行"],
+    }]))
+    assert audit["failed_tool_count"] == 0
+    assert not any(f["code"] == "tool_execution_failed" for f in audit["findings"])
+    finding = next(f for f in audit["findings"] if f["code"] == "repeated_failed_source_blocked")
+    assert finding["disposition"] == "advisory"
+    assert finding["action_ids"] == ["suppressed"]
+
+
 def test_unrelated_later_web_success_does_not_prove_source_recovery() -> None:
     audit = build_behavior_audit(
         _snapshot(
@@ -816,6 +850,23 @@ def test_unrelated_later_web_success_does_not_prove_source_recovery() -> None:
     assert "恢复" not in finding["title"]
     assert finding["detail"].startswith("工具调用记录失败：upstream disconnected")
     assert "运行记录标记为失败" not in finding["detail"]
+
+
+def test_owned_web_recovery_requires_a_cited_usable_result_from_the_same_task() -> None:
+    failed = {"action_id": "failed", "task_id": "market", "tool_name": "read_realtime_quote",
+              "success": False, "errors": ["provider unavailable"]}
+    web = {"action_id": "body", "task_id": "market", "tool_name": "read_web_source", "success": True,
+           "fallback_request_id": "recovery", "fallback_for_action_id": "failed", "result_count": 1,
+           "result": {"success": True, "content": "当前报价已核验"}}
+    evidence = [{"evidence_id": "ev_body", "action_id": "body", "success": True,
+                 "result": web["result"]}]
+    for cited, task in [(True, "market"), (False, "market"), (True, "news")]:
+        audit = build_behavior_audit(_snapshot(
+            [failed, {**web, "task_id": task}], evidence=evidence,
+            claims=[{"evidence_ids": ["ev_body"], "checks": {"tool_success": True}}] if cited else [],
+        ))
+        finding = next(item for item in audit["findings"] if item["code"] == "tool_execution_failed")
+        assert finding["disposition"] == ("advisory" if cited and task == "market" else "action_required")
 
 
 def test_earlier_success_is_retained_evidence_only_when_actually_cited() -> None:

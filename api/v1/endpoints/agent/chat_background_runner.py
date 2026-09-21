@@ -7,6 +7,8 @@ import logging
 from typing import Any, Mapping
 
 from src.agent.langgraph_runtime import agent_graph_runtime
+from src.agent.langgraph_runtime.answer_contract import finalize_terminal_answer
+from src.agent.runtime_errors import build_runtime_error_receipt
 from src.agent.message_normalization import latest_user_text
 from src.agent.run_registry import ActiveRun, RunBroadcaster, active_run_registry
 from src.agent.terminal_publisher import AgentTerminalPublisher
@@ -30,6 +32,18 @@ def _graph_history_mode(body: Mapping[str, Any]) -> str:
     if requested_mode == "server":
         return "continue"
     return "auto"
+
+
+def _normalize_agent_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized not in {"auto", "direct", "plan", "team"}:
+        raise ValueError(f"unknown agent mode: {normalized}")
+    return normalized
+
+
+def _agent_mode(body: Mapping[str, Any]) -> str:
+    """Resolve the four-mode product contract; Auto is the default."""
+    return _normalize_agent_mode(body.get("agent_mode") or "auto")
 
 
 async def _checkpoint_state(conversation_id: str) -> dict[str, Any]:
@@ -126,6 +140,9 @@ async def _execute_background_agent_run(
                 system_prompt=system_prompt,
                 history_mode=_graph_history_mode(body),
                 planning_mode=str(body.get("planning_mode") or "auto"),
+                # The visible selector is the only product-mode contract.
+                # Missing values resolve to the explicit default: auto.
+                agent_mode=_agent_mode(body),
                 **common,
             )
 
@@ -175,7 +192,18 @@ async def _execute_background_agent_run(
         if active_run_registry.shutting_down or run.cancel_reason in {"restart", "lease_lost"}:
             raise
         try:
-            state = await _checkpoint_state(conversation_id)
+            # User cancellation is a terminal product action.  Close the
+            # native checkpoint before publishing ``agent_runs=cancelled``;
+            # otherwise the Team graph can be recovered later with workers or
+            # review stages still marked as running.
+            state = await agent_graph_runtime.finalize_checkpoint(
+                conversation_id,
+                status="cancelled",
+                error_code="cancelled",
+                terminal_detail="用户已停止本轮任务",
+            )
+            if not state:
+                state = await _checkpoint_state(conversation_id)
             partial = str(
                 state.get("answer_final")
                 or state.get("answer_draft")
@@ -212,14 +240,48 @@ async def _execute_background_agent_run(
         raise
     except Exception as exc:
         logger.exception("[Agent] LangGraph background run failed")
-        controller.add_error(str(exc))
-        state = await _checkpoint_state(conversation_id)
+        runtime_error = build_runtime_error_receipt(
+            exc,
+            run_id=run.run_id,
+            conversation_id=conversation_id,
+            scope="coordinator",
+            node="background_runner",
+            phase="run",
+            attempt=max(1, int(run.attempt or 1)),
+            failure_kind="graph",
+            error_code="agent_runtime_failed",
+            terminal_impact="terminal",
+            details={
+                "run_attempt": run.attempt,
+                "recovery": recovery,
+            },
+        )
+        # Keep provider/implementation details in server logs only.  First
+        # close the native checkpoint, then publish the same safe terminal
+        # status through ``agent_runs``; otherwise the browser can see a failed
+        # conversation while the checkpoint still advertises an executing task.
+        state = await agent_graph_runtime.finalize_checkpoint(
+            conversation_id,
+            status="failed",
+            error_code="agent_runtime_failed",
+            terminal_detail="本轮任务发生异常，已安全结束并保留执行详情。",
+        )
+        if not state:
+            state = await _checkpoint_state(conversation_id)
         partial = str(
             state.get("answer_final")
             or state.get("answer_draft")
             or controller.assistant_text_snapshot
             or ""
         ).strip()
+        if not partial:
+            partial = "本轮任务未能完成，已保留执行过程，请稍后重试。"
+        partial = finalize_terminal_answer(
+            partial,
+            status="failed",
+            error_code="agent_runtime_failed",
+            detail="本轮任务发生异常，已安全结束并保留执行详情。",
+        )
         latest_stage = {
             "event": "agent_stage",
             "engine": "langgraph_agent_loop",
@@ -228,15 +290,23 @@ async def _execute_background_agent_run(
             "status": "failed",
             "error_code": "agent_runtime_failed",
             "summary": "本轮任务发生未处理异常",
+            "details": {
+                "kind": "runtime_error",
+                "runtime_error": runtime_error,
+            },
         }
         controller.add_data(latest_stage)
+        if partial not in controller.assistant_text_snapshot:
+            if controller.assistant_text_snapshot and not controller.assistant_text_snapshot.endswith(("\n", "\n\n")):
+                controller.append_text("\n\n")
+            controller.append_text(partial)
         try:
             await terminal_publisher.commit(
                 status="failed",
                 final_text=partial,
                 graph_state=state,
                 error_code="agent_runtime_failed",
-                error_detail=f"{type(exc).__name__}: {exc}",
+                error_detail="本轮任务发生异常，已安全结束并保留执行详情。",
                 latest_stage=latest_stage,
             )
         except Exception:
@@ -245,7 +315,7 @@ async def _execute_background_agent_run(
             conversation_id,
             "failed",
             final_text=partial,
-            error=str(exc),
+            error="agent_runtime_failed",
             persist=False,
         )
 

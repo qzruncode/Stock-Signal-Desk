@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { AssistantMarkdown } from './AssistantMarkdownText';
+import { AssistantMarkdown, AssistantMarkdownText } from './AssistantMarkdownText';
 
 describe('AssistantMarkdown evidence citations', () => {
   it('reveals live assistant text progressively before settling on the full sentence', async () => {
@@ -10,6 +10,18 @@ describe('AssistantMarkdown evidence citations', () => {
 
     expect(screen.queryByText(text)).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument());
+  });
+
+  it('does not replay a completed sentence when a live projection is replaced', async () => {
+    const firstText = '我会先核对证券身份，再继续读取最新行情。';
+    const replacementText = '我会先核对证券身份，然后汇总最新行情。';
+    const view = render(<AssistantMarkdown text={firstText} animate />);
+
+    await waitFor(() => expect(screen.getByText(firstText)).toBeInTheDocument());
+    view.rerender(<AssistantMarkdown text={replacementText} animate />);
+
+    await waitFor(() => expect(screen.getByText(replacementText)).toBeInTheDocument());
+    expect(screen.queryByText(firstText)).not.toBeInTheDocument();
   });
 
   it('hides the raw ID and reveals the evidence summary on hover', async () => {
@@ -50,5 +62,38 @@ describe('AssistantMarkdown evidence citations', () => {
       expect(metadata).toHaveTextContent('工具：read_market_indices');
       expect(metadata).toHaveClass('text-[10px]', 'text-muted-foreground');
     });
+  });
+
+  it('keeps native answer parts readable when their trace arrives as metadata', () => {
+    render(
+      <AssistantMarkdownText
+        type="text"
+        status={{ type: 'complete' }}
+        text="行情已核验【证据 ev_native】。"
+        evidence={{
+          evidence: [{ evidence_id: 'ev_native', action_id: 'native-action' }],
+          tool_results: [{
+            action_id: 'native-action',
+            tool_name: 'read_realtime_quote',
+            result_summary: '已返回最新行情。',
+          }],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('①')).toBeInTheDocument();
+    expect(screen.queryByText(/ev_native/)).not.toBeInTheDocument();
+  });
+
+  it('does not expose an unresolved evidence ID in the chat projection', () => {
+    render(
+      <AssistantMarkdown
+        text="部分结论暂时无法关联来源【证据 ev_missing】。"
+        evidence={{ evidence: [] }}
+      />,
+    );
+
+    expect(screen.queryByText(/ev_missing/)).not.toBeInTheDocument();
+    expect(screen.getByText(/部分证据暂未关联/)).toBeInTheDocument();
   });
 });

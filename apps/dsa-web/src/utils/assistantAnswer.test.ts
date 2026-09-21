@@ -49,4 +49,15 @@ describe('assistant answer presentation boundary', () => {
 
     expect(assistantAnswerTextFromContent(content)).toBe('最终答案');
   });
+
+  it('keeps only the answer after the latest server publication boundary', () => {
+    const content = [
+      { type: 'data', name: 'agent-answer-boundary' },
+      { type: 'text', text: '第一次完整回答' },
+      { type: 'data', name: 'agent-answer-boundary' },
+      { type: 'text', text: '第二次正式回答' },
+    ];
+
+    expect(assistantAnswerTextFromContent(content)).toBe('第二次正式回答');
+  });
 });

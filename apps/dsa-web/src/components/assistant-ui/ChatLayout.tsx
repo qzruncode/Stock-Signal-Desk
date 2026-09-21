@@ -18,6 +18,7 @@ import { cn } from '../../utils/cn';
 import { CheckpointHistoryDrawer } from './CheckpointHistoryDrawer';
 import { QuestionNavigator } from './QuestionNavigator';
 import { ThreadListSidebar } from './threadlist-sidebar';
+import type { AgentProductMode } from '../../utils/agentMode';
 
 const Thread = lazy(() => import('./thread'));
 
@@ -43,6 +44,8 @@ export type ChatLayoutProps = {
   approvalDecision: 'approve' | 'reject' | null;
   approvalError: string | null;
   onInterruptDecision: (decision: 'approve' | 'reject') => void;
+  agentMode: AgentProductMode;
+  onAgentModeChange: (mode: AgentProductMode) => void;
 };
 
 export const ChatLayout: React.FC<ChatLayoutProps> = ({
@@ -67,6 +70,8 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
   approvalDecision,
   approvalError,
   onInterruptDecision,
+  agentMode,
+  onAgentModeChange,
 }) => {
   const [isDesktop, setIsDesktop] = useState(false);
   const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
@@ -262,7 +267,12 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
 
         <div className="relative min-h-0 flex-1">
           <Suspense fallback={<ChatLoadingFallback />}>
-            <Thread onUserCancel={onCancelRun} onDeleteUserTurn={onDeleteUserTurn} />
+            <Thread
+              onUserCancel={onCancelRun}
+              onDeleteUserTurn={onDeleteUserTurn}
+              agentMode={agentMode}
+              onAgentModeChange={onAgentModeChange}
+            />
           </Suspense>
           {pendingInterrupt ? (
             <ApprovalCard

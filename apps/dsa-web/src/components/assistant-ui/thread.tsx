@@ -11,10 +11,8 @@ import {
   useScrollLock,
   useAuiState,
 } from '@assistant-ui/react';
-import type { TextMessagePartProps } from '@assistant-ui/react';
+import type { DataMessagePartProps, TextMessagePartProps } from '@assistant-ui/react';
 import {
-  BookOpenIcon,
-  CircleAlertIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   Loader2Icon,
@@ -26,9 +24,12 @@ import {
 } from 'lucide-react';
 import { AssistantMarkdown, AssistantMarkdownText } from './AssistantMarkdownText';
 import {
+  ChartReference,
   StructuredAnswerReferences,
 } from './StructuredAnswerReferences';
 import {
+  normalizeChartReference,
+  stripNativeAnswerReferenceFallbacks,
   stripStructuredAnswerReferenceFallbacks,
   structuredAnswerFromTrace,
 } from './StructuredAnswerReferencesUtils';
@@ -36,7 +37,7 @@ import { splitAssistantText } from '../../utils/assistantTextSplit';
 import {
   assistantAnswerTextFromContent as answerTextFromContent,
   assistantDisplayKindOf as displayKindOf,
-  assistantPostToolBodyText as firstPostToolProgressText,
+  assistantPublishedAnswerTextFromContent as publishedAnswerTextFromContent,
   hasAssistantDisplayMetadata as hasDisplayMetadata,
 } from '../../utils/assistantAnswer';
 import { cn } from '../../utils/cn';
@@ -46,17 +47,26 @@ import {
   reconcileTerminalStageEvents,
 } from '../../utils/agentStage';
 import { formatElapsedDuration } from '../../utils/format';
-import { AgentExecutionTimeline, AgentToolCallPart } from './AgentReasoning';
-import { isRecord } from './AgentReasoningUtils';
+import { AgentExecutionTimeline, AgentStageIndicator, AgentToolCallPart } from './AgentReasoning';
 import { Composer } from './ThreadComposer';
 import { EmptyState } from './ThreadEmptyState';
 import { UserMessage } from './ThreadUserMessage';
+import { TeamCollaborationView } from './TeamBoard';
+import { isRecord } from './AgentReasoningUtils';
+import type { AgentProductMode } from '../../utils/agentMode';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
 
-const Thread: FC<{ onUserCancel?: () => void; onDeleteUserTurn?: (messageId: string) => void }> = ({
+const Thread: FC<{
+  onUserCancel?: () => void;
+  onDeleteUserTurn?: (messageId: string) => void;
+  agentMode: AgentProductMode;
+  onAgentModeChange: (mode: AgentProductMode) => void;
+}> = ({
   onUserCancel,
   onDeleteUserTurn,
+  agentMode,
+  onAgentModeChange,
 }) => {
   const isRunning = useAuiState((state) => state.thread.isRunning);
 
@@ -77,7 +87,7 @@ const Thread: FC<{ onUserCancel?: () => void; onDeleteUserTurn?: (messageId: str
             <ThreadPrimitive.Messages
               components={{
                 UserMessage: () => <UserMessage onDeleteTurn={onDeleteUserTurn} />,
-                AssistantMessage: GuardedAssistantMessage,
+                AssistantMessage: () => <GuardedAssistantMessage productMode={agentMode} />,
               }}
             />
           </div>
@@ -100,7 +110,11 @@ const Thread: FC<{ onUserCancel?: () => void; onDeleteUserTurn?: (messageId: str
         </AuiIf>
       </ThreadPrimitive.Viewport>
 
-      <Composer onUserCancel={onUserCancel} />
+      <Composer
+        onUserCancel={onUserCancel}
+        agentMode={agentMode}
+        onAgentModeChange={onAgentModeChange}
+      />
     </ThreadPrimitive.Root>
   );
 };
@@ -211,83 +225,15 @@ const NativeDisclosure: FC<NativeDisclosureProps> = ({
 };
 
 /**
- * assistant-ui already groups adjacent tool-call parts from the same streamed
- * message. Keep that grouping boundary and make the group the single
- * disclosure surface for the execution stage. Individual tools still use
- * AgentToolCallPart's own disclosure for arguments and results.
+ * Keep consecutive tool parts as standalone children. Parallel workers may
+ * legitimately produce adjacent calls, but wrapping the whole range in one
+ * disclosure makes the chat look as if all tools happened at the end.
  */
 const NativeToolGroup: FC<{
   children?: ReactNode;
   startIndex: number;
   endIndex: number;
-}> = ({ children, startIndex, endIndex }) => {
-  const activeCount = useAuiState((state) => state.message.parts
-    .slice(startIndex, endIndex + 1)
-    .filter((part) => (
-      part.type === 'tool-call'
-      && (part.status.type === 'running' || part.status.type === 'requires-action')
-    )).length);
-  const failedCount = useAuiState((state) => state.message.parts
-    .slice(startIndex, endIndex + 1)
-    .filter((part) => {
-      if (!isRecord(part) || part.type !== 'tool-call') return false;
-      const statusType = part.status.type;
-      const statusReason = part.status.type === 'incomplete' ? part.status.reason : undefined;
-      const result = isRecord(part.result) ? part.result : undefined;
-      return part.isError === true
-        || result?.success === false
-        || (statusType === 'incomplete' && statusReason === 'error');
-    }).length);
-  const [expanded, setExpanded] = useState(false);
-  const detailId = useId();
-  const toolCount = Math.max(1, endIndex - startIndex + 1);
-  const completedCount = Math.max(0, toolCount - activeCount - failedCount);
-  const label = [
-    activeCount > 0 ? `正在执行 ${activeCount} 个工具` : '',
-    completedCount > 0 ? `已完成 ${completedCount} 个工具` : '',
-    failedCount > 0 ? `失败 ${failedCount} 个工具` : '',
-  ].filter(Boolean).join('，');
-  const active = activeCount > 0;
-
-  return (
-    <div className="relative min-w-0">
-      <NativeDisclosure
-        open={expanded}
-        onToggle={() => setExpanded((value) => !value)}
-        detailId={detailId}
-        ariaLabel="阶段工具调用详情"
-        renderTrigger={(toggle) => (
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls={detailId}
-            aria-label={`${expanded ? '收起' : '展开'}阶段工具调用`}
-            onClick={toggle}
-            className="flex w-full min-w-0 items-center gap-2 py-2 text-left text-[16px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-          >
-            {active ? (
-              <Loader2Icon className="size-4 shrink-0 animate-spin text-primary" aria-hidden="true" />
-            ) : failedCount > 0 ? (
-              <CircleAlertIcon className="size-4 shrink-0 text-amber-600" aria-hidden="true" />
-            ) : (
-              <BookOpenIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            )}
-            <span className="min-w-0 flex-1 truncate">{label}</span>
-            <ChevronRightIcon
-              className={cn(
-                'size-4 shrink-0 transition-transform duration-300 ease-out',
-                expanded && 'rotate-90',
-              )}
-              aria-hidden="true"
-            />
-          </button>
-        )}
-      >
-        <div className="pl-2">{children}</div>
-      </NativeDisclosure>
-    </div>
-  );
-};
+}> = ({ children }) => <>{children}</>;
 
 const NativeTextPart: FC<TextMessagePartProps> = (part) => (
   <NativeTextPartContent {...part} />
@@ -296,54 +242,65 @@ const NativeTextPart: FC<TextMessagePartProps> = (part) => (
 const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const active = messageStatus === 'running' || messageStatus === 'requires-action';
-  const hasPlanningTrace = useMessage((state) => agentStageEvents(state.metadata?.unstable_data).some(
-    (event) => event.stage === 'planning',
+  const executionTrace = useMessage((state) => (
+    state.metadata?.custom?.agent_execution_trace
+      ?? state.metadata?.custom?.agentExecutionTrace
   ));
-  const answerText = useMessage((state) => answerTextFromContent(state.content));
-  const postToolBody = useMessage((state) => firstPostToolProgressText(state.content));
-  const isTerminalFallbackAnswer = !active
-    && displayKindOf(part) === null
-    && part.text.trim().length > 0
-    && part.text.trim() === answerText.trim();
-  const isTerminalPostToolBody = !active
-    && !hasPlanningTrace
-    && postToolBody.trim().length > 0
-    && part.text.trim() === postToolBody.trim();
-
-  return displayKindOf(part) === 'answer' || isTerminalFallbackAnswer || isTerminalPostToolBody
-    ? null
-    : <AssistantMarkdownText {...part} animate={active} />;
+  const structuredAnswer = structuredAnswerFromTrace(executionTrace);
+  const text = displayKindOf(part) === 'answer'
+    ? stripNativeAnswerReferenceFallbacks(
+        stripStructuredAnswerReferenceFallbacks(part.text, structuredAnswer),
+      )
+    : part.text;
+  return <AssistantMarkdownText {...part} text={text} evidence={executionTrace} animate={active} />;
 };
 
-const NativeExecutionDisclosure: FC<{ children?: ReactNode }> = ({ children }) => {
+const TeamProgressParts: FC = () => {
+  return (
+    <TeamCollaborationView />
+  );
+};
+
+const NativeExecutionDisclosure: FC<{
+  children?: ReactNode;
+  label?: string;
+  forceOpen?: boolean;
+}> = ({ children, label = '执行过程', forceOpen = false }) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const active = messageStatus === 'running' || messageStatus === 'requires-action';
   const messageTiming = useMessageTiming();
+  const persistedDuration = useMessage((state) => state.metadata?.custom?.agent_run_duration_ms);
   const stageData = useMessage((state) => state.metadata?.unstable_data);
   const events = useMemo(
     () => reconcileTerminalStageEvents(agentStageEvents(stageData)),
     [stageData],
   );
-  const eventDurationMs = useMemo(() => agentStageDurationMs(events), [events]);
+  const eventDurationMs = useMemo(() => agentStageDurationMs(agentStageEvents(stageData)), [stageData]);
   const streamDurationMs = typeof messageTiming?.totalStreamTime === 'number'
     && Number.isFinite(messageTiming.totalStreamTime)
     && messageTiming.totalStreamTime >= 0
     ? messageTiming.totalStreamTime
     : undefined;
-  const durationMs = streamDurationMs ?? eventDurationMs;
+  // Persisted server events remain valid across reconnection and hydration;
+  // a client stream timer can include time outside this run.
+  const durationMs = typeof persistedDuration === 'number' && Number.isFinite(persistedDuration) && persistedDuration >= 0
+    ? persistedDuration
+    : eventDurationMs ?? streamDurationMs;
   const durationLabel = durationMs == null ? '—' : formatElapsedDuration(durationMs);
-  const compactLabel = active ? '执行中' : `用时 ${durationLabel}`;
+  const compactLabel = active
+    ? '执行中'
+    : `${label === '执行过程' ? '' : `${label} · `}用时 ${durationLabel}`;
   const detailId = useId();
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
-  const expanded = active || expandedOverride === true;
+  const expanded = active || (forceOpen && expandedOverride !== false) || expandedOverride === true;
 
   return (
-    <section className="relative mb-3 min-w-0" aria-label="执行过程">
+    <section className="relative mb-3 min-w-0" aria-label={label}>
       <NativeDisclosure
         open={expanded}
         onToggle={() => setExpandedOverride((value) => value === true ? false : true)}
         detailId={detailId}
-        ariaLabel="执行过程详情"
+        ariaLabel={`${label}详情`}
         renderTrigger={!active ? (toggle) => (
           <button
             type="button"
@@ -372,6 +329,28 @@ const NativeExecutionDisclosure: FC<{ children?: ReactNode }> = ({ children }) =
   );
 };
 
+const NativeAgentStagePart: FC<DataMessagePartProps> = ({ data }) => {
+  const event = agentStageEvents([data]).at(-1);
+  if (!event) return null;
+  return (
+    <div data-agent-display-part="stage">
+      <AgentStageIndicator event={event} />
+    </div>
+  );
+};
+
+const NativeStockChartPart: FC<DataMessagePartProps> = ({ data }) => {
+  const reference = normalizeChartReference(data);
+  if (!reference) return null;
+  return (
+    <div data-agent-display-part="chart">
+      <ChartReference reference={reference} />
+    </div>
+  );
+};
+
+const NativeAnswerBoundaryPart: FC<DataMessagePartProps> = () => null;
+
 const NativeAssistantParts: FC = () => {
   return <MessagePrimitive.Parts
     unstable_showEmptyOnNonTextEnd={false}
@@ -379,13 +358,21 @@ const NativeAssistantParts: FC = () => {
       Text: NativeTextPart,
       Reasoning: () => null,
       tools: { Fallback: AgentToolCallPart },
+      data: {
+        by_name: {
+          'agent-stage': NativeAgentStagePart,
+          'stock-chart': NativeStockChartPart,
+          'agent-answer-boundary': NativeAnswerBoundaryPart,
+        },
+        Fallback: () => null,
+      },
       ToolGroup: NativeToolGroup,
       ReasoningGroup: InlineMessagePartGroup,
     }}
   />;
 };
 
-const AssistantMessage: FC = () => {
+const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }) => {
   const messageStatus = useMessage((s) => s.status?.type);
   const isActive = messageStatus === 'running' || messageStatus === 'requires-action';
   const reasoningText = useMessage((s) =>
@@ -401,34 +388,101 @@ const AssistantMessage: FC = () => {
   // use the same ordered renderer as a tool run without inferring boundaries
   // from the distance between text parts.
   const answerText = useMessage((s) => answerTextFromContent(s.content));
+  const publishedAnswerText = useMessage((s) => publishedAnswerTextFromContent(s.content));
   const evidenceTrace = useMessage((s) => (
     s.metadata?.custom?.agent_execution_trace
     ?? s.metadata?.custom?.agentExecutionTrace
   ));
+  const hasTeamTerminalFailure = useMessage((s) => {
+    if (productMode !== 'team') return false;
+    const rawTrace = s.metadata?.custom?.agent_execution_trace
+      ?? s.metadata?.custom?.agentExecutionTrace;
+    if (!isRecord(rawTrace) || !isRecord(rawTrace.team)) return false;
+    const team = rawTrace.team;
+    const failure = team.failure;
+    const status = typeof team.status === 'string' ? team.status : '';
+    // A partial Team run is still a terminal, inspectable outcome. Keep its
+    // collaboration process mounted after the final answer so the user can
+    // expand the worker tools and the exact runtime gap instead of losing the
+    // whole Team projection at publish time.
+    return isRecord(failure) || ['partial', 'failed', 'blocked', 'cancelled'].includes(status);
+  });
   const structuredAnswer = structuredAnswerFromTrace(evidenceTrace);
-  const displayAnswerText = stripStructuredAnswerReferenceFallbacks(answerText, structuredAnswer);
+  const hasTeamMessage = useMessage((s) => {
+    const trace = s.metadata?.custom?.agent_execution_trace
+      ?? s.metadata?.custom?.agentExecutionTrace;
+    return Boolean(
+      isActive && productMode === 'team'
+    ) || Boolean(
+      trace && typeof trace === 'object' && !Array.isArray(trace)
+        && 'team' in trace
+        && trace.team,
+    ) || agentStageEvents(s.metadata?.unstable_data).some((event) => (
+      event.details?.team_id || event.details?.teamId
+    ));
+  });
+  const displayAnswerText = stripStructuredAnswerReferenceFallbacks(
+    productMode === 'team' && hasTeamMessage ? publishedAnswerText : answerText,
+    structuredAnswer,
+  );
+  // A Team answer can arrive in the same transport update that moves the
+  // message to its terminal status.  Using only `isActive` would render that
+  // answer in one paint, which is the abrupt final block seen in the chat.
+  // A mounted live message starts without the accepted answer, so animate
+  // only when the answer appears after mount. A hydrated historical message
+  // already has answer text on its first render and therefore does not replay
+  // the typewriter animation after refresh.
+  const answerPresentOnMount = useRef(Boolean(displayAnswerText.trim()));
+  const answerArrivedAfterMount = Boolean(displayAnswerText.trim()) && !answerPresentOnMount.current;
+  const animateAnswer = isActive || answerArrivedAfterMount;
   const hasOrderedPart = useMessage((s) => s.content.some((part) => {
     if (part.type === 'tool-call') return true;
+    if (part.type === 'data') {
+      return part.name === 'agent-stage'
+        || part.name === 'stock-chart'
+        || part.name === 'team-model-projection';
+    }
     // The default assistant-ui reasoning renderer is intentionally hidden;
     // private reasoning alone must not suppress the pending/stage fallback.
     if (part.type === 'text') return part.text.trim().length > 0;
     return false;
   }));
-  const hasNativeDisplayPart = useMessage((s) => s.content.some((part) => (
-    part.type === 'tool-call'
-    || ((part.type === 'text' || part.type === 'reasoning') && hasDisplayMetadata(part))
-  )));
+  const hasNativeDisplayPart = useMessage((s) => s.content.some((part) => {
+    if (part.type === 'tool-call') return true;
+    if (part.type === 'data') {
+      return part.name === 'agent-stage'
+        || part.name === 'stock-chart'
+        || part.name === 'team-model-projection'
+        || part.name === 'agent-answer-boundary';
+    }
+    if (part.type === 'text') {
+      return part.text.trim().length > 0 && (isActive || hasDisplayMetadata(part));
+    }
+    return false;
+  }));
+  const hasNativeToolPart = useMessage((s) => s.content.some((part) => part.type === 'tool-call'));
   const hasNativeAnswerPart = useMessage((s) => s.content.some((part) => (
     part.type === 'text' && displayKindOf(part) === 'answer'
   )));
-  const hasNativeTerminalAnswer = !isActive && hasNativeDisplayPart && answerText.trim().length > 0;
   const hasNativeProcessPart = useMessage((s) => s.content.some((part) => {
     if (part.type === 'tool-call') return true;
+    if (part.type === 'data') {
+      return part.name === 'agent-stage' || part.name === 'team-model-projection';
+    }
     if (part.type === 'text') {
       return displayKindOf(part) !== 'answer' && part.text.trim().length > 0;
     }
     return false;
   }));
+  const hasNativeChartPart = useMessage((s) => s.content.some((part) => (
+    part.type === 'data' && part.name === 'stock-chart'
+  )));
+  const hasTeamProgressPart = useMessage((s) => s.content.some((part) => (
+    (part.type === 'text'
+      && displayKindOf(part) !== 'answer'
+      && part.text.trim().length > 0)
+    || (part.type === 'data' && part.name === 'team-model-projection')
+  )));
   const hasVisibleContent = useMessage((s) =>
     s.content.some((part) => {
       if (part.type === 'text') {
@@ -455,32 +509,70 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-start">
       <div className="relative min-w-0 flex-1 pb-5">
         <div className="w-full min-w-0 overflow-hidden text-[17px] leading-7 text-foreground sm:text-[18px]">
-          {isActive || hasNativeDisplayPart ? (
+          {hasTeamMessage ? (
             <>
-              {hasNativeProcessPart ? (
-                <NativeExecutionDisclosure>
-                  <NativeAssistantParts />
+              {hasTeamProgressPart || isActive || hasTeamMessage ? (
+                <NativeExecutionDisclosure
+                  label={hasTeamTerminalFailure ? 'Team 协作终态' : 'Team 协作过程'}
+                  forceOpen={hasTeamTerminalFailure}
+                >
+                  <TeamProgressParts />
                 </NativeExecutionDisclosure>
               ) : null}
-              {hasNativeTerminalAnswer || hasNativeAnswerPart ? (
+              {displayAnswerText.trim() ? (
                 <AssistantMarkdown
                   text={displayAnswerText}
                   evidence={evidenceTrace}
-                  animate={isActive}
+                  animate={animateAnswer}
                 />
               ) : null}
-              <StructuredAnswerReferences answer={structuredAnswer} renderedText={displayAnswerText} />
-              {isActive && !hasOrderedPart && hasExecutionRecord && hasActiveExecutionDetail ? (
+              <StructuredAnswerReferences
+                answer={structuredAnswer}
+                renderedText={displayAnswerText}
+                // TeamBoard owns native stock-chart parts so charts stay with
+                // their member workspace. The structured answer still owns
+                // references that do not have a native display part.
+                renderCharts={!hasNativeChartPart}
+                renderActions={!hasNativeToolPart}
+              />
+            </>
+          ) : isActive || hasNativeDisplayPart ? (
+            <>
+              {hasNativeDisplayPart ? (
+                <NativeAssistantParts />
+              ) : hasNativeProcessPart ? (
+                <NativeExecutionDisclosure>
+                  <AgentExecutionTimeline
+                    presentation="inline"
+                    stageOnly
+                    nativeProgress={hasNativeProcessPart}
+                  />
+                </NativeExecutionDisclosure>
+              ) : null}
+              {!hasNativeDisplayPart && hasNativeAnswerPart ? (
+                <AssistantMarkdown
+                  text={displayAnswerText}
+                  evidence={evidenceTrace}
+                  animate={animateAnswer}
+                />
+              ) : null}
+              <StructuredAnswerReferences
+                answer={structuredAnswer}
+                renderedText={displayAnswerText}
+                renderCharts={!hasNativeChartPart}
+                renderActions={!hasNativeToolPart}
+              />
+              {isActive && !hasNativeDisplayPart && !hasOrderedPart && hasExecutionRecord && hasActiveExecutionDetail ? (
                 <AgentExecutionTimeline reasoningText={reasoningText} />
               ) : null}
-              {isActive && !hasOrderedPart && !hasNativeProcessPart && !hasVisibleContent && !hasActiveExecutionDetail ? (
+              {isActive && !hasNativeDisplayPart && !hasOrderedPart && !hasNativeProcessPart && !hasVisibleContent && !hasActiveExecutionDetail ? (
                 <AssistantPendingIndicator />
               ) : null}
             </>
           ) : (
             <>
               <AgentExecutionTimeline reasoningText={reasoningText} />
-              <AssistantMarkdown text={displayAnswerText} evidence={evidenceTrace} />
+              <AssistantMarkdown text={displayAnswerText} evidence={evidenceTrace} animate={animateAnswer} />
               <StructuredAnswerReferences answer={structuredAnswer} renderedText={displayAnswerText} />
             </>
           )}
@@ -493,14 +585,14 @@ const AssistantMessage: FC = () => {
   );
 };
 
-const GuardedAssistantMessage: FC = () => {
+const GuardedAssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }) => {
   const resetKey = useMessage((s) => {
     const stageCount = Array.isArray(s.metadata?.unstable_data) ? s.metadata.unstable_data.length : 0;
     return `${s.id}:${s.status?.type || 'idle'}:${s.content.length}:${stageCount}`;
   });
   return (
     <AssistantMessageBoundary resetKey={resetKey}>
-      <AssistantMessage />
+      <AssistantMessage productMode={productMode} />
     </AssistantMessageBoundary>
   );
 };

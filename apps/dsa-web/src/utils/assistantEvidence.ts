@@ -258,24 +258,34 @@ export const assistantEvidenceReferenceForId = (
   return matches.length === 1 ? matches[0] : undefined;
 };
 
-/** Converts the model's durable evidence markers into compact Markdown links. */
+/**
+ * Converts durable evidence markers into compact Markdown links.
+ *
+ * An unresolved marker is deliberately removed from the chat projection and
+ * replaced by one readable note. The original marker remains in the durable
+ * trace, so the run inspector can still diagnose the missing association
+ * without leaking an internal evidence ID into the product UI.
+ */
 export const replaceAssistantEvidenceMarkers = (
   text: string,
   evidenceIndex?: Map<string, AssistantEvidenceReference>,
 ): string => {
   const ordinalById = new Map<string, number>();
   let nextOrdinal = 0;
-  return text.replace(EVIDENCE_MARKER, (marker, rawEvidenceId: string) => {
+  let unresolvedCount = 0;
+  const rendered = text.replace(EVIDENCE_MARKER, (marker, rawEvidenceId: string) => {
     const evidenceId = rawEvidenceId.trim();
     if (!evidenceId) return marker;
     const reference = evidenceIndex
       ? assistantEvidenceReferenceForId(evidenceIndex, evidenceId)
       : undefined;
-    // During streaming, the answer chunk can arrive before the durable
-    // evidence projection. Keep an unresolved marker as plain text until the
-    // run-local index can resolve it; never create a clickable citation for an
-    // unknown or explicitly ineligible evidence id.
-    if (evidenceIndex && !reference) return marker;
+    // Never create a clickable citation for an unknown or explicitly
+    // ineligible evidence id. During streaming this can happen briefly while
+    // the durable projection is catching up; the next render can resolve it.
+    if (evidenceIndex && !reference) {
+      unresolvedCount += 1;
+      return '';
+    }
     const resolvedEvidenceId = reference?.evidenceId ?? evidenceId;
     let ordinal = ordinalById.get(resolvedEvidenceId);
     if (ordinal === undefined) {
@@ -286,6 +296,10 @@ export const replaceAssistantEvidenceMarkers = (
     const label = assistantEvidenceFootnoteLabel(ordinal);
     return `[${label}](${EVIDENCE_HREF_PREFIX}${encodeURIComponent(resolvedEvidenceId)})`;
   });
+  if (unresolvedCount === 0) return rendered;
+  const suffix = '（部分证据暂未关联）';
+  const visible = rendered.trimEnd();
+  return `${visible}${suffix}`;
 };
 
 export const assistantEvidenceIdFromHref = (href?: string): string | null => {

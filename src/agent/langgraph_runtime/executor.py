@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from functools import partial
 import hashlib
@@ -13,6 +15,7 @@ from typing import Any, Callable, Mapping
 
 from src.agent.resource_scheduler import ResourceCapacityExceeded, agent_resource_lease
 from src.agent.run_registry import active_run_registry
+from src.agent.runtime_errors import emit_runtime_error
 from src.agent.runtime_safety import get_agent_runtime_limits
 from src.agent.tool_dispatch import ToolDispatcher, ToolDispatchOutcome, ToolDispatchRequest
 from src.tools.base import ToolProgressUpdate, classify_result_semantics
@@ -23,6 +26,40 @@ from .presentation import project_arguments_for_timeline, project_tool_result_fo
 
 
 ACTIVE_STEP_LEASE_SECONDS = 3_600.0
+
+_WEB_FALLBACK_CATEGORIES = frozenset(
+    {
+        "source_read",
+        "source_search",
+        "news_source",
+        "research",
+        "events",
+        "macro",
+        "market",
+        "financials",
+    }
+)
+
+_EXECUTION_EVENTS: ContextVar[Any | None] = ContextVar(
+    "dsa_execution_events",
+    default=None,
+)
+_EXECUTION_CONTROLLER: ContextVar[Any | None] = ContextVar(
+    "dsa_execution_controller",
+    default=None,
+)
+
+
+@contextmanager
+def execution_event_scope(*, events: Any | None = None, controller: Any | None = None):
+    """Temporarily route executor projections to a private child bridge."""
+    events_token = _EXECUTION_EVENTS.set(events)
+    controller_token = _EXECUTION_CONTROLLER.set(controller)
+    try:
+        yield
+    finally:
+        _EXECUTION_EVENTS.reset(events_token)
+        _EXECUTION_CONTROLLER.reset(controller_token)
 
 
 def _tool_resource_slots() -> int:
@@ -138,6 +175,29 @@ def _should_trip_tool_circuit(error: BaseException) -> bool:
     return _error_code(error) in {"timeout", "provider_unavailable"}
 
 
+def _web_fallback_eligible(spec: Any, effect: str) -> bool:
+    if effect != "read" or spec is None:
+        return False
+    configured = getattr(spec, "web_fallback", None)
+    if configured is not None:
+        return bool(configured)
+    return str(getattr(spec, "category", "") or "") in _WEB_FALLBACK_CATEGORIES
+
+
+def _runtime_scope(events: Any, action: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    team_id = str(
+        action.get("collaboration_id")
+        or action.get("team_id")
+        or getattr(events, "team_id", "")
+        or ""
+    ).strip()
+    agent_id = str(action.get("agent_id") or getattr(events, "agent_id", "") or "").strip()
+    task_id = str(action.get("task_id") or getattr(events, "task_id", "") or "").strip()
+    event_scope = str(action.get("scope") or getattr(events, "scope", "") or "").strip().lower()
+    scope = event_scope if event_scope in {"coordinator", "expert", "review"} else "expert" if team_id and (agent_id or task_id) else "coordinator"
+    return scope, team_id, agent_id, task_id
+
+
 class AtomicToolExecutor:
     """Execute an action after graph policy and approval checks have passed."""
 
@@ -211,6 +271,8 @@ class AtomicToolExecutor:
         authored_arguments = action.get("arguments")
         if not action_id or not tool_name or not isinstance(authored_arguments, dict):
             raise ValueError("action requires action_id, tool_name, and object arguments")
+        event_sink = _EXECUTION_EVENTS.get() or self.events
+        event_controller = _EXECUTION_CONTROLLER.get() or self.controller
         effect = self.registry.effect_for(tool_name, authored_arguments)
         if effect == "side_effect" and not approved:
             raise PermissionError(f"side-effect tool {tool_name} requires an approved interrupt")
@@ -223,6 +285,8 @@ class AtomicToolExecutor:
         if spec is None:
             raise KeyError(f"Tool not found: {tool_name}")
         source_id = str(arguments.get("source_id") or "").strip() or None
+        scope, collaboration_id, agent_id, task_id = _runtime_scope(event_sink, action)
+        fallback_eligible = _web_fallback_eligible(spec, effect)
         display_arguments = project_arguments_for_timeline(
             arguments,
             sensitive_fields=spec.sensitive_fields,
@@ -236,8 +300,8 @@ class AtomicToolExecutor:
         )
         tool_call_id = f"lg_{fingerprint[:24]}"
         tool_call = None
-        if self.controller is not None:
-            tool_call = await self.controller.add_tool_call(
+        if event_controller is not None:
+            tool_call = await event_controller.add_tool_call(
                 tool_name,
                 tool_call_id=tool_call_id,
                 parent_id=action_id,
@@ -253,7 +317,7 @@ class AtomicToolExecutor:
                     default=str,
                 )
             )
-        self.events.stage(
+        event_sink.stage(
             "tool",
             "started",
             f"执行原子工具 {tool_name}",
@@ -294,7 +358,7 @@ class AtomicToolExecutor:
                     result=canonical,
                     reused=True,
                 )
-                self.events.stage(
+                event_sink.stage(
                     "tool",
                     "completed" if record["success"] else "failed",
                     f"{tool_name} 已复用幂等结果",
@@ -307,6 +371,7 @@ class AtomicToolExecutor:
 
         attempt = 0
         last_error: BaseException | None = None
+        runtime_errors: list[dict[str, Any]] = []
         while attempt < max_attempts:
             claim: dict[str, Any] = {"action": "execute", "attempt": attempt + 1}
             if self.database is not None:
@@ -345,7 +410,7 @@ class AtomicToolExecutor:
                     result=canonical,
                     reused=True,
                 )
-                self.events.stage(
+                event_sink.stage(
                     "tool",
                     "completed" if record["success"] else "failed",
                     f"{tool_name} 已复用幂等结果",
@@ -365,12 +430,12 @@ class AtomicToolExecutor:
 
             def progress(update: ToolProgressUpdate) -> None:
                 if update.reasoning_delta:
-                    loop.call_soon_threadsafe(self.events.reasoning, update.reasoning_delta)
+                    loop.call_soon_threadsafe(event_sink.reasoning, update.reasoning_delta)
                     return
                 suffix = f"（{update.progress}%）" if update.progress is not None else ""
                 loop.call_soon_threadsafe(
                     partial(
-                        self.events.stage,
+                        event_sink.stage,
                         "tool",
                         "started",
                         f"{tool_name}：{update.message}{suffix}",
@@ -471,7 +536,10 @@ class AtomicToolExecutor:
                     result=canonical,
                     reused=False,
                 )
-                self.events.stage(
+                if runtime_errors:
+                    record["runtime_errors"] = [dict(item) for item in runtime_errors]
+                    record["recovered_from_runtime_error"] = True
+                event_sink.stage(
                     "tool",
                     "completed" if record["success"] else "failed",
                     f"{tool_name} 已返回结果",
@@ -488,6 +556,38 @@ class AtomicToolExecutor:
                 cancel_event.set()
                 last_error = exc
                 retry = effect == "read" and _retryable(exc) and attempt < max_attempts
+                receipt = emit_runtime_error(
+                    event_sink,
+                    exc,
+                    summary=f"{tool_name} 第 {attempt} 次调用失败，已记录运行时异常",
+                    error_code=_error_code(exc),
+                    failure_kind="timeout" if _error_code(exc) == "timeout" else "provider" if _error_code(exc) == "provider_unavailable" else "tool",
+                    retryable=retry,
+                    fallback_eligible=fallback_eligible,
+                    fallback_status="pending" if fallback_eligible else "not_eligible",
+                    terminal_impact="retrying" if retry else "recoverable",
+                    run_id=self.run_id,
+                    conversation_id=self.conversation_id,
+                    collaboration_id=collaboration_id,
+                    scope=scope,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    node="atomic_tool_executor",
+                    phase="tool",
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    action_id=action_id,
+                    attempt=attempt,
+                    details={
+                        "arguments": display_arguments,
+                        "effect": effect,
+                        "tool_category": str(getattr(spec, "category", "") or ""),
+                        "team_id": collaboration_id,
+                        "task_id": task_id,
+                        "agent_id": agent_id,
+                    },
+                )
+                runtime_errors.append(receipt)
                 if self.database is not None:
                     await asyncio.to_thread(
                         self.database.fail_agent_step,
@@ -524,6 +624,10 @@ class AtomicToolExecutor:
             "freshness_unknown": True,
             "is_stale": None,
         }
+        if runtime_errors:
+            failure["runtime_errors"] = [dict(item) for item in runtime_errors]
+            failure["runtime_error"] = dict(runtime_errors[-1])
+            failure["fallback_eligible"] = fallback_eligible
         if tool_call is not None:
             tool_call.set_response(failure, is_error=True)
         record, _ = self._result_record(
@@ -536,7 +640,11 @@ class AtomicToolExecutor:
             result=failure,
             reused=False,
         )
-        self.events.stage(
+        if runtime_errors:
+            record["runtime_errors"] = [dict(item) for item in runtime_errors]
+            record["runtime_error"] = dict(runtime_errors[-1])
+            record["fallback_eligible"] = fallback_eligible
+        event_sink.stage(
             "tool",
             "failed",
             f"{tool_name} 执行失败",
@@ -547,9 +655,12 @@ class AtomicToolExecutor:
                 "tool_name": tool_name,
                 "success": False,
                 "error_code": _error_code(last_error),
-                "errors": failure["errors"],
+                "errors": [runtime_errors[-1].get("message") or "tool execution failed"]
+                if runtime_errors
+                else failure["errors"],
                 "arguments": record.get("display_arguments") or display_arguments,
                 "source_id": source_id,
+                "runtime_error_id": runtime_errors[-1].get("error_id") if runtime_errors else None,
             },
         )
         return record, None

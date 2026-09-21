@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.v1.endpoints.agent.chat_background_runner import _graph_history_mode
+from api.v1.endpoints.agent.chat_background_runner import _agent_mode, _graph_history_mode
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 import src.auth as auth
 
@@ -156,3 +156,11 @@ def test_server_follow_up_continues_checkpoint_unless_it_is_an_edit() -> None:
     ) == "replace"
     assert _graph_history_mode({"history_mode": "branch"}) == "replace"
     assert _graph_history_mode({}) == "auto"
+
+
+def test_agent_mode_is_the_four_mode_product_contract() -> None:
+    assert _agent_mode({"agent_mode": "auto"}) == "auto"
+    assert _agent_mode({"agent_mode": "direct"}) == "direct"
+    assert _agent_mode({"agent_mode": "plan"}) == "plan"
+    assert _agent_mode({"agent_mode": "team"}) == "team"
+    assert _agent_mode({}) == "auto"

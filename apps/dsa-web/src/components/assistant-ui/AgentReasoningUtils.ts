@@ -247,6 +247,33 @@ export const stageDetails = (event: AgentStageEvent): DetailLine[] => {
       ...issues.map((issue, index) => ({ key: `reflection-issue-${index}`, text: `问题 ${index + 1}：${issue}` })),
     ];
   }
+  if (event.stage === 'runtime_error') {
+    const receipt = isRecord(recordValue(details, 'runtime_error'))
+      ? recordValue(details, 'runtime_error') as TraceRecord
+      : details;
+    const code = text(recordValue(receipt, 'error_code', 'errorCode'), 128);
+    const exceptionType = text(recordValue(receipt, 'exception_type', 'exceptionType'), 160);
+    const message = text(recordValue(receipt, 'message'), 1_200);
+    const fallbackStatus = text(recordValue(receipt, 'fallback_status', 'fallbackStatus'), 64);
+    const retryable = recordValue(receipt, 'retryable') === true;
+    return [
+      ...(code ? [{ key: 'runtime-error-code', text: `错误码：${code}` }] : []),
+      ...(exceptionType ? [{ key: 'runtime-error-type', text: `异常类型：${exceptionType}` }] : []),
+      ...(message ? [{ key: 'runtime-error-message', text: `原因：${message}` }] : []),
+      ...(retryable ? [{ key: 'runtime-error-retry', text: '处理：已标记为可重试' }] : []),
+      ...(fallbackStatus ? [{ key: 'runtime-error-fallback', text: `网页恢复：${fallbackStatus}` }] : []),
+    ];
+  }
+  if (event.stage === 'source_fallback') {
+    const fallbackStatus = text(recordValue(details, 'fallback_status', 'fallbackStatus'), 64);
+    const requirements = recordsFrom(recordValue(details, 'requirements'));
+    return [
+      ...(fallbackStatus ? [{ key: 'fallback-status', text: `网页恢复状态：${fallbackStatus}` }] : []),
+      ...(requirements.length > 0
+        ? [{ key: 'fallback-requirements', text: `待恢复来源：${requirements.map((item) => toolName(item) || text(recordValue(item, 'tool_name', 'toolName'), 120)).filter(Boolean).join('、')}` }]
+        : []),
+    ];
+  }
   if (event.stage === 'publish') return [];
   const preview = text(recordValue(details, 'answer_preview', 'answerPreview'));
   return preview ? [{ key: 'preview', text: `回答预览：${preview}` }] : [];
@@ -255,9 +282,8 @@ export const stageDetails = (event: AgentStageEvent): DetailLine[] => {
 /**
  * Project only text authored by the planner/executor model.
  *
- * The event summary is an audit fallback for old or tool-silent runs.  New
- * runs put the model's natural-language progress in `progress_text`; this
- * function must not turn structured step fields into conversational prose.
+ * Only model-authored progress fields can reach the natural-language view;
+ * lifecycle summaries never become conversational prose.
  */
 export const planningProgressText = (event: AgentStageEvent): string => {
   if (event.stage !== 'planning') return '';
@@ -271,13 +297,51 @@ export const planningProgressText = (event: AgentStageEvent): string => {
     'user_message',
     'userMessage',
   ), 1_800).trim();
-  if (progress) return progress;
-  if (!isRecoverablePlanningRetry(event)) return '';
+  return progress;
+};
 
-  const schema = text(recordValue(details, 'schema', 'contract'), 96);
-  if (schema === 'PlanningRoute') return '我正在重新判断这项任务是否需要分阶段核验。';
-  if (schema === 'PlanningStepReport') return '刚才的步骤核验结果不够完整，我正在补全后继续。';
-  return '刚才的研究计划格式不够完整，我正在修正后继续。';
+/** Team stages share the Plan projection's natural-language display channel. */
+export const isTeamStage = (event: AgentStageEvent): boolean => Boolean(
+  recordValue(event.details, 'team_id', 'teamId'),
+);
+
+const TEAM_ROLE_LABELS: Record<string, string> = {
+  market: '行情',
+  fundamental: '基本面',
+  news: '新闻',
+};
+
+/** Return a safe product label instead of exposing internal worker names. */
+export const teamRoleLabel = (event: AgentStageEvent): string => {
+  const candidates = [
+    text(recordValue(event.details, 'expert_id', 'expertId', 'agent_id', 'agentId'), 160),
+    event.actionId || '',
+  ].map((value) => value.trim().toLowerCase());
+  const matchedRole = Object.keys(TEAM_ROLE_LABELS).find((role) => (
+    candidates.some((candidate) => candidate === role || candidate.includes(`:${role}`) || candidate.includes(`${role}_`))
+  ));
+  return matchedRole ? TEAM_ROLE_LABELS[matchedRole] : '领域';
+};
+
+/** Identify the parent lifecycle stage for one domain worker. */
+export const isTeamWorkerStage = (event: AgentStageEvent): boolean => (
+  isTeamStage(event)
+  && event.stage === 'planning'
+  && Boolean(text(recordValue(event.details, 'expert_id', 'expertId', 'agent_id', 'agentId'), 160).trim())
+  && (event.actionId || '').endsWith(':worker')
+);
+
+export const teamProgressText = (event: AgentStageEvent): string => {
+  if (!isTeamStage(event)) return '';
+  return text(recordValue(
+    event.details,
+    'progress_text',
+    'progressText',
+    'user_message',
+    'userMessage',
+    'model_summary',
+    'modelSummary',
+  ), 1_800).trim();
 };
 
 export interface TimelineRow {
@@ -286,6 +350,8 @@ export interface TimelineRow {
   result?: TraceRecord;
   kind: 'stage' | 'tool';
   modelTurn?: number;
+  /** Render the Team worker lifecycle as a compact Plan-style status row. */
+  compactTeamWorkerStatus?: boolean;
 }
 
 export interface TimelinePhase {
@@ -353,7 +419,7 @@ export const groupTimelinePhases = (rows: TimelineRow[]): TimelinePhase[] => {
   const groups = new Map<string, TimelinePhase>();
   let currentKey: string | undefined;
   let currentRunId: string | undefined;
-  let legacyIndex = 0;
+  let fallbackIndex = 0;
 
   for (const row of rows) {
     const event = row.event;
@@ -368,11 +434,11 @@ export const groupTimelinePhases = (rows: TimelineRow[]): TimelinePhase[] => {
     if (roundId) {
       key = `${runPrefix}:round:${roundId}`;
     } else if (event?.stage === 'model') {
-      key = turn ? `${runPrefix}:turn:${turn}` : `${runPrefix}:legacy:${++legacyIndex}`;
+      key = turn ? `${runPrefix}:turn:${turn}` : `${runPrefix}:fallback:${++fallbackIndex}`;
     } else if (turn) {
       key = `${runPrefix}:turn:${turn}`;
     } else {
-      key = currentKey || `${runPrefix}:legacy:${++legacyIndex}`;
+      key = currentKey || `${runPrefix}:fallback:${++fallbackIndex}`;
     }
 
     currentKey = key;

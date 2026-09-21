@@ -168,23 +168,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
     return projected
 
 
-def _maybe_attach_search_fallback(
-    _tool_name: str,
-    _arguments: dict[str, Any],
-    result: Any,
-) -> Any:
-    """Keep the legacy callback side-effect free; fallback is graph-owned.
-
-    The dispatcher still invokes this compatibility hook for older embedders,
-    but it must not make a nested web request.  The operation-policy middleware
-    detects unresolved source gaps and routes a normal, budgeted
-    ``search_web_source``/``read_web_source`` tool call through the graph.
-    """
-    return result
-
-
 __all__ = [
     "_compact_tool_result",
     "_format_result",
-    "_maybe_attach_search_fallback",
 ]

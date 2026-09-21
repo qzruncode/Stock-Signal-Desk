@@ -89,7 +89,7 @@ def _candidate_from_item(
         "kind": kind,
         "title": _text(item.get("title") or item.get("name"), 240),
         "tool_name": _text(record.get("tool_name"), 120),
-        "action_id": _text(record.get("action_id") or record.get("id"), 120),
+        "action_id": str(record.get("action_id") or record.get("id") or ""),
     }
 
 
@@ -138,7 +138,11 @@ def reference_candidates(tool_results: Sequence[Mapping[str, Any]]) -> list[dict
         if not kind or record.get("success") is not True or not _reference_read_required(record):
             continue
         result = _result_mapping(record)
-        items = result.get("items")
+        # The web search contract returns `results`; RSS/news contracts use
+        # `items`. Both are references, not extracted article bodies.
+        items = result.get("results") if record.get("tool_name") == "search_web_source" else result.get("items")
+        if items is None:
+            items = result.get("items")
         if isinstance(items, Sequence) and not isinstance(items, (str, bytes, bytearray)):
             for raw_item in items:
                 item = raw_item if isinstance(raw_item, Mapping) else {}
@@ -152,7 +156,7 @@ def reference_candidates(tool_results: Sequence[Mapping[str, Any]]) -> list[dict
                     by_canonical[canonical] = candidate
                     candidates.append(candidate)
                 elif str(record.get("action_id") or record.get("id") or ""):
-                    action_id = _text(record.get("action_id") or record.get("id"), 120)
+                    action_id = str(record.get("action_id") or record.get("id") or "")
                     action_ids = candidate.get("action_ids") or []
                     if action_id and action_id != candidate.get("action_id") and action_id not in action_ids:
                         action_ids = candidate.setdefault("action_ids", action_ids)
@@ -175,7 +179,7 @@ def reference_candidates(tool_results: Sequence[Mapping[str, Any]]) -> list[dict
                 by_canonical[canonical] = candidate
                 candidates.append(candidate)
             elif str(record.get("action_id") or record.get("id") or ""):
-                action_id = _text(record.get("action_id") or record.get("id"), 120)
+                action_id = str(record.get("action_id") or record.get("id") or "")
                 action_ids = candidate.get("action_ids") or []
                 if action_id and action_id != candidate.get("action_id") and action_id not in action_ids:
                     action_ids = candidate.setdefault("action_ids", action_ids)
@@ -295,18 +299,18 @@ def cited_reference_action_ids(
     if not cited_ids:
         return set()
     records_by_action = {
-        _text(record.get("action_id") or record.get("id"), 120): record
+        str(record.get("action_id") or record.get("id") or ""): record
         for raw_record in tool_results
         if isinstance(raw_record, Mapping)
         for record in [raw_record]
-        if _text(record.get("action_id") or record.get("id"), 120)
+        if record.get("action_id") or record.get("id")
     }
     return {
         action_id
         for raw_evidence in evidence
         if isinstance(raw_evidence, Mapping)
-        for evidence_id in [_text(raw_evidence.get("evidence_id") or raw_evidence.get("id"), 120)]
-        for action_id in [_text(raw_evidence.get("action_id"), 120)]
+        for evidence_id in [str(raw_evidence.get("evidence_id") or raw_evidence.get("id") or "")]
+        for action_id in [str(raw_evidence.get("action_id") or "")]
         if evidence_id in cited_ids
         and action_id
         and action_id in records_by_action
@@ -344,9 +348,9 @@ def cited_reference_access_status(
         )
         if cited_action_ids is None
         else {
-            _text(action_id, 120)
+            str(action_id)
             for action_id in cited_action_ids
-            if _text(action_id, 120)
+            if action_id
         }
     )
     selected = (

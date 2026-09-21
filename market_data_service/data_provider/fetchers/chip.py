@@ -6,6 +6,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from market_data_service.akshare_isolation import call_akshare_isolated
+
 from ..realtime_types import ChipDistribution, safe_float
 
 logger = logging.getLogger(__name__)
@@ -38,8 +40,6 @@ def get_chip_distribution(
     set_user_agent=None,
 ) -> Optional[ChipDistribution]:
     """获取筹码分布数据（A 股专属）。"""
-    import akshare as ak
-
     if is_us_code(stock_code):
         logger.debug("[API跳过] %s 是美股，无筹码分布数据", stock_code)
         return None
@@ -60,7 +60,7 @@ def get_chip_distribution(
         import time as _time
 
         api_start = _time.time()
-        df = ak.stock_cyq_em(symbol=stock_code)
+        df = call_akshare_isolated("stock_cyq_em", symbol=stock_code)
         api_elapsed = _time.time() - api_start
 
         if df.empty:

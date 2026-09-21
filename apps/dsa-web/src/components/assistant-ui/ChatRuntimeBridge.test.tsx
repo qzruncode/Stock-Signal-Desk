@@ -43,7 +43,9 @@ const makeDetail = (withToolPart = false): ChatConversationDetail => ({
         message: {
           id: 'assistant-1',
           role: 'assistant',
-          // 模拟旧版/手工写入的精简快照；它没有完整 assistant-ui 元数据。
+          // The persisted snapshot intentionally contains only the current
+          // minimal message shape; typed display parts are sourced from the
+          // canonical execution trace below.
           content: withToolPart
             ? [{ type: 'tool-call', toolName: 'broken-tool' }]
             : [{ type: 'text', text: '完整回答' }],
@@ -124,6 +126,185 @@ describe('ChatRuntimeBridge', () => {
       roundId: '1',
     });
     expect(content[2]?.text).toBe('最终回答');
+  });
+
+  it('rehydrates typed stages and charts at their original stream positions', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '最终回答';
+    detail.executionTrace = {
+      displayParts: [
+        { type: 'text', text: '先确认行情数据。', displayKind: 'progress' },
+        {
+          type: 'data',
+          name: 'agent-stage',
+          data: {
+            event: 'agent_stage',
+            run_id: 'run-typed-parts',
+            stage: 'planning',
+            status: 'completed',
+            summary: '行情方向已完成交接',
+          },
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'call-typed',
+          toolName: 'read_source',
+          argsText: '{}',
+          result: { success: true },
+        },
+        { type: 'text', text: '下面展示对应的资金变化。', displayKind: 'progress' },
+        {
+          type: 'data',
+          name: 'stock-chart',
+          data: {
+            chart_id: 'chart-typed',
+            chart_type: 'line',
+            title: '资金变化',
+            series: [{ key: 'close', label: '收盘价' }],
+            data: [{ x: '2026-09-16', close: 12.3 }],
+          },
+        },
+        { type: 'text', text: '最终回答', displayKind: 'answer' },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'run-typed-parts',
+      '最终回答',
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content.map((part) => part.type)).toEqual([
+      'text',
+      'data',
+      'tool-call',
+      'text',
+      'data',
+      'text',
+    ]);
+    expect(content[1]?.name).toBe('agent-stage');
+    expect(content[2]?.toolCallId).toBe('call-typed');
+    expect(content[4]?.name).toBe('stock-chart');
+    expect((content[4]?.data as Record<string, unknown>).chart_id).toBe('chart-typed');
+    expect(content[5]?.text).toBe('最终回答');
+  });
+
+  it('uses the complete committed Team answer rather than a truncated trace prefix', () => {
+    const detail = makeDetail(false);
+    const answer = '# 买入评估\n\n## 结论\n有条件的判断。\n\n## 行情\n行情证据。\n\n## 基本面\n财务证据。\n\n## 新闻\n新闻证据。';
+    detail.messages[1]!.content = answer;
+    detail.executionTrace = {
+      team: { status: 'partial' },
+      displayParts: [
+        { type: 'data', name: 'team-model-projection', partId: 'plan', data: { text: '模型的规划' } },
+        { type: 'text', text: '# 买入评估\n\n## 行情\n只有这一段', displayKind: 'answer' },
+      ],
+    };
+    const messages = toRuntimeMessages(detail.id, detail.messages, undefined, detail.executionTrace, 'team-run', answer);
+    const content = messages.find((message) => message.id === 'assistant-1')!.content as Array<Record<string, unknown>>;
+    expect(content.filter((part) => part.type === 'text').map((part) => part.text)).toEqual([answer]);
+    expect(content[0]?.name).toBe('team-model-projection');
+  });
+
+  it('repairs legacy joined answer headings and hides one-point quote charts', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '最终回答';
+    detail.executionTrace = {
+      displayParts: [
+        {
+          type: 'text',
+          text: '已完成行情核验。 ## 二、基本面\n\n基本面结果。',
+          displayKind: 'answer',
+        },
+        {
+          type: 'data',
+          name: 'stock-chart',
+          data: {
+            chart_id: 'quote-only',
+            chart_type: 'line',
+            title: '贵州茅台近期行情走势',
+            action_id: 'quote-action',
+            series: [{ key: 'price', label: 'price' }],
+            data: [{ x: '600519', price: 1257.05 }],
+          },
+        },
+        {
+          type: 'data',
+          name: 'stock-chart',
+          data: {
+            chart_id: 'kline',
+            chart_type: 'line',
+            title: '贵州茅台近期行情走势',
+            action_id: 'kline-action',
+            series: [{ key: 'close', label: 'close' }],
+            data: [
+              { x: '2026-09-15', close: 1272.75 },
+              { x: '2026-09-16', close: 1257.05 },
+            ],
+          },
+        },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'run-legacy-answer-boundary',
+      '最终回答',
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content[0]?.text).toContain('已完成行情核验。\n\n## 二、基本面');
+    expect(content.filter((part) => part.name === 'stock-chart')).toHaveLength(1);
+    expect((content.find((part) => part.name === 'stock-chart')?.data as Record<string, unknown>).chart_id)
+      .toBe('kline');
+  });
+
+  it('merges a repeated section number during historical replay without a duplicate heading', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '最终回答';
+    detail.executionTrace = {
+      displayParts: [
+        {
+          type: 'text',
+          text: '## 三、新闻与研报动态\n\n研报内容。',
+          displayKind: 'answer',
+        },
+        {
+          type: 'text',
+          text: '## 三、新闻与公告动态\n\n公告内容。\n\n## 四、主要风险\n\n风险内容。',
+          displayKind: 'answer',
+        },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'run-repeated-section-number',
+      '最终回答',
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+    const answerText = content
+      .filter((part) => part.type === 'text')
+      .map((part) => String(part.text || ''))
+      .join('\n');
+
+    expect(answerText).toContain('## 三、新闻与研报动态');
+    expect(answerText).not.toContain('## 三、新闻与公告动态');
+    expect(answerText).toContain('公告内容。');
+    expect(answerText).toContain('## 四、主要风险');
   });
 
   it('preserves legacy Planning progress while rehydrating terminal history', () => {
@@ -266,6 +447,8 @@ describe('ChatRuntimeBridge', () => {
       {
         runId: 'run-1',
         finalText: '第一轮回答【证据 ev-1】',
+        createdAt: '2026-09-20T22:58:03Z',
+        updatedAt: '2026-09-20T23:08:28Z',
         executionTrace: {
           displayParts: [
             { type: 'text', text: '第一轮已完成取证。', displayKind: 'progress' },
@@ -300,6 +483,7 @@ describe('ChatRuntimeBridge', () => {
     );
     const first = messages.find((message) => message.id === 'assistant-1');
     const second = messages.find((message) => message.id === 'assistant-2');
+    expect(first?.metadata?.custom?.agent_run_duration_ms).toBe(625_000);
 
     expect((first?.content as unknown as Array<Record<string, unknown>>).map((part) => part.text))
       .toEqual(['第一轮已完成取证。', '第一轮回答']);
@@ -307,7 +491,7 @@ describe('ChatRuntimeBridge', () => {
       .toEqual(['第二轮已完成取证。', '第二轮回答']);
     expect(
       (first?.metadata as Record<string, unknown>)?.custom,
-    ).toEqual({ agent_execution_trace: traceHistory[0]!.executionTrace });
+    ).toEqual({ agent_execution_trace: traceHistory[0]!.executionTrace, agent_run_duration_ms: 625_000 });
     expect(
       (second?.metadata as Record<string, unknown>)?.custom,
     ).toEqual({ agent_execution_trace: traceHistory[1]!.executionTrace });
@@ -528,6 +712,14 @@ describe('ChatRuntimeBridge', () => {
     const detail = makeDetail(false);
     detail.messages = detail.messages.slice(0, 1);
     detail.threadState = null;
+    detail.executionTrace = {
+      displayParts: [{
+        type: 'tool-call',
+        toolCallId: 'action-1',
+        toolName: 'search_news',
+        result: { success: true },
+      }],
+    };
     detail.resumeState = {
       runId: 'run-failed',
       active: true,
@@ -541,9 +733,6 @@ describe('ChatRuntimeBridge', () => {
         stage: 'completed',
         status: 'failed',
         summary: '模型服务不可用，已结束本轮执行',
-      },
-      executionTrace: {
-        toolResults: [{ action_id: 'action-1', tool_name: 'search_news', success: true }],
       },
     };
 
@@ -561,7 +750,11 @@ describe('ChatRuntimeBridge', () => {
         expect.objectContaining({
           id: 'conversation-1-agent-trace-run-failed',
           role: 'assistant',
-          content: [],
+          content: [expect.objectContaining({
+            type: 'tool-call',
+            toolCallId: 'action-1',
+            toolName: 'search_news',
+          })],
           metadata: expect.objectContaining({
             unstable_data: [detail.resumeState!.latestStage],
           }),

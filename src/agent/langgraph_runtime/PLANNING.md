@@ -1,12 +1,14 @@
 # Planning 协调器运行契约
 
-本功能沿用 `create_agent`、ToolRegistry、AtomicToolExecutor、LangGraph checkpoint、证据检查及 Reflection。Planning 是同一执行图中的协调中间件，不是第二套执行器，不提供 `/plan` 或用户可选的 replan 模式。
+本功能沿用 `create_agent`、ToolRegistry、AtomicToolExecutor、LangGraph checkpoint、证据检查及 Reflection。四种产品模式共享这些运行时边界；Planning 是 Plan 模式中的协调中间件，不是第二套执行器，也不提供独立的 replan 开关。
 
 ## 入口
 
-聊天入口明确传 `planning_mode=auto`。自动模式先用小型 `PlanningRoute` 结构化调用判断 direct 或 planned；只有 planned 才追加一次 `PlanningPlan` 调用。两者不再共用一个同时包含路由和完整计划的大对象，没有关键词、字数或语言规则。
+产品层明确提供四种模式：`Auto`、`Direct`、`Plan`、`Team`。聊天选择器发送 `agent_mode=auto|direct|plan|team`，模式在本轮开始前确定并在执行期间保持不变：Direct 走现有 Agent Loop，Plan 走本 PlanningCoordinator，Team 走独立的 supervisor/worker 协作图；Auto 交给模型在这三条执行路径之间路由，并且是默认模式。
 
-简单任务返回 direct，随后使用原有问答循环，不生成步骤。运行记录保留选择原因。内部直接调用 runtime 的默认值仍是 direct，测试或受控调用方可以明确传 planned。
+`agent_mode=plan` 进入 PlanningCoordinator；`agent_mode=team` 直接进入 Team 图，不调用自动路由模型；`agent_mode=auto` 先在 runtime 的 `_dispatch_product_mode` 顶层步骤中调用 Auto 路由模型，选择 Direct、Plan 或 Team 后才进入被选中的图，不能先进入 `build_team_graph` 再决定。四种选择共享 checkpoint、证据、审批、恢复和最终发布边界。
+
+Auto 模式默认由模型选择 Direct、Plan 或 Team；Direct 模式使用原有问答循环，不生成 Planning 步骤；Plan 模式显式生成步骤并逐步核验；Team 模式显式生成领域任务并并行交接。内部直接调用 runtime 的默认值仍是 direct，测试或受控调用方可以明确传 `agent_mode`。
 
 ## 执行与完成
 
@@ -22,7 +24,43 @@
 
 重规划保留完成步骤、原始目标和约束，只替换剩余步骤。新旧步骤、原因、版本及失败报告进入同一个持久化记录。总步骤数最多 8；默认最多 2 次重规划，硬上限 4；同一步最多 3 轮 worker 调用。每个结构化合约最多修复一次；自动路由与计划是两个独立合约，整体模型和工具预算继续由现有运行时控制。
 
-规划或报告校验耗尽时，明确返回部分结果/缺口，不回退到无计划的任意工具执行。
+路由、规划、Team worker、冲突检测或报告校验耗尽时，明确返回部分结果/缺口，不回退到无计划的任意工具执行。
+
+## Team 协作控制面
+
+Team 是 PDF 第 7 篇的 Custom Hybrid Collaboration，不复用 Plan 的
+`PlanningCoordinator`、计划步骤执行器或 Team→Plan 回接。每次 Team 运行拥有独立的
+`CollaborationPlan`：`CollaborationCoordinator/Supervisor →
+CollaborationPlanValidator → TeamDispatch → Send(注册表中选中的专家) →
+AgentHandoffCommit → WorkerFailurePolicy → EvidenceMerger → DraftAggregator →
+ReviewDispatch → ConflictDetector + CriticReviewer → ReviewGate`。
+
+`ExpertRegistry` 只描述可用专家，不代表本轮一定执行。Supervisor 只能从注册表选择
+至少两个有意义的专家任务；服务端校验专家身份、能力、只读工具范围、依赖环、并发、预算、
+超时和成功条件。`TeamDispatch` 使用 LangGraph 原生 `Send` 只分发当前依赖已满足的任务，
+每个注册专家挂载独立 graph node/namespace；执行函数可以共享，但任务身份、上下文、工具、
+输出 Schema、checkpoint namespace 和事件流必须独立。新增注册专家不会被隐式执行。
+
+`AgentHandoffCommit` 将每个结果保存为 `AgentReport` 并登记到服务端
+Canonical Evidence Catalog；后续 Draft、Reviewer、Consensus 和 FinalSynthesizer 只能引用
+canonical evidence ID。`WorkerFailurePolicy` 是 worker 层的唯一失败决策点：`retry` 只重试
+当前失败任务，`replan` 进入 Team 自己的 `ReexecutionPlanner`，`partial` 保留证据并继续，
+`abort` 终止 Team。已成功且证据有效的专家在同一运行中不可重复执行。
+
+`ConflictDetector` 和 `CriticReviewer` 在 ReviewDispatch 后并行执行，`ReviewGate` 等待两者
+都完成后再决定是否进入完成条件检查；只有冲突/高风险才通过 `Send` 并行执行
+`BullCaseReviewer`、`BearCaseReviewer`，随后进入 `ConsensusResolver`。
+无冲突也必须经过 `CompletionCriteriaValidator`。完成条件未通过时，流程进入
+`ReexecutionPlanner → 目标专家 → EvidenceMerger → DraftAggregator → Review`；达到预算仍
+无法修复则输出明确的 `partial` / `blocked`，不会静默降级为 Direct。
+
+每个节点都有独立 Pydantic 交接契约。worker/reviewer 子图使用 per-invocation 模式
+（`checkpointer=None`），继承根 Team 图的数据库 checkpoint；根图保存任务、尝试、证据交接、
+审查、共识和再执行决定。结构化合约、专家任务和工具调用均有独立 deadline，取消、超时、
+模型失败和工具失败都写入终态事件，父 Team 不得永久保持 `running`。
+
+代码中的 `completion_criteria_validator`、`team_synthesizer` 是唯一规范节点名；Team
+不再注册或读取其他历史节点名。
 
 ## 展示与上下文
 
@@ -42,6 +80,6 @@ Planner 目录只传递操作名、简短描述、effect 和 category；完整�
 
 普通问答的请求上下文同样会将上一轮结构化答案渲染为普通对话内容，不回放它的输出协议回执。本轮原生工具消息对保持不变，完整 checkpoint 与运行记录不受此投影影响。
 
-后端重点见 `tests/test_agent_planning.py`：语义路由、非法计划、条件未满足、伪造证据、重规划、实际分析、上下文投影、审批恢复和部分答案发布。另运行受影响的原生流、checkpoint、审批及持久化测试。
+后端重点见 `tests/test_agent_planning.py` 和 `tests/test_langgraph_multi_agent_team.py`：四种产品模式、Auto 路由、非法计划、条件未满足、伪造证据、重规划、实际分析、上下文投影、审批恢复、并行 worker、冲突/多空/共识和部分答案发布。另运行受影响的原生流、checkpoint、审批及持久化测试。
 
 前端重点验证 AgentReasoning、ChatRuntimeBridge、agentStage 和 RunDetailContent。真实验收还需在页面验证简单解释、短句多步骤任务、失败重规划及刷新回放，不能用单元测试代替模型和浏览器验收。

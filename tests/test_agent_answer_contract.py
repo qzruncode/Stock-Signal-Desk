@@ -9,9 +9,11 @@ from src.agent.langgraph_runtime.answer_contract import (
     StructuredAgentAnswer,
     finalize_terminal_answer,
     output_reference_catalog_for_model,
+    output_reference_catalogs,
     project_structured_answer,
     render_structured_answer,
     resolve_structured_answer_references,
+    structured_answer_display_parts,
     structured_answer_contract_issues,
     structured_answer_profile,
 )
@@ -71,6 +73,22 @@ def test_general_profile_allows_an_explanation_without_external_evidence() -> No
     assert structured_answer_contract_issues(answer) == []
     assert ledger["issues"] == []
     assert ledger["claims"][0]["requires_evidence"] is False
+
+
+def test_cross_expert_synthesis_accepts_all_relevant_sources_without_truncation() -> None:
+    adapter = TypeAdapter(StructuredAgentAnswer)
+    answer = adapter.validate_python({"blocks": [{
+        "kind": "inference", "content": "跨专家综合判断", "source_ids": list(range(1, 32)),
+    }]})
+    evidence = [
+        {"evidence_id": f"ev-{index}", "success": True, "effect": "read"}
+        for index in range(1, 32)
+    ]
+    resolved = resolve_structured_answer_references(answer, evidence=evidence, tool_results=[])
+    assert resolved["blocks"][0]["evidence_ids"] == [f"ev-{index}" for index in range(1, 32)]
+    for invalid_sources in ([0], ["1"], list(range(1, 82))):
+        with pytest.raises(ValidationError):
+            adapter.validate_python({"blocks": [{"content": "无效引用", "source_ids": invalid_sources}]})
 
 
 def test_general_answer_still_requires_sources_after_external_evidence_is_read() -> None:
@@ -232,6 +250,182 @@ def test_output_references_are_resolved_from_trusted_tool_results() -> None:
     rendered = render_structured_answer(answer, tool_results=tool_results)
     assert "下载文件：筛选结果.csv" in rendered
     assert "仅展示，不会再次执行" in rendered
+
+
+def test_structured_answer_display_parts_keep_chart_after_owning_block() -> None:
+    answer = {
+        "profile": "research",
+        "title": "行情与结论",
+        "blocks": [
+            {
+                "section": "行情",
+                "kind": "fact",
+                "content": "行情已经核验。",
+                "chart_refs": [
+                    {
+                        "chart_id": "chart-1",
+                        "chart_type": "line",
+                        "title": "行情走势",
+                        "series": [{"key": "close", "label": "收盘价"}],
+                        "data": [{"x": "2026-09-16", "close": 12.3}],
+                    }
+                ],
+            },
+            {
+                "section": "结论",
+                "kind": "answer",
+                "content": "结论仍需结合风险判断。",
+            },
+        ],
+    }
+
+    parts = structured_answer_display_parts(answer)
+
+    assert [part["type"] for part in parts] == ["text", "data", "text"]
+    assert parts[0]["text"].endswith("行情已经核验。")
+    assert parts[1]["name"] == "stock-chart"
+    assert parts[1]["data"]["chart_id"] == "chart-1"
+    assert parts[2]["text"].endswith("结论仍需结合风险判断。")
+
+
+def test_output_reference_catalog_dedupes_identical_retry_charts() -> None:
+    tool_results = [
+        {
+            "action_id": "team:market:attempt-1:call-1",
+            "tool_name": "read_recent_kline",
+            "success": True,
+            "result": {
+                "chart_title": "近 60 日走势",
+                "data": [
+                    {"date": "2026-09-16", "close": 12.3},
+                    {"date": "2026-09-17", "close": 12.1},
+                ],
+            },
+        },
+        {
+            "action_id": "team:market:attempt-2:call-2",
+            "tool_name": "read_recent_kline",
+            "success": True,
+            "result": {
+                "chart_title": "近 60 日走势",
+                "data": [
+                    {"date": "2026-09-16", "close": 12.3},
+                    {"date": "2026-09-17", "close": 12.1},
+                ],
+            },
+        },
+    ]
+
+    catalogs = output_reference_catalogs(tool_results)
+    model_catalog = output_reference_catalog_for_model(tool_results)
+
+    assert len(catalogs["actions"]) == 2
+    assert len(catalogs["charts"]) == 1
+    assert catalogs["charts"][0]["source_id"] == 1
+    assert len(model_catalog["charts"]) == 1
+
+    answer = {
+        "profile": "research",
+        "blocks": [{
+            "section": "行情",
+            "content": "行情已经核验。",
+            "chart_source_ids": [1, 2],
+        }],
+    }
+    rendered = render_structured_answer(answer, tool_results=tool_results)
+    assert rendered.count("图表：近 60 日走势") == 1
+
+
+def test_structured_answer_display_parts_do_not_duplicate_action_fallbacks() -> None:
+    answer = {
+        "profile": "research",
+        "title": "行情与结论",
+        "blocks": [{
+            "section": "行情",
+            "kind": "fact",
+            "content": "行情已经核验。",
+            "action_refs": [{
+                "action_id": "quote-1",
+                "tool_name": "read_realtime_quote",
+                "status": "completed",
+                "success": True,
+            }],
+        }],
+    }
+
+    parts = structured_answer_display_parts(answer)
+
+    assert all("动作记录" not in str(part.get("text") or "") for part in parts)
+
+
+def test_renderer_merges_repeated_section_number_without_duplicate_heading() -> None:
+    answer = {
+        "profile": "general",
+        "title": "研究报告",
+        "blocks": [
+            {
+                "section": "三、新闻与研报动态",
+                "kind": "answer",
+                "content": "研报内容",
+            },
+            {
+                "section": "三、新闻与公告动态",
+                "kind": "answer",
+                "content": "公告内容",
+            },
+            {
+                "section": "四、主要风险",
+                "kind": "risk",
+                "content": "风险内容",
+            },
+        ],
+    }
+
+    rendered = render_structured_answer(answer)
+    display_text = "\n".join(
+        str(part.get("text") or "")
+        for part in structured_answer_display_parts(answer)
+        if part.get("type") == "text"
+    )
+
+    for output in (rendered, display_text):
+        assert "## 三、新闻与研报动态" in output
+        assert "## 三、新闻与公告动态" not in output
+        assert "公告内容" in output
+        assert "## 四、主要风险" in output
+
+
+def test_server_one_point_line_chart_is_not_replayed_as_a_chart() -> None:
+    answer = {
+        "profile": "research",
+        "blocks": [{
+            "section": "行情",
+            "content": "行情已经核验。",
+            "chart_refs": [{
+                "chart_id": "quote-chart",
+                "chart_type": "line",
+                "title": "最新报价",
+                "action_id": "quote-action",
+                "series": [{"key": "price", "label": "price"}],
+                "data": [{"x": "600519", "price": 1257.05}],
+            }, {
+                "chart_id": "kline-chart",
+                "chart_type": "line",
+                "title": "近60日走势",
+                "action_id": "kline-action",
+                "series": [{"key": "close", "label": "close"}],
+                "data": [
+                    {"x": "2026-09-15", "close": 1272.75},
+                    {"x": "2026-09-16", "close": 1257.05},
+                ],
+            }],
+        }],
+    }
+
+    parts = structured_answer_display_parts(answer)
+
+    assert [part["type"] for part in parts] == ["text", "data"]
+    assert parts[1]["data"]["chart_id"] == "kline-chart"
 
 
 def test_output_reference_resolution_rejects_model_authored_paths_and_urls() -> None:

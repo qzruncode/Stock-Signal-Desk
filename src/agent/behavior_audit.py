@@ -724,10 +724,10 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     evidence_by_action: defaultdict[str, int] = defaultdict(int)
     evidence_by_id: dict[str, Mapping[str, Any]] = {}
     for item in evidence:
-        action_id = _text(_field(item, "action_id", "actionId"), 160)
+        action_id = str(_field(item, "action_id", "actionId") or "")
         if action_id and evidence_record_is_eligible(item):
             evidence_by_action[action_id] += 1
-        evidence_id = _text(_field(item, "evidence_id", "evidenceId", "id"), 160)
+        evidence_id = str(_field(item, "evidence_id", "evidenceId", "id") or "")
         if evidence_id:
             evidence_by_id[evidence_id] = item
 
@@ -759,7 +759,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     ]
     for item in normalized_results:
         tool_name = _text(_field(item, "tool_name", "toolName"), 160) or "未指定工具"
-        action_id = _text(_field(item, "action_id", "actionId", "tool_call_id", "toolCallId"), 160)
+        action_id = str(_field(item, "action_id", "actionId", "tool_call_id", "toolCallId") or "")
         outcome = describe_tool_outcome(tool_name, item)
         success = outcome["execution_status"] == "completed"
         step = _step_for_tool(steps, item, action_id)
@@ -817,7 +817,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         has_result_items = bool(collections) or (
             result_count_int is not None and result_count_int > 0
         )
-        if success and has_result_items and not evidence_by_action.get(action_id):
+        if success and has_result_items and tool_name != "select_content_sources" and not evidence_by_action.get(action_id):
             missing_evidence_tools.append((tool_name, action_id))
         if not success:
             errors = _field(item, "errors", "error")
@@ -825,7 +825,16 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 "；".join(filter(None, (_text(error, 500) for error in _sequence(errors))))[:500]
                 if isinstance(errors, (list, tuple)) else _text(errors, 500)
             ) or _text(_field(item, "error_code", "errorCode"), 160) or "未提供具体错误"
-            failed_tools.append((tool_name, action_id, error_text, _arguments_fingerprint(item)))
+            if _field(item, "error_code", "errorCode") == "repeated_failed_source":
+                findings.append(_finding(
+                    code="repeated_failed_source_blocked", severity="info", category="execution",
+                    title=f"已拦截 {tool_name} 的重复失败来源请求",
+                    detail=error_text,
+                    remediation="本次未再次访问数据源；原始失败和网页恢复记录仍保留，不计为新的取证故障。",
+                    tool_names=[tool_name], action_ids=[action_id], disposition=ADVISORY,
+                ))
+            else:
+                failed_tools.append((tool_name, action_id, error_text, _arguments_fingerprint(item)))
         else:
             if action_id and outcome.get("usable"):
                 usable_action_ids.add(action_id)
@@ -898,23 +907,23 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         for entry in candidate_links.values()
     )
     raw_results_by_action = {
-        _text(_field(item, "action_id", "actionId", "tool_call_id", "toolCallId"), 160): item
+        str(_field(item, "action_id", "actionId", "tool_call_id", "toolCallId") or ""): item
         for item in normalized_results
-        if _text(_field(item, "action_id", "actionId", "tool_call_id", "toolCallId"), 160)
+        if _field(item, "action_id", "actionId", "tool_call_id", "toolCallId")
     }
     cited_reference_actions: dict[str, Mapping[str, Any]] = {}
     cited_evidence_ids = set(_EVIDENCE_REFERENCE.findall(final_text))
     for claim in claims:
         cited_evidence_ids.update(
-            _text(raw_evidence_id, 160)
+            str(raw_evidence_id)
             for raw_evidence_id in _sequence(_field(claim, "evidence_ids", "evidenceIds"))
-            if _text(raw_evidence_id, 160)
+            if raw_evidence_id
         )
     for evidence_id in cited_evidence_ids:
         evidence_item = evidence_by_id.get(evidence_id)
         if evidence_item is None:
             continue
-        action_id = _text(_field(evidence_item, "action_id", "actionId"), 160)
+        action_id = str(_field(evidence_item, "action_id", "actionId") or "")
         raw_result = raw_results_by_action.get(action_id)
         if not action_id or raw_result is None:
             continue
@@ -926,8 +935,8 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         action_id
         for claim in claims
         for evidence_id in _sequence(_field(claim, "evidence_ids", "evidenceIds"))
-        for evidence_item in [evidence_by_id.get(_text(evidence_id, 160))]
-        for action_id in [_text(_field(evidence_item or {}, "action_id", "actionId"), 160)]
+        for evidence_item in [evidence_by_id.get(str(evidence_id))]
+        for action_id in [str(_field(evidence_item or {}, "action_id", "actionId") or "")]
         if action_id
     }
     cited_action_ids = set(cited_reference_actions) | claim_action_ids
@@ -937,7 +946,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     retained_evidence_action_ids: set[str] = set()
     web_fallback_recovered_action_ids: set[str] = set()
     for index, failed in enumerate(normalized_results):
-        failed_id = _text(_field(failed, "action_id", "actionId", "tool_call_id", "toolCallId"), 160)
+        failed_id = str(_field(failed, "action_id", "actionId", "tool_call_id", "toolCallId") or "")
         if not any(action_id == failed_id for _, action_id, _, _ in failed_tools):
             continue
         failed_name = _text(_field(failed, "tool_name", "toolName"), 160)
@@ -945,7 +954,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         failed_urls = {_canonical_url(url) for url in _reference_urls(failed) + _read_urls(failed, {})}
         failed_urls.discard("")
         for candidate_index, candidate in enumerate(normalized_results):
-            candidate_id = _text(_field(candidate, "action_id", "actionId", "tool_call_id", "toolCallId"), 160)
+            candidate_id = str(_field(candidate, "action_id", "actionId", "tool_call_id", "toolCallId") or "")
             if candidate_id not in usable_action_ids:
                 continue
             candidate_name = _text(_field(candidate, "tool_name", "toolName"), 160)
@@ -956,11 +965,17 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 retained_evidence_action_ids.add(failed_id)
             elif (
                 candidate_index > index
-                and candidate_name == "read_web_source"
+                and candidate_name in {"read_web_source", "search_web_source"}
                 and candidate_id in cited_action_ids
                 and evidence_by_action.get(candidate_id)
-                and _content_extracted(candidate, {}, "content_read")
-                and failed_urls.intersection(_canonical_url(url) for url in _read_urls(candidate, {}))
+                and (
+                    (candidate.get("fallback_request_id")
+                     and candidate.get("fallback_for_action_id") == failed_id
+                     and candidate.get("task_id") == failed.get("task_id"))
+                    or (candidate_name == "read_web_source"
+                        and _content_extracted(candidate, {}, "content_read")
+                        and failed_urls.intersection(_canonical_url(url) for url in _read_urls(candidate, {})))
+                )
             ):
                 web_fallback_recovered_action_ids.add(failed_id)
     # One failure has one resolution, never two counted recoveries.
@@ -1019,14 +1034,14 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         entry
         for entry in unselected_documents
         if not cited_action_ids.intersection(
-            _text(action_id, 160) for action_id in entry.get("actions") or []
+            str(action_id) for action_id in entry.get("actions") or []
         )
     ]
     unselected_articles = [
         entry
         for entry in unselected_articles
         if not cited_action_ids.intersection(
-            _text(action_id, 160) for action_id in entry.get("actions") or []
+            str(action_id) for action_id in entry.get("actions") or []
         )
     ]
 

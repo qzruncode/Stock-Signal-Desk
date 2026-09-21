@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { StructuredAnswerReferences } from './StructuredAnswerReferences';
 import {
+  stripNativeAnswerReferenceFallbacks,
   stripStructuredAnswerReferenceFallbacks,
   structuredAnswerFromTrace,
 } from './StructuredAnswerReferencesUtils';
@@ -47,6 +48,13 @@ describe('StructuredAnswerReferences', () => {
     );
   });
 
+  it('does not append action summaries when native tool parts are already in the timeline', () => {
+    render(<StructuredAnswerReferences answer={answer} renderActions={false} />);
+
+    expect(screen.getByText('筛选结果.csv')).toBeInTheDocument();
+    expect(screen.queryByText(/screen_atr_volatility_stocks/)).not.toBeInTheDocument();
+  });
+
   it('reads either trace key without accepting a missing structured answer', () => {
     expect(structuredAnswerFromTrace({ structured_answer: answer })).toBe(answer);
     expect(structuredAnswerFromTrace({ structuredAnswer: { blocks: [] } })).toBeNull();
@@ -85,5 +93,17 @@ describe('StructuredAnswerReferences', () => {
       '',
       '- 图表：read_stock_capital_flow_history_eastmoney数据（已根据本轮工具数据生成）',
     ].join('\n'), chartAnswer)).toBe('结果正文');
+  });
+
+  it('keeps a partial diagnostic when removing native action fallback text', () => {
+    expect(stripNativeAnswerReferenceFallbacks([
+      '结果正文',
+      '',
+      '- 动作记录：read_recent_kline（已完成，仅展示，不会再次执行）[本轮结果存在未完成的核验：部分领域 worker 未完成]',
+    ].join('\n'))).toBe([
+      '结果正文',
+      '',
+      '[本轮结果存在未完成的核验：部分领域 worker 未完成]',
+    ].join('\n'));
   });
 });

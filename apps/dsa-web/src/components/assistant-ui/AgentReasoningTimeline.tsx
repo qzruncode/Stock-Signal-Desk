@@ -22,6 +22,10 @@ import {
   recordValue,
   stageDetails,
   statusText,
+  isTeamStage,
+  isTeamWorkerStage,
+  teamRoleLabel,
+  teamProgressText,
   text,
   toolDetails,
   toolOutcomeCounts,
@@ -73,10 +77,44 @@ export const TimelineDetailLines: FC<{ lines: DetailLine[] }> = ({ lines }) => {
   );
 };
 
+export const TimelineTeamWorkerStatusRow: FC<{ row: TimelineRow }> = ({ row }) => {
+  const event = row.event;
+  if (!event) return null;
+  const problem = event.status === 'failed'
+    || event.status === 'blocked'
+    || event.status === 'cancelled'
+    || Boolean(event.errorCode);
+  const label = `${teamRoleLabel(event)}方向`;
+  return (
+    <li className="flex min-w-0 items-center gap-2 py-1.5 text-xs">
+      <StatusIcon
+        status={event.status}
+        problem={problem}
+        className={cn(
+          'size-3.5 shrink-0',
+          problem
+            ? 'text-amber-600'
+            : event.status === 'completed' || event.status === 'succeeded'
+              ? 'text-emerald-600'
+              : 'animate-spin text-primary',
+        )}
+      />
+      <span className="font-medium text-foreground">{label}</span>
+      <span className={cn(problem ? 'text-amber-700' : 'text-muted-foreground')}>
+        {statusText(event.status, problem)}
+      </span>
+    </li>
+  );
+};
+
 export const TimelineStageRow: FC<{ row: TimelineRow }> = ({ row }) => {
   const event = row.event;
   if (!event) return null;
+  if (row.compactTeamWorkerStatus && isTeamWorkerStage(event)) {
+    return <TimelineTeamWorkerStatusRow row={row} />;
+  }
   if (event.stage === 'planning') return <TimelinePlanningRow row={row} />;
+  if (teamProgressText(event)) return <TimelineNaturalProgressRow row={row} />;
   const status = event.status;
   const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
     || Boolean(event.errorCode);
@@ -127,6 +165,31 @@ export const TimelineStageRow: FC<{ row: TimelineRow }> = ({ row }) => {
   );
 };
 
+/** Render Team control-plane progress like Planning, without exposing node names. */
+export const TimelineNaturalProgressRow: FC<{ row: TimelineRow }> = ({ row }) => {
+  const event = row.event;
+  if (!event) return null;
+  const problem = event.status === 'failed'
+    || event.status === 'blocked'
+    || event.status === 'cancelled'
+    || Boolean(event.errorCode);
+  const progress = teamProgressText(event) || event.summary || '正在继续协作核验。';
+  return (
+    <li className="min-w-0 py-1.5 text-sm text-foreground/90">
+      {problem ? (
+        <div className="flex min-w-0 items-start gap-2 text-amber-800">
+          <StatusIcon status={event.status} problem className="mt-1 size-4 shrink-0 text-amber-600" />
+          <div className="min-w-0 flex-1">
+            <AssistantMarkdown text={progress} />
+          </div>
+        </div>
+      ) : (
+        <AssistantMarkdown text={progress} />
+      )}
+    </li>
+  );
+};
+
 /** Render Planning as user-facing progress, never as a field-by-field dump. */
 export const TimelinePlanningRow: FC<{ row: TimelineRow }> = ({ row }) => {
   const event = row.event;
@@ -136,7 +199,10 @@ export const TimelinePlanningRow: FC<{ row: TimelineRow }> = ({ row }) => {
     || event.status === 'blocked'
     || event.status === 'cancelled'
     || Boolean(event.errorCode));
-  const progress = planningProgressText(event) || event.summary || '正在规划执行步骤。';
+  const progress = planningProgressText(event)
+    || (teamProgressText(event) ? teamProgressText(event) : '')
+    || event.summary
+    || '正在规划执行步骤。';
   return (
     <li className="min-w-0 py-1.5 text-sm text-foreground/90">
       {problem ? (
@@ -157,14 +223,23 @@ export const TimelinePlanningRow: FC<{ row: TimelineRow }> = ({ row }) => {
 
 export const TimelineToolRow: FC<{ row: TimelineRow }> = ({ row }) => {
   const event = row.event;
-  const name = toolName(row.result)
+  const isTeamTool = Boolean(event && isTeamStage(event));
+  const name = isTeamTool
+    ? `${teamRoleLabel(event!)}方向的数据核验`
+    : toolName(row.result)
     || text(recordValue(event?.details, 'tool_name', 'toolName'), 120)
     || '原子工具';
   const status = toolStatus(row.result, event);
   const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
     || Boolean(event?.errorCode)
     || errorCode(row.result) !== '';
-  const summary = toolSummary(row.result, event);
+  const summary = isTeamTool
+    ? problem
+      ? '数据读取出现缺口'
+      : status === 'started'
+        ? '正在读取一项数据'
+        : '已取得一项数据'
+    : toolSummary(row.result, event);
   const details = toolDetails(row.result, event);
   const detailId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -245,6 +320,18 @@ export const TimelinePhaseRow: FC<{ phase: TimelinePhase }> = ({ phase }) => {
   const phaseSummary = toolRows.length > 0
     ? phaseToolSummary
     : headline;
+  const workerSummary = phase.rows
+    .filter((row) => row.compactTeamWorkerStatus && row.event && isTeamWorkerStage(row.event))
+    .map((row) => {
+      const event = row.event!;
+      const problem = event.status === 'failed'
+        || event.status === 'blocked'
+        || event.status === 'cancelled'
+        || Boolean(event.errorCode);
+      return `${teamRoleLabel(event)}方向 ${statusText(event.status, problem)}`;
+    })
+    .join('，');
+  const visiblePhaseSummary = [workerSummary, phaseSummary].filter(Boolean).join(' · ');
 
   return (
     <li className="min-w-0 border-b border-border/60 last:border-b-0">
@@ -270,9 +357,8 @@ export const TimelinePhaseRow: FC<{ phase: TimelinePhase }> = ({ phase }) => {
         />
         <span className="min-w-0 flex-1 truncate" title={headline}>
           <span className="font-medium text-foreground">{phaseLabel}</span>
-          <span className="ml-2 text-muted-foreground">{phaseSummary}</span>
+          <span className="ml-2 text-muted-foreground">{visiblePhaseSummary}</span>
         </span>
-        {toolRows.length > 0 ? <span className="shrink-0 text-xs">{toolRows.length} 个工具</span> : null}
         <ChevronRightIcon
           className={cn(
             'size-4 shrink-0 text-muted-foreground transition-transform duration-300 ease-out',

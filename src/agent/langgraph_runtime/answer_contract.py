@@ -140,9 +140,10 @@ class StructuredAnswerBlock(TypedDict):
         list[Annotated[int, Field(strict=True, ge=1)]],
         Field(
             default_factory=list,
-            max_length=24,
+            max_length=80,
             description=(
                 "Integer source_ids from the current run's source catalog supporting this block. "
+                "Cite only relevant sources, up to 80 across the selected experts. "
                 "The server resolves these numbers to durable evidence IDs. Never write ev_ hashes."
             ),
         ),
@@ -236,6 +237,9 @@ _SAFE_RESOURCE_ID_PATTERN = re.compile(r"textdoc_[0-9a-f]{40}")
 _SAFE_REFERENCE_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}")
 _SAFE_REFERENCE_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _MACHINE_CHART_TITLE_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{2,120}数据")
+_SECTION_NUMBER_PREFIX_PATTERN = re.compile(
+    r"^(?P<number>[0-9]+|[一二三四五六七八九十百千万零〇两]+)[、.．:：)）\-][ \t]*"
+)
 _STRUCTURED_ANSWER_CLIENT_TEXT_LIMIT = 12_000
 _STRUCTURED_ANSWER_REFERENCE_TEXT_LIMIT = 160
 _STRUCTURED_ANSWER_CHART_ROW_LIMIT = 120
@@ -258,6 +262,31 @@ def _chart_type(value: Any) -> str:
 
 def _bounded_text(value: Any, limit: int) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _section_label_for_render(
+    value: Any,
+    seen_section_numbers: set[str],
+) -> str:
+    """Keep model section labels readable when numbering is repeated.
+
+    A typed answer can contain independently generated blocks. If two blocks
+    both arrive as ``三、...``, preserving both headings makes the final report
+    look malformed even though their subjects are different. Keep the first
+    heading and merge later content into that section; the raw typed answer
+    remains unchanged for audit and repair purposes.
+    """
+    section = str(value or "").strip().lstrip("# ").strip()
+    if not section:
+        return ""
+    match = _SECTION_NUMBER_PREFIX_PATTERN.match(section)
+    if not match:
+        return section[:160]
+    number = match.group("number")
+    if number in seen_section_numbers:
+        return ""
+    seen_section_numbers.add(number)
+    return section[:160]
 
 
 def _display_title(value: Any, fallback: str) -> str:
@@ -571,6 +600,15 @@ def _chart_reference_from_result(
     if not chart_data:
         return None
 
+    chart_type = _chart_type(result.get("chart_type"))
+    # A single quote/lookup row is not a useful line chart.  Some quote tools
+    # expose their tabular payload through ``data`` and would otherwise render
+    # a misleading one-point chart alongside the real K-line series.  Keep a
+    # one-row result only when the tool explicitly requested a bar chart,
+    # where a single ranked item is still meaningful.
+    if chart_type != "bar" and len(chart_data) < 2:
+        return None
+
     chart_id = _safe_reference_id(
         f"chart-{_bounded_text(action_id or record.get('tool_name'), 72)}-{chart_index}"
     ) or f"chart-{chart_index}"
@@ -582,14 +620,39 @@ def _chart_reference_from_result(
     return {
         "source_id": chart_index,
         "chart_id": chart_id,
-        "chart_type": _chart_type(result.get("chart_type")),
+        "chart_type": chart_type,
         "title": title,
         "x_key": "x",
         "series": series,
         "data": chart_data,
         "action_id": action_id or None,
+        "tool_call_id": _bounded_text(record.get("tool_call_id"), 128) or None,
         "evidence_id": evidence_id,
     }
+
+
+def _chart_fingerprint(chart: Mapping[str, Any]) -> str:
+    """Identify the visual chart payload independently of a retry attempt.
+
+    A retry may have a new action/tool-call id while returning the same chart
+    rows.  Those calls remain separate audit actions, but publishing the same
+    visual twice makes the final answer look duplicated.  Keep only fields
+    that define the rendered chart; source/action identity is deliberately
+    excluded so retries can collapse to one display reference.
+    """
+    return json.dumps(
+        {
+            "chart_type": chart.get("chart_type"),
+            "title": chart.get("title"),
+            "x_key": chart.get("x_key"),
+            "series": chart.get("series"),
+            "data": chart.get("data"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
 
 
 def _restrict_chart_reference_series(
@@ -662,6 +725,7 @@ def output_reference_catalogs(
     charts: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
     seen_artifacts: set[str] = set()
+    seen_charts: set[str] = set()
     for record in records[:80]:
         action_id = _bounded_text(record.get("action_id") or record.get("id"), 128)
         tool_name = _bounded_text(record.get("tool_name"), 128)
@@ -733,6 +797,10 @@ def output_reference_catalogs(
             chart_index=len(charts) + 1,
         )
         if chart:
+            fingerprint = _chart_fingerprint(chart)
+            if fingerprint in seen_charts:
+                continue
+            seen_charts.add(fingerprint)
             charts.append(chart)
 
     return {"artifacts": artifacts[:24], "charts": charts[:24], "actions": actions[:80]}
@@ -854,14 +922,23 @@ def _safe_chart_reference(value: Any) -> dict[str, Any] | None:
                 data.append(point)
     if not data:
         return None
+    chart_type = _chart_type(value.get("chart_type"))
+    action_id = _bounded_text(value.get("action_id"), 128) or None
+    tool_call_id = _bounded_text(value.get("tool_call_id"), 128) or None
+    # A server-generated one-point line chart is a quote lookup rendered as a
+    # chart by an older trace, not a useful time series. Keep explicitly
+    # model-authored/manual chart data intact when it has no server identity.
+    if chart_type != "bar" and len(data) < 2 and (action_id or tool_call_id):
+        return None
     return {
         "chart_id": chart_id,
-        "chart_type": _chart_type(value.get("chart_type")),
+        "chart_type": chart_type,
         "title": _bounded_text(value.get("title") or "数据图表", _STRUCTURED_ANSWER_REFERENCE_TEXT_LIMIT),
         "x_key": "x",
         "series": series,
         "data": data,
-        "action_id": _bounded_text(value.get("action_id"), 128) or None,
+        "action_id": action_id,
+        "tool_call_id": tool_call_id,
         "evidence_id": _bounded_text(value.get("evidence_id"), 96) or None,
     }
 
@@ -1090,7 +1167,12 @@ def _markdown_label(value: Any) -> str:
     return re.sub(r"([\\\[\]\(\)])", r"\\\1", _bounded_text(value, 160))
 
 
-def _render_output_references(block: Mapping[str, Any]) -> list[str]:
+def _render_output_references(
+    block: Mapping[str, Any],
+    *,
+    include_charts: bool = True,
+    include_actions: bool = True,
+) -> list[str]:
     lines: list[str] = []
     artifacts = block.get("artifact_refs")
     if isinstance(artifacts, Sequence) and not isinstance(artifacts, (str, bytes, bytearray)):
@@ -1103,13 +1185,13 @@ def _render_output_references(block: Mapping[str, Any]) -> list[str]:
             if url:
                 lines.append(f"- [下载文件：{title}]({url})")
     charts = block.get("chart_refs")
-    if isinstance(charts, Sequence) and not isinstance(charts, (str, bytes, bytearray)):
+    if include_charts and isinstance(charts, Sequence) and not isinstance(charts, (str, bytes, bytearray)):
         for item in charts[:8]:
             safe = _safe_chart_reference(item)
             if safe:
                 lines.append(f"- 图表：{_markdown_label(safe.get('title') or '数据图表')}（已根据本轮工具数据生成）")
     actions = block.get("action_refs")
-    if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes, bytearray)):
+    if include_actions and isinstance(actions, Sequence) and not isinstance(actions, (str, bytes, bytearray)):
         for item in actions[:8]:
             safe = _safe_action_reference(item)
             if not safe:
@@ -1124,6 +1206,8 @@ def render_structured_answer(
     value: Any,
     evidence: Iterable[Any] = (),
     tool_results: Iterable[Any] = (),
+    *,
+    include_chart_fallback: bool = True,
 ) -> str:
     """Render the typed answer while making block evidence visible to the client.
 
@@ -1145,8 +1229,12 @@ def render_structured_answer(
         lines.append(f"# {title[:240]}")
 
     previous_section = ""
+    seen_section_numbers: set[str] = set()
     for block in structured_answer_blocks(answer):
-        section = str(block.get("section") or "").strip().lstrip("# ").strip()
+        section = _section_label_for_render(
+            block.get("section"),
+            seen_section_numbers,
+        )
         if section and section != previous_section:
             if lines:
                 lines.append("")
@@ -1154,7 +1242,10 @@ def render_structured_answer(
             previous_section = section
 
         content = str(block.get("content") or "").strip()
-        output_references = _render_output_references(block)
+        output_references = _render_output_references(
+            block,
+            include_charts=include_chart_fallback,
+        )
         if not content and not output_references:
             continue
         # Evidence markers are a renderer concern.  Remove any model-emitted
@@ -1184,6 +1275,106 @@ def render_structured_answer(
             lines.extend(output_references)
 
     return "\n".join(lines).strip()
+
+
+def structured_answer_display_parts(
+    value: Any,
+    evidence: Iterable[Any] = (),
+    tool_results: Iterable[Any] = (),
+) -> list[dict[str, Any]]:
+    """Project a typed answer into the ordered chat parts used by the UI.
+
+    The durable Markdown renderer intentionally keeps textual chart fallback
+    lines for exports and old clients.  The live assistant-ui projection has a
+    stronger contract: each answer block is emitted as text, followed by its
+    own trusted chart data parts, before the next block is emitted.  This keeps
+    narrative, evidence-backed content, and charts in the same chronological
+    stream without asking the browser to reconstruct block ownership.
+    """
+    evidence_records = list(evidence)
+    projected = project_structured_answer(value, evidence_records, tool_results)
+    if not projected:
+        return []
+
+    available = _canonical_ids(evidence_records)
+    title = str(projected.get("title") or "").strip().lstrip("# ").strip()
+    previous_section = ""
+    seen_section_numbers: set[str] = set()
+    parts: list[dict[str, Any]] = []
+    emitted_text = False
+
+    for block in structured_answer_blocks(projected):
+        section = _section_label_for_render(
+            block.get("section"),
+            seen_section_numbers,
+        )
+        content = str(block.get("content") or "").strip()
+        # Native tool-call parts already occupy their original positions in
+        # the ordered stream.  Do not duplicate them as an action list inside
+        # the terminal answer; the Markdown renderer keeps that fallback for
+        # exports and legacy clients.
+        output_references = _render_output_references(
+            block,
+            include_charts=False,
+            include_actions=False,
+        )
+        raw_charts = block.get("chart_refs")
+        charts = (
+            [safe for item in raw_charts[:8] if (safe := _safe_chart_reference(item)) is not None]
+            if isinstance(raw_charts, Sequence)
+            and not isinstance(raw_charts, (str, bytes, bytearray))
+            else []
+        )
+        if not content and not output_references and not charts:
+            continue
+
+        lines: list[str] = []
+        if not emitted_text and title:
+            lines.append(f"# {title[:240]}")
+        if section and section != previous_section:
+            if lines:
+                lines.append("")
+            lines.append(f"## {section[:160]}")
+            previous_section = section
+
+        if content:
+            normalized, _ = canonicalize_evidence_markers(content, ())
+            raw_ids = (
+                block.get("evidence_ids")
+                if isinstance(block.get("evidence_ids"), Sequence)
+                and not isinstance(block.get("evidence_ids"), (str, bytes, bytearray))
+                else []
+            )
+            ids = _resolved_ids(raw_ids, available)
+            rendered = _render_block_content(block, normalized)
+            if ids:
+                rendered = rendered.rstrip() + " " + " ".join(
+                    f"【证据 {evidence_id}】" for evidence_id in ids
+                )
+            if lines and lines[-1]:
+                lines.append("")
+            lines.append(rendered)
+
+        if output_references:
+            if lines and lines[-1]:
+                lines.append("")
+            lines.extend(output_references)
+
+        if lines:
+            parts.append({
+                "type": "text",
+                "text": "\n".join(lines).strip(),
+                "display_kind": "answer",
+            })
+            emitted_text = True
+        for chart in charts:
+            parts.append({
+                "type": "data",
+                "name": "stock-chart",
+                "data": chart,
+            })
+
+    return parts
 
 
 _PARTIAL_DIAGNOSTIC_PREFIX = "[本轮结果存在未完成的核验："
@@ -1283,6 +1474,7 @@ __all__ = [
     "output_reference_catalogs",
     "project_structured_answer",
     "render_structured_answer",
+    "structured_answer_display_parts",
     "resolve_answer_sources",
     "resolve_structured_answer_references",
     "structured_answer_blocks",

@@ -119,7 +119,7 @@ describe('assistant evidence presentation adapter', () => {
     expect(assistantEvidenceReferenceForId(index, 'ev_missing')).toBeUndefined();
   });
 
-  it('keeps unresolved streaming markers non-clickable until the index resolves them', () => {
+  it('keeps unresolved streaming markers non-clickable without leaking internal IDs', () => {
     const index = assistantEvidenceIndexFromTrace({
       evidence: [{
         evidence_id: 'ev_ready0123456789',
@@ -133,7 +133,7 @@ describe('assistant evidence presentation adapter', () => {
       '已核验【证据 ev_ready】；未知【证据 ev_missing】。',
       index,
     )).toBe(
-      '已核验[①](#assistant-evidence-ev_ready0123456789)；未知【证据 ev_missing】。',
+      '已核验[①](#assistant-evidence-ev_ready0123456789)；未知。（部分证据暂未关联）',
     );
   });
 });

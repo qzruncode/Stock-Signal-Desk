@@ -20,6 +20,11 @@ import {
 } from '../utils/chatStreamError';
 import { currentUserRequest } from '../utils/agentRequestTransport';
 import {
+  persistAgentMode,
+  readStoredAgentMode,
+  type AgentProductMode,
+} from '../utils/agentMode';
+import {
   TERMINAL_RUN_STATUSES,
   type ActiveStream,
   type ConversationLoadState,
@@ -39,6 +44,7 @@ export function useChatController() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState<AgentProductMode>(() => readStoredAgentMode());
   const threadRuntimeRef = useRef<ReturnType<typeof useThreadRuntime> | null>(null);
   const resumeExistingRef = useRef<{
     conversationId: string;
@@ -47,6 +53,10 @@ export function useChatController() {
   const selectedConversationIdRef = useRef<string | null>(null);
   const activeStreamRef = useRef<ActiveStream | null>(null);
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    persistAgentMode(agentMode);
+  }, [agentMode]);
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
@@ -330,13 +340,17 @@ export function useChatController() {
       queryClient.removeQueries({ queryKey: conversationKey(selectedConversationId), exact: true });
       const request = currentUserRequest(threadRuntimeRef.current?.export());
       if (!request) {
-        return { conversation_id: selectedConversationId };
+        return {
+          conversation_id: selectedConversationId,
+          agent_mode: agentMode,
+        };
       }
       return {
         conversation_id: selectedConversationId,
         messages: request.messages,
         history_mode: 'server',
         history_parent_id: request.historyParentId,
+        agent_mode: agentMode,
         stream_presentation: 'timeline',
       };
     },
@@ -477,5 +491,6 @@ export function useChatController() {
     selectedConversationId, isLoadingConversations, isConversationSwitching, conversationSwitchError,
     handleRetryConversation, handleCreateConversation, handleSelectConversation, handleDeleteUserTurn,
     handleUserCancelRun, approvalDecision, approvalError, handleInterruptDecision,
+    agentMode, setAgentMode,
   };
 }

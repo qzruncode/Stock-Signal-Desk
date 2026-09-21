@@ -27,7 +27,7 @@ const INTERNAL_TERMINAL_DIAGNOSTIC_MARKERS = [
   'function_calling',
 ];
 
-/** Hide legacy provider/contract details from chat while keeping the audit trace intact. */
+/** Hide provider/contract diagnostics from chat while keeping the audit trace intact. */
 const sanitizeAssistantTerminalDiagnostics = (content: string): string => (
   content.replace(
     /\[本轮结果存在未完成的核验：([^\]]*)\]/g,
@@ -65,6 +65,44 @@ const normalizeMessageRole = (role: string): 'user' | 'assistant' | 'system' => 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
+
+/**
+ * Keep headings in a terminal answer renderable when adjacent structured
+ * blocks do not include the blank line that Markdown requires.
+ */
+const normalizeAnswerMarkdownBoundaries = (
+  text: string,
+  seenSectionNumbers: Set<string>,
+): string => {
+  const withBoundaries = text.replace(
+    /([^#\n])[ \t]*(#{1,6}[ \t]+(?=\S))/g,
+    '$1\n\n$2',
+  );
+  return withBoundaries.replace(
+    /(^|\n)#{2,6}[ \t]+((?:[0-9]+|[一二三四五六七八九十百千万零〇两]+)[、.．:：)）-][ \t]*)(?:[^\n]*)/g,
+    (full, lineBreak: string, numberPrefix: string) => {
+      const number = numberPrefix.match(/^(?:[0-9]+|[一二三四五六七八九十百千万零〇两]+)/)?.[0];
+      if (!number || !seenSectionNumbers.has(number)) {
+        if (number) seenSectionNumbers.add(number);
+        return full;
+      }
+      return lineBreak;
+    },
+  );
+};
+
+/** A one-point server-generated line chart is usually a quote lookup, not a chart. */
+const isUnusableServerChart = (value: unknown): boolean => {
+  if (!isRecord(value)) return false;
+  const chartType = String(value.chartType ?? value.chart_type ?? 'line').toLowerCase();
+  if (chartType === 'bar') return false;
+  const rows = value.data;
+  const hasServerIdentity = Boolean(
+    String(value.actionId ?? value.action_id ?? '').trim()
+      || String(value.toolCallId ?? value.tool_call_id ?? '').trim(),
+  );
+  return hasServerIdentity && Array.isArray(rows) && rows.length < 2;
+};
 
 const stageEventKey = (value: unknown): string => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return String(value);
@@ -164,31 +202,42 @@ const displayPartsForRuntime = (
   executionTrace: AgentExecutionTrace | null | undefined,
   canonicalAnswer: string,
 ): RuntimeContentPart[] => {
-  const rawParts = executionTrace?.displayParts;
-  if (!Array.isArray(rawParts)) return [];
+  const persistedParts = executionTrace?.displayParts;
+  const rawParts = Array.isArray(persistedParts)
+    ? persistedParts.filter(isRecord)
+    : [];
+  const replayParts = rawParts;
+  // Team's terminal narrative has one owner: the committed chat answer.
+  // A bounded execution trace is for the collaboration lanes, not a second
+  // copy of the answer that may silently replace it with a truncated prefix.
+  const canonicalTeamAnswer = Boolean(canonicalAnswer && executionTrace?.team);
   let answerPartSeen = false;
   const seenProgressTexts = new Set<string>();
+  const seenAnswerSectionNumbers = new Set<string>();
   const parts: RuntimeContentPart[] = [];
 
-  rawParts.forEach((rawPart) => {
+  replayParts.forEach((rawPart) => {
     if (!isRecord(rawPart)) return;
     const type = String(rawPart.type || '');
     if (type === 'text') {
       const displayKind = String(rawPart.displayKind ?? rawPart.display_kind ?? 'progress');
+      if (canonicalTeamAnswer && displayKind === 'answer') return;
       const rawText = String(rawPart.text || '');
+      const normalizedText = displayKind === 'answer'
+        ? normalizeAnswerMarkdownBoundaries(rawText, seenAnswerSectionNumbers)
+        : rawText;
       const textCandidates = displayKind === 'progress'
-        ? rawText.split(/\n\s*\n/).flatMap((block, index, blocks) => {
+        ? normalizedText.split(/\n\s*\n/).flatMap((block, index, blocks) => {
             const value = block.trim();
             if (!value) return [];
             const hasFollowingBlock = blocks.slice(index + 1).some((item) => item.trim());
-            return [hasFollowingBlock || /\n\s*\n\s*$/.test(rawText) ? `${value}\n\n` : value];
+            return [hasFollowingBlock || /\n\s*\n\s*$/.test(normalizedText) ? `${value}\n\n` : value];
           })
-        : [displayKind === 'answer' && canonicalAnswer ? canonicalAnswer : rawText];
+        : [normalizedText];
       textCandidates.forEach((text) => {
         if (!text) return;
-        // Older runs may contain the same stage sentence once per validation
-        // attempt.  Keep the durable attempts in the audit trace, but avoid
-        // replaying the same progress sentence throughout the chat transcript.
+        // Repeated provider fragments must not create duplicate visible
+        // progress paragraphs in the current stream.
         if (displayKind === 'progress') {
           const normalizedProgress = normalizeProgressText(text);
           if ([...seenProgressTexts].some((previous) => (
@@ -206,6 +255,21 @@ const displayPartsForRuntime = (
             : {}),
         } as RuntimeContentPart);
       });
+      return;
+    }
+    if (type === 'data') {
+      const name = String(rawPart.name || '').trim();
+      // The answer boundary is a server-side replay marker, not visible UI.
+      if (!name || name === 'agent-answer-boundary') return;
+      if (name === 'stock-chart' && isUnusableServerChart(rawPart.data)) return;
+      parts.push({
+        type: 'data',
+        name,
+        data: (rawPart.data ?? null) as ReadonlyJSONValue,
+        ...(rawPart.partId || rawPart.part_id
+          ? { partId: String(rawPart.partId ?? rawPart.part_id) }
+          : {}),
+      } as RuntimeContentPart);
       return;
     }
     if (type !== 'tool-call') return;
@@ -231,7 +295,7 @@ const displayPartsForRuntime = (
     parts.push(toolPart as RuntimeContentPart);
   });
 
-  if (canonicalAnswer && !answerPartSeen) {
+  if (canonicalAnswer && (canonicalTeamAnswer || !answerPartSeen)) {
     parts.push({
       type: 'text',
       text: canonicalAnswer,
@@ -292,20 +356,15 @@ export const toRuntimeMessages = (
       traceRecordByMessageId.set(message.id, record);
     }
   });
-  // A legacy run may have a terminal diagnostic stripped by a server version
-  // older than the one that wrote its trace.  When the counts line up, the
-  // durable run order is still a safe fallback for restoring its disclosure.
-  if (historicalTraceRecords.length === assistantMessages.length) {
-    assistantMessages.forEach((message, index) => {
-      if (traceRecordByMessageId.has(message.id)) return;
-      const record = historicalTraceRecords[index];
-      if (record) traceRecordByMessageId.set(message.id, record);
-    });
-  }
   const runtimeMessages = renderableMessages
     .filter((message) => (message.content || '').trim().length > 0)
     .map((message) => {
       const traceRecord = traceRecordByMessageId.get(message.id);
+      const startedAt = traceRecord?.createdAt ? Date.parse(traceRecord.createdAt) : Number.NaN;
+      const finishedAt = traceRecord?.updatedAt ? Date.parse(traceRecord.updatedAt) : Number.NaN;
+      const runDurationMs = Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt >= startedAt
+        ? finishedAt - startedAt
+        : undefined;
       const messageExecutionTrace = traceRecord?.executionTrace
         ?? (message.id === traceAssistantId ? executionTrace : undefined);
       const stages = traceRecord
@@ -340,7 +399,10 @@ export const toRuntimeMessages = (
                 metadata: {
                   ...(stages.length > 0 ? { unstable_data: stages } : {}),
                   ...(messageExecutionTrace
-                    ? { custom: { agent_execution_trace: messageExecutionTrace } }
+                    ? { custom: {
+                        agent_execution_trace: messageExecutionTrace,
+                        ...(runDurationMs !== undefined ? { agent_run_duration_ms: runDurationMs } : {}),
+                      } }
                     : {}),
                 },
               }
@@ -370,7 +432,7 @@ export const toRuntimeMessages = (
 
 export const getConversationHydrationKey = (detail: ChatConversationDetail): string => {
   const lastMessage = detail.messages.at(-1);
-  const executionTrace = detail.executionTrace ?? detail.resumeState?.executionTrace;
+  const executionTrace = detail.executionTrace;
   const executionTraceHistory = detail.executionTraces || [];
   const lastHistoricalTrace = executionTraceHistory.at(-1);
   return [

@@ -8,6 +8,32 @@ from src.agent.langgraph_runtime.presentation import (
 from src.agent.terminal_publisher import _trace_tool_results
 
 
+def test_nested_reader_ids_cannot_collide_when_hydrating_previews() -> None:
+    prefix = "team:" + "a" * 200
+    records = [{"action_id": f"{prefix}:content:{index}", "result": {
+        "success": True, "items": [{"title": f"正文-{index}", "url": f"https://example.test/{index}"}],
+    }} for index in range(2)]
+    trace = enrich_execution_trace_with_result_previews(
+        {"tool_results": [{"action_id": r["action_id"]} for r in records]},
+        tool_results=records,
+    )
+    assert [r["result_items"][0]["title"] for r in trace["tool_results"]] == ["正文-0", "正文-1"]
+
+
+def test_terminal_tool_trace_keeps_updated_safe_error_receipts() -> None:
+    trace = _trace_tool_results([{
+        "action_id": "market:failed", "tool_name": "read_realtime_quote", "success": False,
+        "runtime_errors": [{"error_id": "err-1", "task_id": "market", "action_id": "market:failed",
+                            "fallback_status": "completed", "fallback_call_ids": ["market:search", "market:body"],
+                            "details": {"token": "sensitive-test-value"}}],
+    }])
+    assert trace[0]["success"] is False
+    receipt = trace[0]["runtime_errors"][0]
+    assert receipt["error_id"] == "err-1" and receipt["fallback_status"] == "completed"
+    assert receipt["fallback_call_ids"] == ["market:search", "market:body"]
+    assert "sensitive-test-value" not in str(trace)
+
+
 def test_timeline_projection_names_provider_and_each_returned_result() -> None:
     result = {
         "success": True,

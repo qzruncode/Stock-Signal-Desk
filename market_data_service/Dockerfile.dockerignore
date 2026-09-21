@@ -3,6 +3,12 @@
 **
 !market_data_service/
 !market_data_service/**
+!src/
+!src/__init__.py
+!src/tools/
+!src/tools/__init__.py
+!src/tools/process_runner.py
+!src/tools/process_worker.py
 market_data_service/**/__pycache__/
 market_data_service/**/*.pyc
 market_data_service/**/*.pyo

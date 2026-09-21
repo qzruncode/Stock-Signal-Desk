@@ -65,6 +65,7 @@ TOOLS = (
         ),
         executor=read_analysis_report_summary,
         category="analysis",
+        web_fallback=False,
     ),
     ToolSpec(
         name="read_analysis_report_markdown",
@@ -75,6 +76,7 @@ TOOLS = (
         ),
         executor=read_analysis_report_markdown,
         category="analysis",
+        web_fallback=False,
     ),
     ToolSpec(
         name="read_analysis_report_linked_news",
@@ -88,6 +90,7 @@ TOOLS = (
         ),
         executor=read_analysis_report_linked_news,
         category="analysis",
+        web_fallback=False,
     ),
 )
 

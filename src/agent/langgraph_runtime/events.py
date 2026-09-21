@@ -6,9 +6,11 @@ from datetime import datetime
 from difflib import SequenceMatcher
 import json
 import re
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from langchain_core.messages import AIMessage, AIMessageChunk
+
+from .answer_contract import render_structured_answer, structured_answer_display_parts
 
 
 _CLIENT_STAGE_HISTORY_MAX_EVENTS = 120
@@ -46,7 +48,20 @@ def _client_stage_value(value: Any, *, depth: int = 0) -> Any:
 
 
 def _client_stage_details(details: Mapping[str, Any]) -> dict[str, Any]:
-    projected = _client_stage_value(details)
+    # Team events carry a nested ``collaboration_event`` envelope for the
+    # durable collaboration protocol.  That envelope repeats the same
+    # identity and safe details already present on the stage event.  It is
+    # useful in the audit log, but sending it through the browser projection
+    # consumes the bounded stage budget and can evict the earliest worker-start
+    # events—the exact events needed to show an expert's initial execution
+    # state after refresh.  Keep direct stage details in the UI projection and
+    # leave the full envelope in the append-only event log.
+    compact_details = {
+        key: value
+        for key, value in details.items()
+        if key not in {"collaboration_event", "safe_details"}
+    }
+    projected = _client_stage_value(compact_details or details)
     if not isinstance(projected, dict):
         return {"detail_truncated": True}
     try:
@@ -88,6 +103,10 @@ def project_stage_history_for_client(
                 "event",
                 "engine",
                 "run_id",
+                "schema_version",
+                "collaboration_id",
+                "sequence",
+                "scope",
                 "stage",
                 "status",
                 "action_id",
@@ -126,74 +145,36 @@ def project_stage_history_for_client(
     return selected
 
 
-class _ProjectedToolCallController:
-    """Controller-shaped handle whose chunks use the graph custom stream."""
+class _NoopToolCallController:
+    """Keep unit-level graph calls safe when no presentation sink is attached."""
 
-    def __init__(
-        self,
-        bridge: "GraphEventBridge",
-        tool_call_id: str,
-        tool_name: str,
-        parent_id: str | None,
-        *,
-        use_stream: bool,
-    ) -> None:
-        self.bridge = bridge
-        self.tool_call_id = tool_call_id
-        self.tool_name = tool_name
-        self.parent_id = parent_id
-        self.use_stream = use_stream
-        self.direct_handle: Any | None = None
-        self.closed = False
+    def append_args_text(self, _args_text_delta: str) -> None:
+        return
 
-    def append_args_text(self, args_text_delta: str) -> None:
-        value = str(args_text_delta or "")
-        if not value:
-            return
-        if not self.use_stream and self.direct_handle is not None:
-            self.direct_handle.append_args_text(value)
-            return
-        self.bridge._emit_tool_record(
-            {
-                "kind": "tool-call-delta",
-                "tool_call_id": self.tool_call_id,
-                "args_text_delta": value[:8_000],
-            },
-            lambda: None,
-        )
-
-    def set_response(self, result: Any, is_error: bool = False) -> None:
-        if not self.use_stream and self.direct_handle is not None:
-            self.direct_handle.set_response(result, is_error=is_error)
-            self.closed = True
-            return
-        self.bridge._emit_tool_record(
-            {
-                "kind": "tool-result",
-                "tool_call_id": self.tool_call_id,
-                "result": self.bridge._stream_tool_result(result),
-                "is_error": bool(is_error),
-            },
-            lambda: None,
-        )
-        self.closed = True
+    def set_response(self, _result: Any, is_error: bool = False) -> None:
+        return
 
     def close(self) -> None:
-        self.closed = True
+        return
 
 
 class GraphEventBridge:
-    # Stage events are a presentation channel.  The complete tool result and
-    # audit trace remain in the durable run state; sending an unbounded copy
-    # of them through every browser event can freeze the chat renderer.
+    # Stage events are a bounded control-plane projection.  The complete tool
+    # result and audit trace remain in the durable run state; this projection
+    # only carries the lifecycle fields needed by the timeline and Run
+    # Explorer.
     _MAX_DETAIL_BYTES = 24_000
     _MAX_DETAIL_KEYS = 24
-    _MAX_STREAM_TOOL_RESULT_BYTES = 16_000
 
     def __init__(self, controller: Any | None, *, run_id: str) -> None:
         self.controller = controller
         self.run_id = run_id
         self._stage_history: list[dict[str, Any]] = []
+        # Team stages share one monotonically increasing control-plane order.
+        # Worker branches still keep their own agent/task identity; the order
+        # lets the client replay the real interleaving without flattening the
+        # branches into one synthetic phase.
+        self._collaboration_sequence = 0
         self._round_id: str | None = None
         # Model text is provisional until the application validates the model
         # turn.  Publishing it immediately makes an invalid answer impossible
@@ -206,17 +187,22 @@ class GraphEventBridge:
         self._model_chunks_seen = False
         self._model_progress_committed = False
         self._last_committed_answer: str | None = None
+        self._displayed_structured_answer_key: str | None = None
         # A validation loop may emit the same user-facing progress sentence
         # more than once while its durable stage events are intentionally kept
         # separate.  Coalesce repeated progress projection text within this
         # run; model text and the audit history remain untouched.
         self._progress_projection_seen: set[str] = set()
-        # Tool chunks and progress text are emitted through LangGraph's
-        # official ``custom`` stream while the graph is running.  The map is
-        # populated by the runtime-side projection consumer, which keeps the
-        # assistant-stream tool handle on the same ordered side of the
-        # boundary as the begin/delta/result chunks.
-        self._stream_tool_calls: dict[str, Any] = {}
+        # Model-authored Team projections use a parent-owned sequence.  The
+        # sequence is durable in the display part and is preferable to
+        # object identity, which changes every time a trace is replayed.
+        self._model_projection_sequence = 0
+        # One stable projection id represents one semantic model turn.  The
+        # structured-contract callback may publish a growing preview before
+        # the accepted contract is available; keep the canonical visible text
+        # here so the accepted value cannot create a second paragraph or
+        # rewrite the paragraph with a shorter/non-prefix value.
+        self._model_projection_texts: dict[str, str] = {}
 
     def set_round(self, round_id: str | int | None) -> None:
         self._round_id = str(round_id) if round_id not in (None, "") else None
@@ -252,6 +238,7 @@ class GraphEventBridge:
         self._model_chunks_seen = False
         self._model_progress_committed = False
         self._last_committed_answer = None
+        self._displayed_structured_answer_key = None
 
     def model_message(self, message: AIMessage | AIMessageChunk) -> None:
         """Buffer native LangChain text until the turn's owner validates it."""
@@ -287,11 +274,94 @@ class GraphEventBridge:
         self._model_text_buffer = []
         self._model_progress_committed = True
 
-    def commit_model_answer(self, answer: str) -> None:
-        """Publish exactly one server-accepted answer for the current turn."""
+    def commit_model_answer(
+        self,
+        answer: str,
+        *,
+        structured_answer: Mapping[str, Any] | None = None,
+        evidence: Sequence[Any] = (),
+        tool_results: Sequence[Any] = (),
+    ) -> None:
+        """Publish one accepted answer, preserving typed blocks and charts."""
         normalized = str(answer or "")
         if not normalized:
             return
+
+        if structured_answer is not None:
+            evidence_records = list(evidence)
+            tool_records = list(tool_results)
+            display_parts = structured_answer_display_parts(
+                structured_answer,
+                evidence_records,
+                tool_records,
+            )
+            if display_parts:
+                try:
+                    display_key = json.dumps(
+                        {"answer": normalized, "parts": display_parts},
+                        ensure_ascii=False,
+                        default=str,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                except (TypeError, ValueError):
+                    display_key = normalized
+                if display_key == self._displayed_structured_answer_key:
+                    self._last_committed_answer = normalized
+                    return
+
+                self._model_text_buffer = []
+                self._emit_display_part(
+                    name="agent-answer-boundary",
+                    data={"round_id": self._round_id},
+                    part_id=f"{self.run_id}:answer",
+                )
+                # Keep the typed answer's own block order.  A chart selected
+                # for the market block must stay after that block and before
+                # the next block; moving every data part ahead of every text
+                # part turns a structured answer into a chart footer.  The
+                # durable snapshot can additionally anchor legacy late charts
+                # by action/tool identity.
+                ordered_display_parts = list(display_parts)
+                answer_text_parts_emitted = 0
+                for part in ordered_display_parts:
+                    if part.get("type") == "text":
+                        # assistant-stream coalesces adjacent text deltas into
+                        # one Markdown part.  Keep section headings at the
+                        # beginning of a line when two typed blocks are sent
+                        # in consecutive deltas; otherwise ``##`` becomes
+                        # literal text in the browser.
+                        if answer_text_parts_emitted:
+                            self._publish_text_delta(
+                                "\n\n",
+                                display_kind="answer",
+                            )
+                        self._publish_text_delta(
+                            str(part.get("text") or ""),
+                            display_kind="answer",
+                        )
+                        answer_text_parts_emitted += 1
+                    elif part.get("type") == "data":
+                        self._emit_display_part(
+                            name=str(part.get("name") or ""),
+                            data=part.get("data"),
+                            part_id=str(part.get("data", {}).get("chart_id") or "")
+                            if isinstance(part.get("data"), Mapping)
+                            else None,
+                        )
+
+                suffix = self._structured_answer_suffix(
+                    normalized,
+                    structured_answer,
+                    evidence_records,
+                    tool_records,
+                )
+                if suffix:
+                    self._publish_text_delta(suffix, display_kind="answer")
+                self._last_committed_answer = normalized
+                self._displayed_structured_answer_key = display_key
+                return
+
         if normalized == self._last_committed_answer:
             self._model_text_published = normalized
             return
@@ -314,6 +384,31 @@ class GraphEventBridge:
             self._publish_model_text(normalized)
         self._last_committed_answer = normalized
 
+    @staticmethod
+    def _structured_answer_suffix(
+        normalized: str,
+        structured_answer: Mapping[str, Any],
+        evidence: Sequence[Any],
+        tool_results: Sequence[Any],
+    ) -> str:
+        """Keep terminal diagnostics after the structured blocks in order."""
+        without_chart_fallback = render_structured_answer(
+            structured_answer,
+            evidence,
+            tool_results,
+            include_chart_fallback=False,
+        )
+        with_chart_fallback = render_structured_answer(
+            structured_answer,
+            evidence,
+            tool_results,
+            include_chart_fallback=True,
+        )
+        for rendered in (with_chart_fallback, without_chart_fallback):
+            if rendered and normalized.startswith(rendered):
+                return normalized[len(rendered):].strip()
+        return ""
+
     def _publish_model_text(self, value: str) -> None:
         text = str(value or "")
         if not text:
@@ -321,169 +416,207 @@ class GraphEventBridge:
         self._publish_text_delta(text)
         self._model_text_published += text
 
-    def _publish_text_delta(self, value: str) -> None:
+    def _publish_text_delta(self, value: str, *, display_kind: str = "progress") -> None:
         text = str(value or "")
         if not text:
             return
-        self._emit_stream_record(
-            {
-                "kind": "text",
-                "text": text,
-                "display_kind": "progress",
-                "round_id": self._round_id,
-            },
-            fallback=lambda: self.controller.append_text(text) if self.controller is not None else None,
-        )
+        # The controller is the one ordered presentation sink.  LangGraph's
+        # custom stream is intentionally not used here: nested worker
+        # invocations have a different custom-stream scope and would otherwise
+        # make a child progress record arrive after a later root record.
+        if self.controller is not None:
+            self.controller.append_text(text)
 
-    @staticmethod
-    def _active_stream_writer() -> Callable[[Any], Any] | None:
-        """Return LangGraph's custom stream writer when inside a graph run.
-
-        ``GraphEventBridge`` is also used by terminal/error paths and by unit
-        tests outside a LangGraph runnable context.  Those paths must retain
-        the existing direct-controller fallback instead of treating the
-        missing writer as a runtime failure.
-        """
-        try:
-            from langgraph.config import get_stream_writer
-
-            writer = get_stream_writer()
-        except (KeyError, LookupError, RuntimeError):
-            return None
-        return writer if callable(writer) else None
-
-    def _emit_stream_record(
+    def _emit_display_part(
         self,
-        record: Mapping[str, Any],
         *,
-        fallback: Callable[[], None],
+        name: str,
+        data: Any,
+        part_id: str | None = None,
     ) -> None:
-        """Send one product projection through LangGraph or the safe fallback.
-
-        The custom record is deliberately small and JSON-safe.  The graph
-        runtime consumes it and materializes assistant-stream chunks in order;
-        code running outside LangGraph still writes directly to the injected
-        controller, preserving recovery and test compatibility.
-        """
-        writer = self._active_stream_writer()
-        if writer is not None:
-            try:
-                writer(dict(record))
-                return
-            except Exception:
-                # A provider/graph shutdown must not suppress a user answer
-                # just because its optional stream projection disappeared.
-                pass
-        fallback()
-
-    @classmethod
-    def _stream_tool_result(cls, result: Any) -> Any:
-        """Bound a tool result before it enters LangGraph's custom channel."""
-        safe = cls._safe_detail(result)
-        try:
-            encoded = json.dumps(
-                safe,
-                ensure_ascii=False,
-                default=str,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        except (TypeError, ValueError):
-            return {"result_preview": str(result)[:1_200], "truncated": True}
-        if len(encoded) <= cls._MAX_STREAM_TOOL_RESULT_BYTES:
-            return safe
-        if isinstance(safe, Mapping):
-            return {
-                key: value
-                for key, value in list(safe.items())[:16]
-                if value is None or isinstance(value, (str, int, float, bool))
-            } | {
-                "_stream_presentation": {
-                    "truncated": True,
-                    "reason": "custom_channel_budget",
-                    "original_bytes": len(encoded),
-                }
-            }
-        return {
-            "result_preview": str(safe)[:1_200],
-            "_stream_presentation": {
-                "truncated": True,
-                "reason": "custom_channel_budget",
-                "original_bytes": len(encoded),
-            },
+        """Emit one typed UI part through the same ordered controller."""
+        normalized_name = str(name or "").strip()[:96]
+        if not normalized_name:
+            return
+        part: dict[str, Any] = {
+            "type": "data",
+            "name": normalized_name,
+            "data": self._safe_detail(data),
         }
+        normalized_part_id = str(part_id or "").strip()[:192]
+        if normalized_part_id:
+            part["part_id"] = normalized_part_id
+        if self.controller is not None:
+            self.controller.add_data({
+                "event": "agent_display_part",
+                "part": part,
+            })
+
+    def publish_team_review_report(
+        self,
+        report: Mapping[str, Any],
+        *,
+        collaboration_id: str,
+        revision: int = 0,
+    ) -> None:
+        """Publish a typed review receipt, not model prose or a final answer.
+
+        Use explicit content bounds instead of the diagnostic-detail limiter:
+        a report section must not silently lose its tail during live/replay.
+        """
+        team_id = str(collaboration_id or "").strip()[:96]
+        blocks = [
+            {
+                "section": str(block.get("section") or "")[:160],
+                "content": str(block.get("content") or "")[:12_000],
+            }
+            for block in list(report.get("blocks") or [])[:16]
+            if isinstance(block, Mapping) and str(block.get("content") or "").strip()
+        ]
+        if self.controller is None or not blocks:
+            return
+        self.controller.add_data({
+            "event": "agent_display_part",
+            "part": {
+                "type": "data",
+                "name": "team-review-report",
+                "part_id": f"{team_id}:review-report:{max(0, revision)}",
+                "data": {
+                    "schema_version": "team.v1",
+                    "scope": "review",
+                    "report_source": "handoff",
+                    "collaboration_id": team_id,
+                    "title": str(report.get("title") or "")[:240],
+                    "blocks": blocks,
+                },
+            },
+        })
+
+    def publish_model_projection(
+        self,
+        text: str,
+        *,
+        scope: str = "coordinator",
+        collaboration_id: str = "",
+        agent_id: str = "",
+        task_id: str = "",
+        phase: str = "",
+        kind: str = "progress",
+        attempt: int = 0,
+        parent_event_id: str = "",
+        projection_id: str | None = None,
+    ) -> None:
+        """Publish validated model text as an ordered Team display part.
+
+        Team lifecycle ``stage`` summaries are control-plane data.  This
+        explicit boundary is the only fresh Team path that can put
+        natural-language process text in the conversation.  The part keeps
+        the expert/task identity so parallel projections can be rendered in
+        independent lanes while retaining native stream order.
+        """
+        normalized = str(text or "").strip()
+        if not normalized:
+            return
+        safe_scope = str(scope or "coordinator").strip()[:32]
+        safe_collaboration_id = str(collaboration_id or "").strip()[:96]
+        safe_agent_id = str(agent_id or "").strip()[:96]
+        safe_task_id = str(task_id or "").strip()[:96]
+        safe_phase = str(phase or "").strip()[:64]
+        safe_kind = str(kind or "progress").strip()[:64]
+        namespace = "/".join(
+            value
+            for value in (
+                f"team:{safe_collaboration_id}" if safe_collaboration_id else "",
+                safe_scope,
+                safe_agent_id,
+                safe_task_id,
+            )
+            if value
+        )[:192]
+        self._model_projection_sequence += 1
+        projection_sequence = self._model_projection_sequence
+        projection = {
+            "schema_version": "team.v1",
+            "run_id": self.run_id,
+            "text": normalized[:1_800],
+            "projection_source": "model",
+            "scope": safe_scope,
+            "namespace": namespace,
+            "collaboration_id": safe_collaboration_id,
+            "agent_id": safe_agent_id,
+            "task_id": safe_task_id,
+            "phase": safe_phase,
+            "kind": safe_kind,
+            "attempt": max(0, int(attempt or 0)),
+            "parent_event_id": str(parent_event_id or "").strip()[:128],
+            "sequence": projection_sequence,
+        }
+        safe_projection_id = str(projection_id or "").strip()[:192]
+        if safe_projection_id:
+            projection["projection_id"] = safe_projection_id
+        identity = ":".join(
+            value for value in (
+                self.run_id,
+                safe_collaboration_id,
+                safe_scope,
+                safe_agent_id,
+                safe_task_id,
+                safe_phase,
+                safe_kind,
+            )
+            if value
+        )
+        part_id = safe_projection_id or f"{identity}:p{projection_sequence}"[:192]
+        if safe_projection_id:
+            previous_text = self._model_projection_texts.get(part_id)
+            if previous_text is not None:
+                if normalized == previous_text or previous_text.startswith(normalized):
+                    # The accepted structured value is often a shorter
+                    # summary of the already visible model preview.  It is a
+                    # control-plane completion, not a second user-facing
+                    # paragraph.
+                    return
+                if not normalized.startswith(previous_text):
+                    # A rewrite under the same semantic identity would make
+                    # the visible sentence jump.  A new semantic turn must
+                    # use a new projection id instead.
+                    return
+            self._model_projection_texts[part_id] = normalized
+        self._emit_display_part(
+            name="team-model-projection",
+            data=projection,
+            part_id=part_id,
+        )
 
     async def add_tool_call(
         self,
         tool_name: str,
         tool_call_id: str | None = None,
         parent_id: str | None = None,
-    ) -> "_ProjectedToolCallController":
-        """Expose the controller contract through the ordered custom stream."""
+    ) -> Any:
+        """Create a native assistant-stream tool part at its actual call site."""
         normalized_id = str(tool_call_id or "").strip()
         if not normalized_id:
-            normalized_id = f"call_{id(self)}_{len(self._stream_tool_calls)}"
-        projected = _ProjectedToolCallController(
-            self,
-            normalized_id,
-            str(tool_name or "原子工具"),
-            str(parent_id) if parent_id else None,
-            use_stream=self._active_stream_writer() is not None,
-        )
-        if projected.use_stream:
-            self._emit_tool_record(
-                {
-                    "kind": "tool-call-begin",
-                    "tool_call_id": projected.tool_call_id,
-                    "tool_name": projected.tool_name,
-                    "parent_id": projected.parent_id,
-                },
-                lambda: None,
+            normalized_id = f"call_{id(self)}"
+        if self.controller is None:
+            return _NoopToolCallController()
+        add_tool_call = getattr(self.controller, "add_tool_call")
+        try:
+            return await add_tool_call(
+                str(tool_name or "原子工具"),
+                tool_call_id=normalized_id,
+                parent_id=str(parent_id) if parent_id else None,
             )
-        elif self.controller is not None:
-            projected.direct_handle = await self.controller.add_tool_call(
-                projected.tool_name,
-                tool_call_id=projected.tool_call_id,
-                parent_id=projected.parent_id,
+        except TypeError as exc:
+            # assistant-stream 0.0.32's stock RunController has no parent_id
+            # argument.  Keep the native controller path compatible with both
+            # it and the application's broadcaster extension.
+            if "parent_id" not in str(exc):
+                raise
+            return await add_tool_call(
+                str(tool_name or "原子工具"),
+                tool_call_id=normalized_id,
             )
-        return projected
-
-    async def consume_stream_record(self, record: Any) -> None:
-        """Materialize one LangGraph custom record into assistant-stream."""
-        if not isinstance(record, Mapping) or self.controller is None:
-            return
-        kind = str(record.get("kind") or record.get("type") or "").strip()
-        if kind == "text":
-            text = str(record.get("text") or "")
-            if text:
-                self.controller.append_text(text)
-            return
-        if kind == "tool-call-begin":
-            tool_call_id = str(record.get("tool_call_id") or "").strip()
-            if not tool_call_id:
-                return
-            handle = await self.controller.add_tool_call(
-                str(record.get("tool_name") or "原子工具"),
-                tool_call_id=tool_call_id,
-                parent_id=str(record.get("parent_id") or "") or None,
-            )
-            self._stream_tool_calls[tool_call_id] = handle
-            return
-        if kind == "tool-call-delta":
-            tool_call_id = str(record.get("tool_call_id") or "").strip()
-            delta = str(record.get("args_text_delta") or "")
-            handle = self._stream_tool_calls.get(tool_call_id)
-            if handle is not None and delta:
-                handle.append_args_text(delta)
-            return
-        if kind == "tool-result":
-            tool_call_id = str(record.get("tool_call_id") or "").strip()
-            handle = self._stream_tool_calls.get(tool_call_id)
-            if handle is not None:
-                handle.set_response(record.get("result"), is_error=bool(record.get("is_error")))
-            return
-
-    def _emit_tool_record(self, record: Mapping[str, Any], fallback: Callable[[], None]) -> None:
-        self._emit_stream_record(record, fallback=fallback)
 
     @staticmethod
     def _safe_detail(value: Any, *, depth: int = 0) -> Any:
@@ -561,11 +694,102 @@ class GraphEventBridge:
     ) -> dict[str, Any]:
         normalized_user_message = str(user_message or "").strip()
         stage_details = dict(details or {})
-        if normalized_user_message:
-            # Keep the text available to legacy timeline projection while the
-            # live/native path receives it through the ordered custom stream.
+        occurred_at = datetime.now().astimezone().isoformat()
+        team_id = str(
+            stage_details.get("team_id")
+            or stage_details.get("teamId")
+            or ""
+        ).strip()
+        if normalized_user_message and not team_id:
+            # Direct/Plan retain their existing compatibility projection. A
+            # fresh Team run must use ``publish_model_projection`` instead;
+            # otherwise server-authored lifecycle copy is mistaken for model
+            # prose in the conversation.
             stage_details.setdefault("user_message", normalized_user_message)
-            stage_details.setdefault("display_projection", "native_progress")
+        if team_id:
+            self._collaboration_sequence += 1
+            raw_agent_id = str(
+                stage_details.get("expert_id")
+                or stage_details.get("agent_id")
+                or stage_details.get("agentId")
+                or ""
+            ).strip()
+            raw_task_id = str(
+                stage_details.get("task_id")
+                or stage_details.get("taskId")
+                or ""
+            ).strip()
+            reviewer = str(
+                stage_details.get("reviewer")
+                or stage_details.get("gate")
+                or ""
+            ).strip()
+            scope = (
+                "review"
+                if reviewer
+                else "expert"
+                if raw_agent_id or raw_task_id
+                else "coordinator"
+            )
+            namespace = "/".join(
+                value
+                for value in (
+                    f"team:{team_id}",
+                    scope,
+                    raw_agent_id,
+                    raw_task_id,
+                )
+                if value
+            )[:192]
+            try:
+                attempt = max(0, int(stage_details.get("attempt") or 0))
+            except (TypeError, ValueError):
+                attempt = 0
+            event_kind = str(stage_details.get("kind") or "").strip()
+            if not event_kind:
+                event_kind = "tool" if stage in {"tool", "execute"} else "lifecycle"
+            collaboration_event = {
+                "schema_version": "team.v1",
+                "run_id": self.run_id,
+                "collaboration_id": team_id,
+                "sequence": self._collaboration_sequence,
+                "occurred_at": occurred_at,
+                "namespace": namespace,
+                "scope": scope,
+                "agent_id": raw_agent_id,
+                "task_id": raw_task_id,
+                "phase": str(stage_details.get("phase") or stage)[:64],
+                "kind": event_kind[:64],
+                "status": str(status or "")[:32],
+                "attempt": attempt,
+                "summary": str(summary or "")[:1_000],
+                "parent_event_id": str(
+                    stage_details.get("parent_event_id")
+                    or stage_details.get("parentEventId")
+                    or ""
+                )[:128],
+                "safe_details": {
+                    str(key): value
+                    for key, value in stage_details.items()
+                    if key not in {"collaboration_event", "safe_details"}
+                },
+            }
+            # Keep the wire object typed at the Team boundary.  The fallback
+            # is intentionally defensive for legacy import/checkpoint paths;
+            # it never changes routing or publication semantics.
+            try:
+                from .team.contracts import CollaborationEvent
+
+                collaboration_event = CollaborationEvent.model_validate(
+                    collaboration_event
+                ).model_dump(mode="json")
+            except Exception:
+                pass
+            stage_details.setdefault("collaboration_id", team_id)
+            stage_details.setdefault("sequence", self._collaboration_sequence)
+            stage_details.setdefault("namespace", namespace)
+            stage_details.setdefault("scope", scope)
+            stage_details["collaboration_event"] = collaboration_event
         payload = {
             "event": "agent_stage",
             "engine": "langgraph_agent_loop",
@@ -577,14 +801,28 @@ class GraphEventBridge:
             "round_id": round_id or self._round_id,
             "error_code": error_code,
             "summary": summary,
-            "occurred_at": datetime.now().astimezone().isoformat(),
+            "occurred_at": occurred_at,
         }
+        if team_id:
+            payload.update(
+                {
+                    "schema_version": "team.v1",
+                    "collaboration_id": team_id,
+                    "sequence": self._collaboration_sequence,
+                    "namespace": stage_details.get("namespace"),
+                    "scope": stage_details.get("scope"),
+                }
+            )
         if stage_details:
             payload["details"] = self._bounded_details(stage_details)
         self._stage_history.append(dict(payload))
         if self.controller is not None:
+            # Stage events are the durable control-plane trace.  User-facing
+            # progress is emitted below through the same ordered assistant
+            # stream; the stage payload itself is metadata, not a second
+            # visible message part.
             self.controller.add_data(payload)
-        if normalized_user_message:
+        if normalized_user_message and not team_id:
             self._publish_progress_projection(f"{normalized_user_message}\n\n")
         return payload
 

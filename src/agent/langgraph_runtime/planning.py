@@ -1575,6 +1575,10 @@ class PlanningCoordinatorMiddleware(AgentMiddleware[AgentState, GraphContext]):
     async def abefore_model(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:
         if not state.get("planning_enabled") or state.get("planning_status") != "executing":
             return None
+        if state.get("fallback_feedback"):
+            # The shared recovery owns the failed observation until its web
+            # tool turn joins. Do not assess/replan the same failure in parallel.
+            return None
         context: GraphContext = runtime.context
         working: AgentState = dict(state)
         updates: dict[str, Any] = {}
@@ -1676,6 +1680,10 @@ class PlanningCoordinatorMiddleware(AgentMiddleware[AgentState, GraphContext]):
         state = request.state
         allowed_names = planning_allowed_tools(state)
         if allowed_names is None:
+            return await handler(request)
+        if state.get("fallback_feedback"):
+            # AgentPromptMiddleware already narrowed this request to the
+            # current recovery operation. Preserve that required tool choice.
             return await handler(request)
         if state.get("planning_status") != "executing":
             # Evidence/format/Reflection repair may revise the answer, but

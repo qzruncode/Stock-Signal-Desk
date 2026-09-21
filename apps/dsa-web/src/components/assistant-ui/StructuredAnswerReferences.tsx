@@ -95,7 +95,7 @@ const formatChartTick = (value: number): string => {
   return `${scaled.toFixed(digits).replace(/\.0+$|(?<=\.\d)0+$/g, '')}${unit[1]}`;
 };
 
-const ChartReference: FC<{ reference: StructuredAnswerChartReference }> = ({ reference }) => {
+export const ChartReference: FC<{ reference: StructuredAnswerChartReference }> = ({ reference }) => {
   const series = safeSeries(reference);
   const data = safeChartData(reference, series);
   if (series.length === 0 || data.length === 0) return null;
@@ -139,7 +139,13 @@ const ChartReference: FC<{ reference: StructuredAnswerChartReference }> = ({ ref
         <span>{chartTitle(reference)}</span>
       </div>
       <div className="h-56 w-full min-w-0">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer
+          width="100%"
+          height="100%"
+          minWidth={240}
+          minHeight={224}
+          initialDimension={{ width: 640, height: 224 }}
+        >
           {chart}
         </ResponsiveContainer>
       </div>
@@ -196,7 +202,9 @@ const ActionReference: FC<{ reference: StructuredAnswerActionReference }> = ({ r
 export const StructuredAnswerReferences: FC<{
   answer: StructuredAnswerProjection | null;
   renderedText?: string;
-}> = ({ answer, renderedText = '' }) => {
+  renderCharts?: boolean;
+  renderActions?: boolean;
+}> = ({ answer, renderedText = '', renderCharts = true, renderActions = true }) => {
   if (!answer) return null;
   const blocks = Array.isArray(answer.blocks)
     ? answer.blocks.filter(isRecord)
@@ -204,12 +212,16 @@ export const StructuredAnswerReferences: FC<{
   const artifacts = blocks.flatMap((block) => (
     Array.isArray(block.artifactRefs) ? block.artifactRefs : []
   )).filter((reference) => !renderedText.includes(reference.downloadUrl)).slice(0, 24);
-  const charts = blocks.flatMap((block) => (
-    Array.isArray(block.chartRefs) ? block.chartRefs : []
-  )).slice(0, 24);
-  const actions = blocks.flatMap((block) => (
-    Array.isArray(block.actionRefs) ? block.actionRefs : []
-  )).slice(0, 32);
+  const charts = renderCharts
+    ? blocks.flatMap((block) => (
+      Array.isArray(block.chartRefs) ? block.chartRefs : []
+    )).slice(0, 24)
+    : [];
+  const actions = renderActions
+    ? blocks.flatMap((block) => (
+      Array.isArray(block.actionRefs) ? block.actionRefs : []
+    )).slice(0, 32)
+    : [];
   if (artifacts.length === 0 && charts.length === 0 && actions.length === 0) return null;
 
   return (

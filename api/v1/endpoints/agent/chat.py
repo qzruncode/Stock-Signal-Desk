@@ -10,7 +10,7 @@ from api.v1.endpoints.agent.chat_background_runner import _execute_background_ag
 from api.v1.endpoints.agent.chat_recovery import recover_interrupted_agent_runs as _recover_runs
 from api.v1.endpoints.agent.chat_route_resume import agent_chat_resume_impl
 from api.v1.endpoints.agent.chat_route_start import agent_chat_impl
-from api.v1.endpoints.agent.tools import _compact_tool_result, _maybe_attach_search_fallback
+from api.v1.endpoints.agent.tools import _compact_tool_result
 from src.agent.langgraph_runtime import agent_graph_runtime
 from src.llm.anthropic_gateway import resolve_anthropic_gateway_config
 from src.storage import DatabaseManager
@@ -20,7 +20,6 @@ _get_llm_config = resolve_anthropic_gateway_config
 _registry = agent_graph_runtime.registry
 agent_graph_runtime.configure_tool_projection(
     compact_result=_compact_tool_result,
-    attach_fallback=_maybe_attach_search_fallback,
 )
 
 

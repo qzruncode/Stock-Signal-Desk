@@ -75,7 +75,6 @@ _REASONING_STREAM_TRUNCATION_NOTICE = "\n（其余内部过程已截断；执行
 # contract for conversation hydration.
 _DISPLAY_PARTS_MAX_ITEMS = 240
 _DISPLAY_PARTS_MAX_BYTES = 120_000
-_DISPLAY_PART_TEXT_MAX_CHARACTERS = 12_000
 _DISPLAY_PART_ARGS_MAX_CHARACTERS = 8_000
 
 
@@ -472,6 +471,9 @@ class RunBroadcaster:
         self,
         *,
         final_text: str | None = None,
+        structured_answer: Mapping[str, Any] | None = None,
+        evidence: Sequence[Any] = (),
+        tool_results: Sequence[Any] = (),
     ) -> list[dict[str, Any]]:
         """Project the committed native stream into ordered UI message parts.
 
@@ -486,11 +488,20 @@ class RunBroadcaster:
         private channel, not user-facing progress.  The underlying ordered
         event log remains available for audit/replay.
         """
+        # Keep this import lazy: ``langgraph_runtime`` re-exports the runtime,
+        # which itself imports this registry during application startup.
+        from .langgraph_runtime.answer_contract import (
+            render_structured_answer,
+            structured_answer_display_parts,
+        )
+
         parts: list[dict[str, Any]] = []
         tool_indices: dict[str, int] = {}
+        projection_indices: dict[str, int] = {}
         current_text: dict[str, Any] | None = None
         current_round: str | None = None
         current_kind = "progress"
+        has_answer_projection = False
 
         def flush_text() -> None:
             nonlocal current_text
@@ -513,10 +524,149 @@ class RunBroadcaster:
             parts.append(item)
             return item
 
+        def anchor_chart_parts() -> None:
+            """Move chart data beside the tool result that produced it.
+
+            A structured answer is validated only after the research loop has
+            finished, so its chart references arrive after the narrative in
+            the terminal commit.  The chart still carries the server-owned
+            action/tool identity; use that identity to restore the original
+            tool-result position for durable replay.  Unmatched legacy charts
+            are kept immediately before the answer instead of being rendered
+            as an unrelated footer.
+            """
+            chart_parts: list[dict[str, Any]] = []
+            non_chart_parts: list[dict[str, Any]] = []
+            for item in parts:
+                if (
+                    item.get("type") == "data"
+                    and item.get("name") == "stock-chart"
+                ):
+                    chart_parts.append(item)
+                else:
+                    non_chart_parts.append(item)
+            if not chart_parts:
+                return
+            if not any(
+                isinstance(item.get("data"), Mapping)
+                and (
+                    str(item["data"].get("action_id") or "").strip()
+                    or str(item["data"].get("tool_call_id") or "").strip()
+                )
+                for item in chart_parts
+            ):
+                # A manually supplied/legacy data part without a server-owned
+                # identity already has the only safe order we can preserve.
+                return
+
+            anchors: dict[str, int] = {}
+            for index, item in enumerate(non_chart_parts):
+                if item.get("type") != "tool-call":
+                    continue
+                for key in (
+                    item.get("parent_id"),
+                    item.get("parentId"),
+                    item.get("tool_call_id"),
+                    item.get("toolCallId"),
+                ):
+                    value = str(key or "").strip()
+                    if value:
+                        anchors.setdefault(value, index)
+
+            insert_after: dict[int, list[dict[str, Any]]] = {}
+            unmatched: list[dict[str, Any]] = []
+            for chart in chart_parts:
+                data = chart.get("data")
+                if not isinstance(data, Mapping):
+                    unmatched.append(chart)
+                    continue
+                anchor = None
+                for key in (
+                    data.get("action_id"),
+                    data.get("tool_call_id"),
+                ):
+                    value = str(key or "").strip()
+                    if value and value in anchors:
+                        anchor = anchors[value]
+                        break
+                if anchor is None:
+                    unmatched.append(chart)
+                else:
+                    insert_after.setdefault(anchor, []).append(chart)
+
+            anchored: list[dict[str, Any]] = []
+            for index, item in enumerate(non_chart_parts):
+                anchored.append(item)
+                anchored.extend(insert_after.get(index, ()))
+
+            if unmatched:
+                answer_index = next(
+                    (
+                        index
+                        for index in range(len(anchored) - 1, -1, -1)
+                        if anchored[index].get("type") == "text"
+                        and anchored[index].get("display_kind") == "answer"
+                    ),
+                    None,
+                )
+                if answer_index is None:
+                    anchored.extend(unmatched)
+                else:
+                    anchored[answer_index:answer_index] = unmatched
+            parts[:] = anchored
+
         for chunk in self._history:
             if isinstance(chunk, DataChunk):
                 data = chunk.data
                 if not isinstance(data, Mapping):
+                    continue
+                if data.get("event") == "agent_display_part":
+                    part = data.get("part")
+                    if not isinstance(part, Mapping):
+                        continue
+                    name = str(part.get("name") or "").strip()[:96]
+                    if not name:
+                        continue
+                    flush_text()
+                    if name == "agent-answer-boundary":
+                        current_kind = "answer"
+                        has_answer_projection = True
+                        continue
+                    item: dict[str, Any] = {
+                        "type": "data",
+                        "name": name,
+                        "data": _json_safe(part.get("data")),
+                    }
+                    part_id = str(part.get("part_id") or "").strip()
+                    if part_id:
+                        item["part_id"] = part_id[:192]
+                    if name == "team-model-projection" and part_id:
+                        existing_index = projection_indices.get(part_id)
+                        if existing_index is not None:
+                            existing = parts[existing_index]
+                            existing_data = existing.get("data")
+                            incoming_data = item.get("data")
+                            existing_text = (
+                                str(existing_data.get("text") or "")
+                                if isinstance(existing_data, Mapping)
+                                else ""
+                            )
+                            incoming_text = (
+                                str(incoming_data.get("text") or "")
+                                if isinstance(incoming_data, Mapping)
+                                else ""
+                            )
+                            # Durable replay can contain both the streaming
+                            # preview and the accepted contract emission. Keep
+                            # one canonical part, and only allow a prefix
+                            # extension to update it.
+                            if incoming_text.startswith(existing_text) and len(incoming_text) >= len(existing_text):
+                                parts[existing_index] = item
+                            continue
+                        projection_indices[part_id] = len(parts)
+                    if name == "stock-chart":
+                        has_answer_projection = True
+                    parts.append(item)
                     continue
                 if data.get("event") != "agent_stage":
                     continue
@@ -587,8 +737,66 @@ class RunBroadcaster:
 
         flush_text()
 
+        if structured_answer and not has_answer_projection:
+            structured_parts = structured_answer_display_parts(
+                structured_answer,
+                evidence,
+                tool_results,
+            )
+            # New runs normally already contain the typed display parts above.
+            # This replacement is only for older traces that persisted a plain
+            # final text plus a structured answer projection.
+            if structured_parts:
+                answer_index = next(
+                    (
+                        index
+                        for index in range(len(parts) - 1, -1, -1)
+                        if parts[index].get("type") == "text"
+                        and str(parts[index].get("text") or "") == str(final_text or "")
+                    ),
+                    None,
+                )
+                if answer_index is None:
+                    answer_index = next(
+                        (
+                            index
+                            for index in range(len(parts) - 1, -1, -1)
+                            if parts[index].get("type") == "text"
+                            and parts[index].get("display_kind") == "answer"
+                        ),
+                        None,
+                    )
+                suffix = ""
+                without_chart_fallback = render_structured_answer(
+                    structured_answer,
+                    evidence,
+                    tool_results,
+                    include_chart_fallback=False,
+                )
+                with_chart_fallback = render_structured_answer(
+                    structured_answer,
+                    evidence,
+                    tool_results,
+                    include_chart_fallback=True,
+                )
+                for rendered in (with_chart_fallback, without_chart_fallback):
+                    if rendered and str(final_text or "").startswith(rendered):
+                        suffix = str(final_text or "")[len(rendered):].strip()
+                        break
+                if suffix:
+                    structured_parts.append({
+                        "type": "text",
+                        "text": suffix,
+                        "display_kind": "answer",
+                    })
+                if answer_index is None:
+                    parts.extend(structured_parts)
+                else:
+                    parts[answer_index:answer_index + 1] = structured_parts
+                has_answer_projection = True
+
         normalized_final = str(final_text or "")
-        if normalized_final:
+        if normalized_final and not has_answer_projection:
             # TerminalPublicationMiddleware emits the accepted answer as one
             # final text delta. Mark that existing part instead of appending a
             # second copy. The fallback append is for recovered/legacy runs
@@ -618,16 +826,45 @@ class RunBroadcaster:
                     }
                 )
 
+        anchor_chart_parts()
+
+        # Already-visible model prose is durable user content, including the
+        # coordinator/expert projections before the final answer. Budget only
+        # optional trace payloads; dropping or shortening prose here makes it
+        # disappear when the live stream is replaced by the terminal snapshot.
+        def is_narrative(item: Mapping[str, Any]) -> bool:
+            return item.get("type") == "text" or (
+                item.get("type") == "data" and item.get("name") in {"team-model-projection", "team-review-report"}
+            )
+
+        narrative_parts = [item for item in parts if is_narrative(item)]
+        narrative_bytes = sum(_serialized_bytes(item) for item in narrative_parts)
+        # Tool identity/order/terminal status is also required content. Keep a
+        # compact result envelope for every call before spending any budget on
+        # large observations, using the same projection as the live stream.
+        compact_tools: dict[int, dict[str, Any]] = {}
+        for index, raw in enumerate(parts):
+            if raw.get("type") != "tool-call":
+                continue
+            compact = {key: value for key, value in raw.items() if value not in (None, "")}
+            if "result" in compact:
+                compact["result"] = _project_tool_result_for_stream(compact["result"], byte_limit=600)
+            compact_tools[index] = compact
+        tool_bytes = sum(_serialized_bytes(item) for item in compact_tools.values())
+        detail_budget = max(0, _DISPLAY_PARTS_MAX_BYTES - narrative_bytes - tool_bytes - 2)
+        detail_slots = max(0, _DISPLAY_PARTS_MAX_ITEMS - len(narrative_parts) - len(compact_tools))
         projected: list[dict[str, Any]] = []
-        used_bytes = 2
-        for raw in parts[:_DISPLAY_PARTS_MAX_ITEMS]:
+        used_bytes = 0
+        detail_count = 0
+        for index, raw in enumerate(parts):
             item = {
                 key: value
                 for key, value in raw.items()
                 if value not in (None, "")
             }
-            if item.get("type") == "text":
-                item["text"] = str(item.get("text") or "")[:_DISPLAY_PART_TEXT_MAX_CHARACTERS]
+            if is_narrative(item):
+                projected.append(item)
+                continue
             if item.get("type") == "tool-call" and "result" in item:
                 item["result"] = _bounded_stream_value(
                     item["result"],
@@ -635,18 +872,28 @@ class RunBroadcaster:
                     mapping_limit=32,
                     text_limit=1_200,
                 )
+            if item.get("type") == "data" and "data" in item:
+                item["data"] = _bounded_stream_value(
+                    item["data"],
+                    collection_limit=120,
+                    mapping_limit=32,
+                    text_limit=1_200,
+                )
             item_bytes = _serialized_bytes(item)
-            if projected and used_bytes + item_bytes > _DISPLAY_PARTS_MAX_BYTES:
-                break
-            if not projected and item_bytes > _DISPLAY_PARTS_MAX_BYTES:
-                if item.get("type") == "text":
-                    item["text"] = str(item.get("text") or "")[:2_000]
+            if index in compact_tools:
+                compact = compact_tools[index]
+                extra_bytes = max(0, item_bytes - _serialized_bytes(compact))
+                if used_bytes + extra_bytes <= detail_budget:
+                    projected.append(item)
+                    used_bytes += extra_bytes
                 else:
-                    item.pop("result", None)
-                    item["args_text"] = str(item.get("args_text") or "")[:1_000]
-                item_bytes = _serialized_bytes(item)
+                    projected.append(compact)
+                continue
+            if detail_count >= detail_slots or used_bytes + item_bytes > detail_budget:
+                continue
             projected.append(item)
             used_bytes += item_bytes
+            detail_count += 1
         return projected
 
     def subscribe(

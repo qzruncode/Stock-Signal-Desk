@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict, Field
 
@@ -18,7 +18,7 @@ from src.agent.langgraph_runtime.answer_contract import STRUCTURED_OUTPUT_TOOL_N
 from src.agent.langgraph_runtime.catalog import ToolCatalog
 from src.agent.langgraph_runtime.executor import action_fingerprint
 from src.agent.langgraph_runtime.graph import DEFAULT_RESPONSE_FORMAT
-from src.agent.langgraph_runtime.middleware import _source_fallback_reason
+from src.agent.langgraph_runtime.middleware import _failed_read_tool_call_keys, _source_fallback_reason, _tool_call_key
 from src.agent.langgraph_runtime.reflection import ReflectionReview
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 from src.tools.base import ToolSpec, object_schema
@@ -356,6 +356,7 @@ async def _run(
             owner_id="owner",
             model=model,
             executor=atomic_executor,
+            agent_mode="direct",
         )
         return result, atomic_executor
     finally:
@@ -375,6 +376,42 @@ def test_plain_answer_uses_the_standard_model_completion_path() -> None:
         assert [item["stage"] for item in result.stage_history or []] == ["model", "model", "publish"]
 
     asyncio.run(scenario())
+
+
+def test_unstructured_handoff_never_enters_final_answer_format_repair() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(responses=[
+            _structured_output_call("unbound-answer", [{"kind": "answer", "content": "错误的最终契约"}]),
+            AIMessage(content="普通文本交接。"),
+        ])
+        result, _ = await _run(model=model, registry=_registry(_search_operation()), conversation_id="unstructured-handoff")
+        assert result.status == "completed"
+        assert result.final_text == "普通文本交接。"
+        assert result.state["response_repair_count"] == 0
+        assert all(options.get("tools") for options in model.call_options)
+        for messages in model.calls:
+            prompt = str(messages[0].content)
+            assert "必须调用结构化输出工具 StructuredAgentAnswer" not in prompt
+            assert "不要调用 StructuredAgentAnswer" in prompt
+        assert any(isinstance(message, ToolMessage) and message.tool_call_id == "unbound-answer" for message in model.calls[-1])
+
+    asyncio.run(scenario())
+
+
+def test_failed_read_identity_ignores_model_generated_call_ids() -> None:
+    state = {
+        "tool_results": [
+            {
+                "id": "provider-call-1",
+                "tool_name": "search_source",
+                "arguments": {"source_id": "primary", "query": "测试问题"},
+                "effect": "read",
+                "success": False,
+            }
+        ]
+    }
+
+    assert _tool_call_key("search_source", {"query": "测试问题", "source_id": "primary"}) in _failed_read_tool_call_keys(state)
 
 
 def test_native_general_answer_can_publish_without_external_evidence() -> None:
@@ -440,6 +477,8 @@ def test_unresolved_source_failure_cannot_end_without_a_bounded_web_fallback() -
             item["stage"] == "source_fallback" and item["status"] == "failed"
             for item in result.stage_history or []
         )
+        assert len(result.state["source_fallback_attempts"]) == 1
+        assert result.state["source_fallback_attempts"][0]["status"] == "failed"
 
     asyncio.run(scenario())
 
@@ -481,7 +520,7 @@ def test_source_failure_can_recover_with_cited_web_evidence() -> None:
             "search_web_source",
         ]
         assert result.final_text.endswith("【证据 ev_web-fallback】")
-        assert result.state["fallback_repair_count"] == 0
+        assert result.state["fallback_repair_count"] == 1
         assert len(model.calls) == 3
 
     asyncio.run(scenario())
@@ -491,8 +530,11 @@ def test_source_failure_can_recover_with_cited_web_evidence() -> None:
 def test_pending_alternative_tools_execute_before_final_source_checks(source_id: str) -> None:
     async def scenario() -> None:
         model = ScriptedChatModel(responses=[
-            _tool_call("failed-primary", "primary"),
-            _tool_call("alternative", source_id),
+            AIMessage(content="并行核验两个来源", tool_calls=[
+                *_tool_call("failed-primary", "primary").tool_calls,
+                *_tool_call("alternative", source_id).tool_calls,
+            ]),
+            _named_tool_call("web-recovery", "search_web_source", {"source_id": "auto", "query": "测试问题"}),
             _structured_output_call("alternative-answer", [{
                 "kind": "fact", "content": "替代来源提供了核验数据。",
                 "source_ids": [1],
@@ -508,8 +550,9 @@ def test_pending_alternative_tools_execute_before_final_source_checks(source_id:
             conversation_id=f"alternative-{source_id}", response_format=DEFAULT_RESPONSE_FORMAT,
         )
         assert result.status == "completed"
-        assert [call["action_id"] for call in executor.calls] == ["failed-primary", "alternative"]
-        assert result.state["fallback_repair_count"] == 0
+        assert {call["action_id"] for call in executor.calls[:2]} == {"failed-primary", "alternative"}
+        assert executor.calls[-1]["action_id"] == "web-recovery"
+        assert result.state["fallback_repair_count"] == 1
         # Every issued tool call must have a matching observation before the
         # next model request; redirecting after_model used to strand these.
         answered = {getattr(message, "tool_call_id", None) for message in model.calls[-1]}
@@ -524,9 +567,6 @@ def test_unsupported_final_answer_requires_an_actual_recovery_tool_turn(web_succ
     async def scenario() -> None:
         responses = [
             _tool_call("failed-primary", "primary"),
-            _structured_output_call("premature-answer", [{
-                "kind": "context", "content": "让我尝试其他途径获取市场信息。", "source_ids": [],
-            }]),
             _named_tool_call("recovery-read", "search_web_source", {"source_id": "auto", "query": "测试问题"}),
         ]
         if parallel:
@@ -544,7 +584,7 @@ def test_unsupported_final_answer_requires_an_actual_recovery_tool_turn(web_succ
             }]))
         model = ScriptedChatModel(responses=responses)
         executor = FakeAtomicExecutor({
-            "search_source": [{"success": False, "error_code": "provider_unavailable"}],
+            "search_source": [{"success": False, "error_code": "provider_unavailable", "source_refs": ["数据接口"]}],
             "search_web_source": [{"success": web_success}] * (2 if parallel else 1),
         })
         result, _ = await _run(
@@ -554,10 +594,10 @@ def test_unsupported_final_answer_requires_an_actual_recovery_tool_turn(web_succ
         )
         assert len(executor.calls) == (3 if parallel else 2)
         assert result.state["fallback_repair_count"] == 1
-        recovery_request = model.call_options[2]
+        recovery_request = model.call_options[1]
         assert recovery_request["tool_choice"] == "required"
-        assert {tool.name for tool in recovery_request["tools"]} == {"search_web_source", "read_web_source"}
-        assert len(model.call_options[3]["tools"]) == 4  # source, search, reader, answer
+        assert {tool.name for tool in recovery_request["tools"]} == {"search_web_source"}
+        assert len(model.call_options[2]["tools"]) == 4  # source, search, reader, answer
         assert result.state["fallback_feedback"] == ""
         if web_success:
             assert result.status == "completed"
@@ -576,7 +616,7 @@ def test_response_format_repair_does_not_force_unnecessary_source_recovery(inval
     async def scenario() -> None:
         model = ScriptedChatModel(responses=[
             _tool_call("failed-primary", "primary"),
-            _tool_call("usable-alternative", "secondary"),
+            _named_tool_call("usable-alternative", "read_web_source", {"source_id": "http", "url": "https://source.example/test"}),
             _structured_output_call("invalid-format", []) if invalid_schema else AIMessage(content="替代来源已取得数据。"),
             _structured_output_call("valid-answer", [{
                 "kind": "fact", "content": "替代来源已取得数据。", "source_ids": [1],
@@ -591,7 +631,7 @@ def test_response_format_repair_does_not_force_unnecessary_source_recovery(inval
         assert result.status == "completed"
         assert len(executor.calls) == 2
         assert result.state["response_repair_count"] == 1
-        assert result.state["fallback_repair_count"] == 0
+        assert result.state["fallback_repair_count"] == 1
         assert result.state["evidence_repair_count"] == 0
         assert {tool.name for tool in model.call_options[-1]["tools"]} == {STRUCTURED_OUTPUT_TOOL_NAME}
     asyncio.run(scenario())
@@ -601,7 +641,6 @@ def test_source_recovery_without_a_url_binds_search_not_an_untargeted_reader() -
     async def scenario() -> None:
         model = ScriptedChatModel(responses=[
             _tool_call("failed-primary", "primary"),
-            _structured_output_call("unsupported", [{"kind": "context", "content": "暂缺来源。", "source_ids": []}]),
             _named_tool_call("searched", "search_web_source", {"source_id": "auto", "query": "测试问题"}),
             _structured_output_call("supported", [{"kind": "fact", "content": "取得替代来源。", "source_ids": [1]}]),
         ])
@@ -612,7 +651,7 @@ def test_source_recovery_without_a_url_binds_search_not_an_untargeted_reader() -
             conversation_id="source-recovery-search-first", response_format=DEFAULT_RESPONSE_FORMAT,
         )
         assert result.status == "completed"
-        assert {tool.name for tool in model.call_options[2]["tools"]} == {"search_web_source"}
+        assert {tool.name for tool in model.call_options[1]["tools"]} == {"search_web_source"}
         assert [call["tool_name"] for call in executor.calls] == ["search_source", "search_web_source"]
     asyncio.run(scenario())
 
@@ -705,7 +744,7 @@ def test_structured_terminal_candidate_cannot_bypass_source_fallback_gate() -> N
         assert result.status == "partial"
         assert result.error_code == "source_fallback_incomplete"
         assert result.state["fallback_repair_count"] == 1
-        assert len(model.calls) == 3
+        assert len(model.calls) == 2
 
     asyncio.run(scenario())
 
@@ -1407,6 +1446,9 @@ def test_structured_response_channel_cannot_end_a_later_turn_with_plain_text() -
                 controller=None,
                 run_id="structured-cross-turn-1",
                 conversation_id=conversation_id,
+                # This script tests the Direct answer contract, not Auto's
+                # separate OrchestratorRoute model call.
+                agent_mode="direct",
                 run_attempt=1,
                 tenant_id="tenant",
                 owner_id="owner",
@@ -1453,6 +1495,7 @@ def test_structured_response_channel_cannot_end_a_later_turn_with_plain_text() -
                 controller=None,
                 run_id="structured-cross-turn-2",
                 conversation_id=conversation_id,
+                agent_mode="direct",
                 run_attempt=1,
                 tenant_id="tenant",
                 owner_id="owner",

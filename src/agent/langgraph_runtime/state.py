@@ -52,6 +52,98 @@ def merge_strings(
     return merged
 
 
+def merge_team_records(
+    current: list[dict[str, Any]] | None,
+    incoming: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Merge parallel worker results by task identity.
+
+    ``Send`` may replay a completed branch after a checkpoint resume.  Replacing
+    the same task record instead of appending it keeps the team trace stable
+    and prevents duplicate findings from reaching synthesis.
+    """
+    merged = [dict(item) for item in current or []]
+    positions = {
+        str(item.get("task_id") or item.get("agent_id") or item.get("id") or ""): index
+        for index, item in enumerate(merged)
+        if str(item.get("task_id") or item.get("agent_id") or item.get("id") or "")
+    }
+    for raw in incoming or []:
+        item = dict(raw)
+        key = str(item.get("task_id") or item.get("agent_id") or item.get("id") or "")
+        if key and key in positions:
+            merged[positions[key]] = item
+        else:
+            if key:
+                positions[key] = len(merged)
+            merged.append(item)
+    return merged
+
+
+def merge_team_attempts(
+    current: dict[str, int] | None,
+    incoming: dict[str, int] | None,
+) -> dict[str, int]:
+    """Merge parallel task attempt counters by taking the greatest attempt.
+
+    Independent ``Send`` branches update different task ids in the same
+    super-step.  A plain dictionary channel would make those updates collide;
+    this reducer keeps the checkpoint deterministic and remains safe when a
+    completed branch is replayed after recovery.
+    """
+    merged = {str(key): max(0, int(value or 0)) for key, value in (current or {}).items()}
+    for key, value in (incoming or {}).items():
+        normalized_key = str(key).strip()
+        if not normalized_key:
+            continue
+        merged[normalized_key] = max(merged.get(normalized_key, 0), max(0, int(value or 0)))
+    return merged
+
+
+def merge_collaboration(
+    current: dict[str, Any] | None,
+    incoming: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge the namespaced Team projection without losing parallel reports.
+
+    LangGraph ``Send`` branches update the same parent state in one
+    super-step.  A plain mapping channel would let the last branch overwrite
+    the others, which is exactly how a parallel Team becomes one misleading
+    timeline.  Keep scalar phase fields last-write-wins, but merge task/report
+    collections by their stable ids.
+    """
+    merged = dict(current or {})
+    for key, value in (incoming or {}).items():
+        if key in {"tasks", "reports", "messages", "events"}:
+            if key == "reports":
+                existing = dict(merged.get(key) or {})
+                if isinstance(value, dict):
+                    existing.update({str(item): record for item, record in value.items()})
+                merged[key] = existing
+                continue
+            existing_items = list(merged.get(key) or [])
+            if isinstance(value, (list, tuple)):
+                by_id = {
+                    str(item.get("task_id") or item.get("event_id") or item.get("message_id") or item.get("id") or index): index
+                    for index, item in enumerate(existing_items)
+                    if isinstance(item, dict)
+                }
+                for item in value:
+                    if not isinstance(item, dict):
+                        continue
+                    item_id = str(item.get("task_id") or item.get("event_id") or item.get("message_id") or item.get("id") or "")
+                    if item_id and item_id in by_id:
+                        existing_items[by_id[item_id]] = dict(item)
+                    else:
+                        if item_id:
+                            by_id[item_id] = len(existing_items)
+                        existing_items.append(dict(item))
+                merged[key] = existing_items
+            continue
+        merged[key] = value
+    return merged
+
+
 class AgentState(LangChainAgentState, total=False):
     """Serializable state owned by the shared LangGraph checkpointer.
 
@@ -122,9 +214,14 @@ class AgentState(LangChainAgentState, total=False):
     # Feedback injected into the next model turn when deterministic evidence
     # checks find a repairable issue.
     evidence_feedback: str
-    # A bounded recovery request for an unsupported final candidate. While
-    # set, ModelRequest requires an actual web-search/read tool invocation.
+    # A bounded recovery for one failed source, started at the native tools
+    # join. While set, ModelRequest requires the owned web-search/read turn.
     fallback_feedback: str
+    # One bounded recovery record per failed external read operation.  This is
+    # reducer-backed so parallel Team workers cannot overwrite one another.
+    source_fallback_attempts: Annotated[list[dict[str, Any]], merge_records]
+    # Runtime failures are durable control-plane facts, never model prose.
+    runtime_errors: Annotated[list[dict[str, Any]], merge_records]
     # Complete reference candidates plus the subset of model-selected URLs
     # whose source body still needs a successful read.
     content_access_targets: list[dict[str, Any]]
@@ -170,6 +267,84 @@ class AgentState(LangChainAgentState, total=False):
     terminal_detail: str
     status: str
     error_code: str | None
+
+    # Multi-agent coordination is an optional parent graph around the native
+    # Agent loop. These fields are compact projections; worker transcripts are
+    # kept in per-invocation subgraphs that inherit the parent checkpointer
+    # under LangGraph's task namespace rather than copied into parent state.
+    # User-selected product mode: auto, direct, plan, or team.
+    agent_mode: str
+    # Effective route after Auto is resolved; empty while Auto is still routing.
+    resolved_agent_mode: str
+    orchestrator_mode: str
+    team_id: str
+    orchestrator_route: str
+    orchestrator_route_reason: str
+    orchestrator_execution_strategy: str
+    team_status: str
+    team_plan: dict[str, Any] | None
+    team_plan_source: str
+    team_plan_error: str
+    team_tasks: list[dict[str, Any]]
+    team_current_task: dict[str, Any] | None
+    team_current_task_attempt: int
+    team_previous_result: dict[str, Any] | None
+    team_repair_instructions: list[str]
+    team_dispatched_task_ids: list[str]
+    team_ready_task_ids: list[str]
+    team_dispatch_round: int
+    team_task_attempts: Annotated[dict[str, int], merge_team_attempts]
+    team_worker_handoff_status: str
+    team_worker_handoff_task_ids: list[str]
+    team_worker_handoff_incomplete_task_ids: list[str]
+    team_worker_handoff_error: str
+    team_worker_handoff_narration_status: str
+    team_worker_handoff_narration_error: str
+    team_failure_policy_action: str
+    team_failure_policy_task_ids: list[str]
+    team_failure_policy_status: str
+    team_failure_policy_error: str
+    team_results: Annotated[list[dict[str, Any]], merge_team_records]
+    team_evidence_catalog: list[dict[str, Any]]
+    team_evidence_merge: dict[str, Any] | None
+    team_evidence_merge_status: str
+    team_draft: dict[str, Any] | None
+    team_draft_status: str
+    team_draft_error: str
+    team_review_dispatch_status: str
+    team_review_dispatch_error: str
+    team_review_gate_status: str
+    team_review_gate_error: str
+    team_conflict_assessment: dict[str, Any] | None
+    team_conflict_status: str
+    team_conflict_error: str
+    team_critic_review: dict[str, Any] | None
+    team_critic_status: str
+    team_critic_error: str
+    team_bull_case_review: dict[str, Any] | None
+    team_bull_case_status: str
+    team_bull_case_error: str
+    team_bear_case_review: dict[str, Any] | None
+    team_bear_case_status: str
+    team_bear_case_error: str
+    team_consensus: dict[str, Any] | None
+    team_consensus_status: str
+    team_consensus_error: str
+    # Independent server-owned gates for worker success criteria and the Team
+    # plan's completion criteria.  The model proposal is stored only after
+    # canonicalization against the current plan and evidence catalog.
+    team_criteria_assessment: dict[str, Any] | None
+    team_criteria_status: str
+    team_criteria_error: str
+    team_reexecution: dict[str, Any] | None
+    team_reexecution_status: str
+    team_reexecution_round: int
+    team_reexecution_task_ids: list[str]
+    team_reexecution_error: str
+    team_contract_call_count: Annotated[int, operator.add]
+    team_worker_count: int
+    team_completed_worker_count: int
+    collaboration: Annotated[dict[str, Any], merge_collaboration]
 
 
 class AgentGraphInput(TypedDict, total=False):
@@ -222,6 +397,8 @@ class AgentGraphInput(TypedDict, total=False):
     work_budget_detail: str
     evidence_feedback: str
     fallback_feedback: str
+    source_fallback_attempts: list[dict[str, Any]]
+    runtime_errors: list[dict[str, Any]]
     content_access_targets: list[dict[str, Any]]
     required_content_reads: list[dict[str, Any]]
     pending_content_reads: list[dict[str, Any]]
@@ -244,6 +421,75 @@ class AgentGraphInput(TypedDict, total=False):
     status: str
     error_code: str | None
 
+    agent_mode: str
+    resolved_agent_mode: str
+    orchestrator_mode: str
+    team_id: str
+    orchestrator_route: str
+    orchestrator_route_reason: str
+    orchestrator_execution_strategy: str
+    team_status: str
+    team_plan: dict[str, Any] | None
+    team_plan_source: str
+    team_plan_error: str
+    team_tasks: list[dict[str, Any]]
+    team_current_task: dict[str, Any] | None
+    team_current_task_attempt: int
+    team_previous_result: dict[str, Any] | None
+    team_repair_instructions: list[str]
+    team_dispatched_task_ids: list[str]
+    team_ready_task_ids: list[str]
+    team_dispatch_round: int
+    team_task_attempts: dict[str, int]
+    team_worker_handoff_status: str
+    team_worker_handoff_task_ids: list[str]
+    team_worker_handoff_incomplete_task_ids: list[str]
+    team_worker_handoff_error: str
+    team_worker_handoff_narration_status: str
+    team_worker_handoff_narration_error: str
+    team_failure_policy_action: str
+    team_failure_policy_task_ids: list[str]
+    team_failure_policy_status: str
+    team_failure_policy_error: str
+    team_results: list[dict[str, Any]]
+    team_evidence_catalog: list[dict[str, Any]]
+    team_evidence_merge: dict[str, Any] | None
+    team_evidence_merge_status: str
+    team_draft: dict[str, Any] | None
+    team_draft_status: str
+    team_draft_error: str
+    team_review_dispatch_status: str
+    team_review_dispatch_error: str
+    team_review_gate_status: str
+    team_review_gate_error: str
+    team_conflict_assessment: dict[str, Any] | None
+    team_conflict_status: str
+    team_conflict_error: str
+    team_critic_review: dict[str, Any] | None
+    team_critic_status: str
+    team_critic_error: str
+    team_bull_case_review: dict[str, Any] | None
+    team_bull_case_status: str
+    team_bull_case_error: str
+    team_bear_case_review: dict[str, Any] | None
+    team_bear_case_status: str
+    team_bear_case_error: str
+    team_consensus: dict[str, Any] | None
+    team_consensus_status: str
+    team_consensus_error: str
+    team_criteria_assessment: dict[str, Any] | None
+    team_criteria_status: str
+    team_criteria_error: str
+    team_reexecution: dict[str, Any] | None
+    team_reexecution_status: str
+    team_reexecution_round: int
+    team_reexecution_task_ids: list[str]
+    team_reexecution_error: str
+    team_contract_call_count: int
+    team_worker_count: int
+    team_completed_worker_count: int
+    collaboration: dict[str, Any]
+
 
 @dataclass(frozen=True)
 class GraphContext:
@@ -260,6 +506,11 @@ class GraphContext:
     run_attempt: int
     tenant_id: str
     owner_id: str
+    # Team workers may compile the shared web tools into their child graph so
+    # a recovery turn can use the native LangGraph tool path.  Middleware hides
+    # these names during normal turns and allows them only when fallback state
+    # is active.
+    recovery_only_tools: frozenset[str] = frozenset()
     # Reserved for a future independently hosted reviewer.  The first phase
     # uses the run model through a separate, tool-free structured call.
     reflection_model: Any | None = None
@@ -272,4 +523,7 @@ __all__ = [
     "GraphContext",
     "merge_records",
     "merge_strings",
+    "merge_collaboration",
+    "merge_team_attempts",
+    "merge_team_records",
 ]
