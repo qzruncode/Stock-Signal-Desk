@@ -155,6 +155,55 @@ class _AgentRuntimeMixinMethods1:
                 )
             record = session.execute(statement).scalars().first()
             return _run_dict(record) if record is not None else None
+
+    def update_agent_run_runtime_metadata(
+        self,
+        run_id: str,
+        metadata: Mapping[str, Any],
+        *,
+        worker_id: str | None = None,
+        attempt: int | None = None,
+    ) -> bool:
+        """Merge safe execution facts into the existing request record.
+
+        Prompt identity is only known after the background worker resolves the
+        active template. Keeping this merge on ``request_json`` avoids a new
+        metadata table and lets interrupted/recovered runs retain the same
+        envelope as newly admitted runs.
+        """
+        if not isinstance(metadata, Mapping):
+            raise ValueError("runtime metadata must be a mapping")
+        now = datetime.now()
+
+        def _update(session):
+            statement = select(AgentRun).where(AgentRun.id == run_id)
+            if not self._is_sqlite_engine:
+                statement = statement.with_for_update()
+            record = session.execute(statement).scalars().first()
+            if record is None or record.status not in _ACTIVE_RUN_STATUSES:
+                return False
+            if worker_id is not None and record.worker_id != worker_id:
+                return False
+            if attempt is not None and int(record.attempt or 0) != int(attempt):
+                return False
+            request = _load_json(record.request_json, {})
+            if not isinstance(request, Mapping):
+                request = {}
+            current = request.get("runtime_metadata")
+            current_metadata = dict(current) if isinstance(current, Mapping) else {}
+            from src.agent.runtime_metadata import merge_runtime_metadata
+
+            request = dict(request)
+            request["runtime_metadata"] = merge_runtime_metadata(
+                current_metadata,
+                metadata,
+            )
+            record.request_json = _json(request)
+            record.updated_at = now
+            return True
+
+        return bool(self._run_write_transaction("update_agent_run_runtime_metadata", _update))
+
     def save_agent_run_checkpoint(
         self,
         run_id: str,
@@ -388,6 +437,7 @@ class _AgentRuntimeMixinMethods1:
         generated_title: str | None = None,
         error_code: str | None = None,
         error_detail: str | None = None,
+        runtime_metadata: Mapping[str, Any] | None = None,
         worker_id: str | None = None,
         attempt: int | None = None,
     ) -> bool:
@@ -416,6 +466,20 @@ class _AgentRuntimeMixinMethods1:
                 or (attempt is not None and int(run.attempt or 0) != int(attempt))
             ):
                 return False
+
+            if runtime_metadata:
+                request = _load_json(run.request_json, {})
+                if not isinstance(request, Mapping):
+                    request = {}
+                current = request.get("runtime_metadata")
+                from src.agent.runtime_metadata import merge_runtime_metadata
+
+                request = dict(request)
+                request["runtime_metadata"] = merge_runtime_metadata(
+                    current if isinstance(current, Mapping) else {},
+                    runtime_metadata,
+                )
+                run.request_json = _json(request)
 
             session.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
             latest_preview = ""
@@ -530,6 +594,7 @@ class _AgentRuntimeMixinMethods1:
             trace_record.status = str(trace_payload.get("status") or status)
             trace_record.error_code = str(trace_payload.get("error_code") or error_code or "") or None
             trace_field_map = {
+                "model_config": "model_config_json",
                 "stage_durations": "stage_durations_json",
                 "latest_stage": "latest_stage_json",
                 "schema_version": "schema_version",

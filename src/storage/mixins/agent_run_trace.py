@@ -196,6 +196,14 @@ class AgentRunTraceMixin:
                     latest_stage = None
             execution_trace = None
             quality_projection = None
+            model_config = None
+            if record.model_config_json:
+                try:
+                    parsed_model_config = json.loads(record.model_config_json)
+                    if isinstance(parsed_model_config, dict):
+                        model_config = parsed_model_config
+                except (TypeError, ValueError):
+                    model_config = None
             if record.quality_projection_json:
                 try:
                     projection = json.loads(record.quality_projection_json)
@@ -210,6 +218,7 @@ class AgentRunTraceMixin:
                 "run_id": record.run_id,
                 "status": record.status,
                 "error_code": record.error_code,
+                "model_config": model_config,
                 "latest_stage": latest_stage,
                 "execution_trace": execution_trace,
                 # Kept internal for the conversation presentation layer to
@@ -264,6 +273,14 @@ class AgentRunTraceMixin:
 
                 execution_trace = None
                 quality_projection = None
+                model_config = None
+                if trace_record.model_config_json:
+                    try:
+                        parsed_model_config = json.loads(trace_record.model_config_json)
+                        if isinstance(parsed_model_config, dict):
+                            model_config = parsed_model_config
+                    except (TypeError, ValueError):
+                        model_config = None
                 if trace_record.quality_projection_json:
                     try:
                         projection = json.loads(trace_record.quality_projection_json)
@@ -280,6 +297,7 @@ class AgentRunTraceMixin:
                         "run_id": trace_record.run_id,
                         "status": trace_record.status,
                         "error_code": trace_record.error_code,
+                        "model_config": model_config,
                         "latest_stage": latest_stage,
                         "execution_trace": execution_trace,
                         "quality_projection": quality_projection,

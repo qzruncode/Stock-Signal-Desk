@@ -100,6 +100,11 @@ class _ActiveRunRegistryMethods1:
         if self._database is None:
             return
         payload = serialize_assistant_chunk(chunk)
+        if isinstance(chunk, ReasoningDeltaChunk):
+            # Reasoning is an auxiliary/private channel. Keep the ordered
+            # cursor replayable, but never write model-authored hidden content
+            # into the durable run record.
+            payload["reasoning_delta"] = "[reasoning-redacted]"
         self._database.append_agent_run_event(
             run_id=run_id,
             sequence=sequence,
@@ -124,7 +129,14 @@ class _ActiveRunRegistryMethods1:
                         "event_type": str(
                             (payload := serialize_assistant_chunk(chunk)).get("type") or type(chunk).__name__
                         ),
-                        "payload": payload,
+                        "payload": (
+                            {
+                                **payload,
+                                "reasoning_delta": "[reasoning-redacted]",
+                            }
+                            if isinstance(chunk, ReasoningDeltaChunk)
+                            else payload
+                        ),
                     }
                     for chunk in chunks
                 ],

@@ -12,7 +12,9 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from api.v1.endpoints.agent.conversation_lifecycle import conversation_transition
+from src.agent.langgraph_runtime import agent_graph_runtime
 from src.agent.run_registry import RunBroadcaster, RunCapacityExceeded, active_run_registry
+from src.agent.runtime_metadata import build_run_runtime_metadata
 from src.agent.run_streaming import (
     OrderedDataStreamResponse,
     durable_subscriber_stream,
@@ -240,6 +242,13 @@ async def agent_chat_impl(
         # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会
         # 都通过检查、各自落库 messages 后第二个静默 attach 到第一个 run 而丢消息。
         # 拿到 None 表示已有活跃 run → 409 触发前端续流。
+        runtime_metadata = build_run_runtime_metadata(
+            messages=messages,
+            request_body=body,
+            llm_config=llm_cfg,
+            limits=limits,
+            tool_catalog_version=getattr(agent_graph_runtime.catalog, "version", None),
+        )
         try:
             run = await active_run_registry.try_claim(
                 conv_id,
@@ -251,6 +260,7 @@ async def agent_chat_impl(
                     "messages": list(messages),
                     "conversation_id": conv_id,
                     "model": llm_cfg.get("model"),
+                    "runtime_metadata": runtime_metadata,
                 },
                 tenant_id=tenant_id,
                 owner_id=owner_id,

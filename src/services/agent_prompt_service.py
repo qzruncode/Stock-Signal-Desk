@@ -14,6 +14,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.agent.langgraph_runtime.prompts import DEFAULT_AGENT_SYSTEM_PROMPT
+from src.agent.runtime_metadata import prompt_metadata
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,26 @@ class AgentPromptService:
             # 只缓存正常取到的生效 prompt，不缓存回退值（回退可能在下次写入后失效）
             _cached_active_prompt = (content, is_fallback)
         return content, is_fallback
+
+    def get_active_system_prompt_metadata(self) -> Dict[str, Any]:
+        """Return safe identity facts for the prompt used by one run.
+
+        The content itself remains a server-owned prompt and is never copied
+        into run metadata.  ``updated_at`` plus the content digest supplies a
+        useful version even though the existing prompt table has no explicit
+        version column.
+        """
+        content, is_fallback = self.get_active_system_prompt()
+        record = None
+        try:
+            record = self.db.get_active_agent_prompt()
+        except Exception as exc:
+            logger.warning("[AgentPrompt] 读取生效 prompt 元数据失败: %s", exc)
+        return prompt_metadata(
+            content,
+            record=record,
+            is_fallback=is_fallback,
+        )
 
     def _resolve_active_prompt(self) -> Tuple[str, bool]:
         try:

@@ -34,6 +34,79 @@ from src.storage.mixins.agent_runtime import (
     _run_dict,
  )
 
+
+def _event_observability_envelope(
+    *,
+    event_type: str,
+    payload: Mapping[str, Any],
+    sequence: int,
+    occurred_at: str,
+) -> dict[str, Any]:
+    """Add a uniform, replay-safe fact envelope around one stream payload."""
+    data = payload.get("data") if isinstance(payload.get("data"), Mapping) else {}
+    is_stage = str(data.get("event") or "") == "agent_stage"
+    details = data.get("details") if isinstance(data.get("details"), Mapping) else {}
+    stage_value = data.get("stage")
+    if not stage_value:
+        stage_value = (
+            "tool"
+            if event_type.startswith("tool-")
+            else "error"
+            if event_type == "error"
+            else "assistant"
+        )
+    stage = str(stage_value)[:64]
+    phase = str(data.get("phase") or stage)[:64]
+    action_id = data.get("action_id")
+    if action_id in (None, "") and event_type.startswith("tool-"):
+        action_id = payload.get("tool_call_id")
+    parent_action_id = (
+        data.get("parent_action_id")
+        or details.get("parent_action_id")
+        or details.get("parentActionId")
+        or payload.get("parent_id")
+    )
+    task_id = data.get("task_id") or details.get("task_id") or details.get("taskId")
+    step_id = data.get("step_id") or details.get("step_id") or details.get("stepId")
+    raw_attempt = data.get("attempt") or details.get("attempt") or 0
+    try:
+        attempt = max(0, int(raw_attempt))
+    except (TypeError, ValueError):
+        attempt = 0
+    if is_stage:
+        status = data.get("status")
+    elif event_type == "tool-call-begin":
+        status = "started"
+    elif event_type == "tool-result":
+        status = "failed" if payload.get("is_error") else "completed"
+    else:
+        status = "failed" if event_type == "error" else "emitted"
+    retry = data.get("retry") if is_stage else None
+    if retry is None and "retryable" in details:
+        retry = {"retryable": bool(details.get("retryable")), "attempt": attempt}
+    recovery = data.get("recovery") if is_stage else None
+    if recovery is None and "recovered_from_runtime_error" in details:
+        recovery = bool(details.get("recovered_from_runtime_error"))
+    return {
+        "sequence": int(sequence),
+        "event_type": str(event_type)[:32],
+        "stage": stage,
+        "phase": phase,
+        "action_id": str(action_id or "")[:192] or None,
+        "parent_action_id": str(parent_action_id or "")[:192] or None,
+        "task_id": str(task_id or "")[:96] or None,
+        "step_id": str(step_id or "")[:96] or None,
+        "status": str(status or "")[:32] or None,
+        "attempt": attempt,
+        "retry": retry,
+        "recovery": recovery,
+        "error_code": data.get("error_code") or payload.get("error_code"),
+        "summary": data.get("summary") or payload.get("tool_name") or None,
+        "occurred_at": data.get("occurred_at") or occurred_at,
+        "timestamp": data.get("timestamp") or data.get("occurred_at") or occurred_at,
+    }
+
+
 class _AgentRuntimeMixinMethods2:
     def append_agent_run_event(
         self,
@@ -92,13 +165,22 @@ class _AgentRuntimeMixinMethods2:
                 )
             for offset, event in enumerate(normalized_events):
                 sequence = start_sequence + offset
+                payload = dict(event["payload"])
+                payload.update(
+                    _event_observability_envelope(
+                        event_type=event["event_type"],
+                        payload=payload,
+                        sequence=sequence,
+                        occurred_at=now.astimezone().isoformat(),
+                    )
+                )
                 session.add(
                     AgentRunEvent(
                         id=f"{run_id}:{sequence}",
                         run_id=run_id,
                         sequence=sequence,
                         event_type=event["event_type"],
-                        payload_json=_json(event["payload"]),
+                        payload_json=_json(payload),
                         created_at=now,
                     )
                 )

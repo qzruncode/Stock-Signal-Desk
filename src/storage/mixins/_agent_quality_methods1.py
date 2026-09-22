@@ -103,6 +103,13 @@ class _AgentQualityMethods1:
         rows: list[dict[str, Any]] = []
         for run in runs:
             trace = trace_by_run.get(run.id)
+            request_payload = _load_json(run.request_json, {})
+            runtime_metadata = (
+                request_payload.get("runtime_metadata")
+                if isinstance(request_payload, Mapping)
+                and isinstance(request_payload.get("runtime_metadata"), Mapping)
+                else None
+            )
             projection = _load_json(
                 trace.quality_projection_json if trace else None,
                 {},
@@ -159,6 +166,7 @@ class _AgentQualityMethods1:
                     "engine": trace.orchestrator_mode if trace else None,
                     "status": run.status,
                     "error_code": run.error_code,
+                    "runtime_metadata": runtime_metadata,
                     "tools": tools,
                     "tool_observation_count": len(results),
                     "evidence_count": len(evidence),
@@ -210,6 +218,11 @@ class _AgentQualityMethods1:
         owner_id: str,
         include_evidence_payloads: bool = False,
     ) -> dict[str, Any] | None:
+        # Keep storage module import order acyclic: the runtime presentation
+        # helper imports the graph package, whose registry can import tools
+        # that depend on DatabaseManager during application startup.
+        from src.agent.langgraph_runtime.presentation import project_arguments_for_timeline
+
         with self.get_session() as session:
             run = (
                 session.execute(
@@ -254,6 +267,16 @@ class _AgentQualityMethods1:
                 .scalars()
                 .all()
             )
+            events = (
+                session.execute(
+                    select(AgentRunEvent)
+                    .where(AgentRunEvent.run_id == run_id)
+                    .order_by(AgentRunEvent.sequence.asc())
+                    .limit(10_000)
+                )
+                .scalars()
+                .all()
+            )
             feedback = (
                 session.execute(
                     select(AgentRunFeedback).where(
@@ -265,6 +288,41 @@ class _AgentQualityMethods1:
                 .scalars()
                 .first()
             )
+            request_payload = _load_json(run.request_json, {})
+            runtime_metadata = (
+                request_payload.get("runtime_metadata")
+                if isinstance(request_payload, Mapping)
+                and isinstance(request_payload.get("runtime_metadata"), Mapping)
+                else None
+            )
+
+            def _event_payload(event: AgentRunEvent) -> dict[str, Any]:
+                payload = _load_json(event.payload_json, {})
+                projected = dict(payload) if isinstance(payload, Mapping) else {}
+                if event.event_type == "reasoning-delta":
+                    projected["reasoning_delta"] = "[reasoning-redacted]"
+                return projected
+
+            def _step_result_summary(step: AgentStepExecution) -> dict[str, Any]:
+                result = _load_json(step.result_json, None)
+                if not isinstance(result, Mapping):
+                    return {
+                        "status": "unknown",
+                        "success": None,
+                        "partial": None,
+                        "has_result": result is not None,
+                    }
+                success = result.get("success")
+                partial = bool(result.get("partial"))
+                outcome = "partial" if partial else "completed" if success is True else "failed"
+                return {
+                    "status": outcome,
+                    "success": success if isinstance(success, bool) else None,
+                    "partial": partial,
+                    "error_code": result.get("error_code"),
+                    "has_result": True,
+                }
+
             snapshot = {
                 "run": {
                     "run_id": run.id,
@@ -278,15 +336,29 @@ class _AgentQualityMethods1:
                     "provider_call_count": int(run.provider_call_count or 0),
                     "estimated_token_count": int(run.estimated_token_count or 0),
                     "estimated_cost_micros": int(run.estimated_cost_micros or 0),
+                    "actual_usage": {
+                        key: value
+                        for key, value in _load_json(run.usage_json, {}).items()
+                        if key != "call_ids"
+                    }
+                    or None,
+                    "request": request_payload,
+                    "runtime_metadata": runtime_metadata,
+                    "event_cursor": int(run.event_cursor or 0),
                     "created_at": _iso(run.created_at),
                     "started_at": _iso(run.started_at),
                     "finished_at": _iso(run.finished_at),
+                    "updated_at": _iso(run.updated_at),
                 },
                 "trace": {
                     "engine": trace.orchestrator_mode if trace else None,
                     "status": trace.status if trace else None,
                     "error_code": trace.error_code if trace else None,
                     "schema_version": trace.schema_version if trace else None,
+                    "model_config": _load_json(
+                        trace.model_config_json if trace else None,
+                        {},
+                    ),
                     "stage_durations": _load_json(
                         trace.stage_durations_json if trace else None,
                         {},
@@ -300,6 +372,15 @@ class _AgentQualityMethods1:
                     trace.quality_projection_json if trace else None,
                     {},
                 ),
+                "events": [
+                    {
+                        "sequence": int(event.sequence),
+                        "event_type": event.event_type,
+                        "payload": _event_payload(event),
+                        "created_at": _iso(event.created_at),
+                    }
+                    for event in events
+                ],
                 "steps": [
                     {
                         "idempotency_key": step.idempotency_key,
@@ -311,8 +392,13 @@ class _AgentQualityMethods1:
                         "attempt": int(step.attempt or 0),
                         "max_attempts": int(step.max_attempts or 1),
                         "reuse_count": int(step.reuse_count or 0),
+                        "outcome": _step_result_summary(step),
+                        "result_summary": _step_result_summary(step),
                         "error_code": step.error_code,
                         "error_detail": step.error_detail,
+                        "arguments_summary": project_arguments_for_timeline(
+                            _load_json(step.arguments_json, {})
+                        ),
                         "arguments": _load_json(step.arguments_json, {}) if include_evidence_payloads else None,
                         "result": _load_json(step.result_json, None) if include_evidence_payloads else None,
                         "started_at": _iso(step.started_at),

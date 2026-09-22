@@ -134,17 +134,26 @@ def project_stage_history_for_client(
                 "engine",
                 "run_id",
                 "schema_version",
+                "event_type",
                 "collaboration_id",
                 "sequence",
                 "scope",
                 "stage",
+                "phase",
                 "status",
                 "action_id",
+                "parent_action_id",
+                "task_id",
+                "step_id",
+                "attempt",
+                "retry",
+                "recovery",
                 "tool_call_id",
                 "round_id",
                 "error_code",
                 "summary",
                 "occurred_at",
+                "timestamp",
             )
             if raw.get(key) is not None
         }
@@ -788,6 +797,35 @@ class GraphEventBridge:
         normalized_user_message = str(user_message or "").strip()
         stage_details = dict(details or {})
         occurred_at = datetime.now().astimezone().isoformat()
+        phase = str(stage_details.get("phase") or stage or "")[:64]
+        parent_action_id = str(
+            stage_details.get("parent_action_id")
+            or stage_details.get("parentActionId")
+            or ""
+        ).strip()[:192]
+        task_id = str(
+            stage_details.get("task_id")
+            or stage_details.get("taskId")
+            or ""
+        ).strip()[:96]
+        step_id = str(
+            stage_details.get("step_id")
+            or stage_details.get("stepId")
+            or ""
+        ).strip()[:96]
+        try:
+            attempt = max(0, int(stage_details.get("attempt") or 0))
+        except (TypeError, ValueError):
+            attempt = 0
+        retry_info = stage_details.get("retry")
+        if retry_info is None and "retryable" in stage_details:
+            retry_info = {
+                "retryable": bool(stage_details.get("retryable")),
+                "attempt": attempt,
+            }
+        recovery_info = stage_details.get("recovery")
+        if recovery_info is None and "recovered_from_runtime_error" in stage_details:
+            recovery_info = bool(stage_details.get("recovered_from_runtime_error"))
         team_id = str(
             stage_details.get("team_id")
             or stage_details.get("teamId")
@@ -885,16 +923,25 @@ class GraphEventBridge:
             stage_details["collaboration_event"] = collaboration_event
         payload = {
             "event": "agent_stage",
+            "event_type": "agent_stage",
             "engine": "langgraph_agent_loop",
             "run_id": self.run_id,
             "stage": stage,
+            "phase": phase,
             "status": status,
             "action_id": action_id,
+            "parent_action_id": parent_action_id or None,
+            "task_id": task_id or None,
+            "step_id": step_id or None,
+            "attempt": attempt,
+            "retry": retry_info,
+            "recovery": recovery_info,
             "tool_call_id": tool_call_id,
             "round_id": round_id or self._round_id,
             "error_code": error_code,
             "summary": summary,
             "occurred_at": occurred_at,
+            "timestamp": occurred_at,
         }
         if team_id:
             payload.update(

@@ -21,6 +21,7 @@ from src.storage.models import (
     AgentEvaluationCase,
     AgentEvaluationResult,
     AgentRun,
+    AgentRunEvent,
     AgentRunFeedback,
     AgentRunTrace,
     AgentStepExecution,

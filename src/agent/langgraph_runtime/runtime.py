@@ -911,6 +911,7 @@ class LangGraphRuntimeManager:
         config = self.graph_config(conversation_id)
         try:
             last_update: Mapping[str, Any] | None = None
+            compression_recorded = False
             async for chunk in graph.astream(
                 graph_input,
                 config,
@@ -936,7 +937,23 @@ class LangGraphRuntimeManager:
                 if chunk_type == "messages" and isinstance(data, (list, tuple)) and data:
                     message = data[0]
                     metadata = data[1] if len(data) > 1 and isinstance(data[1], Mapping) else {}
-                    if metadata.get("lc_source") in {"summarization", "planning"}:
+                    if metadata.get("lc_source") == "summarization":
+                        if not compression_recorded:
+                            compression_recorded = True
+                            context.events.stage(
+                                "context",
+                                "compressed",
+                                "LangChain 上下文摘要已完成，后续模型轮次使用压缩后的上下文",
+                                details={
+                                    "source": "langchain_summarization_middleware",
+                                    "phase": "context_compression",
+                                    "message_character_count": len(
+                                        str(getattr(message, "content", "") or "")
+                                    ),
+                                },
+                            )
+                        continue
+                    if metadata.get("lc_source") == "planning":
                         continue
                     if isinstance(message, (AIMessageChunk, AIMessage)):
                         context.events.model_message(message)

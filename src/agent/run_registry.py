@@ -258,6 +258,28 @@ def deserialize_assistant_chunk(
     """Rebuild a persisted event for ``DataStreamResponse`` replay."""
     data = dict(payload)
     data.pop("type", None)
+    # Durable AgentRunEvent payloads carry a generic observability envelope.
+    # It is useful to readers of the event table but is not part of the
+    # assistant-stream chunk constructors, so remove it only at replay time.
+    for key in (
+        "sequence",
+        "event_type",
+        "stage",
+        "phase",
+        "action_id",
+        "parent_action_id",
+        "task_id",
+        "step_id",
+        "status",
+        "attempt",
+        "retry",
+        "recovery",
+        "error_code",
+        "summary",
+        "occurred_at",
+        "timestamp",
+    ):
+        data.pop(key, None)
     constructors = {
         "text-delta": TextDeltaChunk,
         "reasoning-delta": ReasoningDeltaChunk,

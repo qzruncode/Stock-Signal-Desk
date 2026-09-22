@@ -9,6 +9,7 @@ duplicate the bound argument contract in the model prompt.
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -120,6 +121,18 @@ class ToolCatalog:
             separators=(",", ":"),
             default=str,
         )
+        # This is a content identity for the actual registry contract.  It is
+        # diagnostic metadata only; the registry remains the single source of
+        # truth for model binding and execution.
+        self._version = hashlib.sha256(
+            json.dumps(
+                registry.get_all_schemas(include_server_controlled=True),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
 
     @property
     def size(self) -> int:
@@ -146,6 +159,11 @@ class ToolCatalog:
         model contract in the system prompt.
         """
         return self._model_context
+
+    @property
+    def version(self) -> str:
+        """Stable identity of the currently bound tool directory."""
+        return self._version
 
 
 __all__ = ["ToolCatalog", "ToolDescriptor"]

@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolM
 from langgraph.types import Command, interrupt
 
 from src.agent.claim_validation import claim_checks_pass
+from src.agent.runtime_metadata import sha256_text
 from src.agent.runtime_errors import emit_runtime_error
 from src.tools.base import classify_result_semantics, evidence_record_is_eligible
 
@@ -1094,6 +1095,8 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。需�
                 "bound_tool_count": len(getattr(request, "tools", ()) or ()),
                 "directory_character_count": len(source_catalog),
                 "system_prompt_character_count": len(system_prompt),
+                "composed_prompt_sha256": sha256_text(system_prompt),
+                "tool_catalog_version": str(getattr(context.catalog, "version", "unknown")),
                 "message_character_count": _message_character_count(state.get("messages") or []),
                 "evidence_count": len(evidence),
                 "evidence_character_count": _serialized_character_count(evidence),

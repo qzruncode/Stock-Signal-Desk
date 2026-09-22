@@ -29,6 +29,7 @@ from src.agent.behavior_audit import (
     describe_tool_quality,
 )
 from src.agent.langgraph_runtime.evidence_identity import prepare_answer_for_client
+from src.agent.runtime_metadata import merge_runtime_metadata, safe_model_config
 from src.tools.base import evidence_record_is_eligible
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
@@ -294,10 +295,12 @@ def _execution_trace(
     claim_evidence: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any],
     structured_answer: Mapping[str, Any] | None = None,
+    runtime_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     projected = {
         "agent_mode": _short_text(state.get("agent_mode"), 24) or "auto",
         "resolved_agent_mode": _short_text(state.get("resolved_agent_mode"), 24) or None,
+        "run_metadata": dict(runtime_metadata or {}),
         "stages": project_stage_history_for_client(
             [item for item in stage_history if isinstance(item, Mapping)],
         ),
@@ -375,6 +378,7 @@ class AgentTerminalPublisher:
     database: DatabaseManager
     session_service: ChatSessionService
     worker_id: str
+    runtime_metadata: Mapping[str, Any] | None = None
 
     async def commit(
         self,
@@ -386,6 +390,7 @@ class AgentTerminalPublisher:
         error_detail: str | None = None,
         latest_stage: Mapping[str, Any] | None = None,
         stage_history: Sequence[Mapping[str, Any]] | None = None,
+        runtime_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         """Commit transcript, generic trace, and run status in one DB transaction."""
         state = dict(graph_state or {})
@@ -461,6 +466,66 @@ class AgentTerminalPublisher:
             ),
             "",
         )
+        run_metadata = merge_runtime_metadata(
+            self.runtime_metadata,
+            runtime_metadata,
+        )
+        composed_prompt_hashes = []
+        for stage in stage_history or ():
+            if not isinstance(stage, Mapping):
+                continue
+            details = stage.get("details")
+            if not isinstance(details, Mapping):
+                continue
+            digest = str(details.get("composed_prompt_sha256") or "").strip()
+            if digest and digest not in composed_prompt_hashes:
+                composed_prompt_hashes.append(digest)
+        run_metadata = merge_runtime_metadata(
+            run_metadata,
+            {
+                "actual_agent_mode": state.get("resolved_agent_mode") or None,
+                "attempt": int(self.run.attempt or 1),
+                "context": {
+                    "message_count": len(normalized_messages),
+                    "message_character_count": sum(
+                        len(str(message.get("content") or ""))
+                        for message in normalized_messages
+                        if isinstance(message, Mapping)
+                    ),
+                    "checkpoint_context_present": bool(state.get("conversation_context")),
+                },
+                "execution": {
+                    "status": status,
+                    "orchestrator_mode": state.get("orchestrator_mode"),
+                    "model_turn_count": int(state.get("model_turn_count") or 0),
+                    "tool_call_count": int(state.get("tool_call_count") or 0),
+                    "runtime_error_count": len(state.get("runtime_errors") or []),
+                },
+                "prompt": {
+                    "composed_sha256s": composed_prompt_hashes[:128],
+                },
+            },
+        )
+        try:
+            durable_run = await asyncio.to_thread(
+                self.database.get_agent_run,
+                run_id=self.run.run_id,
+            )
+        except Exception:
+            durable_run = None
+        if isinstance(durable_run, Mapping):
+            run_metadata = merge_runtime_metadata(
+                run_metadata,
+                {
+                    "resources": {
+                        "provider_call_count": int(durable_run.get("provider_call_count") or 0),
+                        "tool_call_count": int(durable_run.get("tool_call_count") or 0),
+                        "estimated_token_count": int(durable_run.get("estimated_token_count") or 0),
+                        "estimated_cost_micros": int(durable_run.get("estimated_cost_micros") or 0),
+                        "actual_usage": durable_run.get("actual_usage"),
+                    }
+                },
+            )
         execution_trace = _execution_trace(
             stage_history=stage_history,
             display_parts=display_parts,
@@ -469,7 +534,20 @@ class AgentTerminalPublisher:
             claim_evidence=claim_evidence,
             state=state,
             structured_answer=structured_answer,
+            runtime_metadata=run_metadata,
         )
+        model_config = {
+            **safe_model_config(
+                {
+                    "model": run_metadata.get("model"),
+                    "provider": run_metadata.get("provider"),
+                    "context_window": run_metadata.get("context_window"),
+                }
+            ),
+            "prompt": run_metadata.get("prompt"),
+            "tool_catalog_version": run_metadata.get("tool_catalog_version"),
+            "versions": run_metadata.get("versions"),
+        }
         quality_projection = {
             "engine": "langgraph_agent_loop",
             "inspection_schema_version": INSPECTION_SCHEMA_VERSION,
@@ -483,6 +561,7 @@ class AgentTerminalPublisher:
             "evidence": eligible_evidence,
             "claim_evidence": claim_evidence,
             "completed_tool_call_ids": list(state.get("completed_tool_call_ids") or []),
+            "run_metadata": run_metadata,
             "budgets": {
                 "tool_call_count": int(state.get("tool_call_count") or 0),
                 "tool_call_limit": int(state.get("tool_call_limit") or 0),
@@ -516,6 +595,7 @@ class AgentTerminalPublisher:
             "tool_call_count": state.get("tool_call_count"),
             "evidence_repair_count": state.get("evidence_repair_count"),
             "fallback_repair_count": state.get("fallback_repair_count"),
+            "model_config": model_config,
             "quality_projection": quality_projection,
         }
         if error_code:
@@ -546,6 +626,7 @@ class AgentTerminalPublisher:
                         ),
                         error_code=error_code,
                         error_detail=error_detail,
+                        runtime_metadata=run_metadata,
                         worker_id=self.worker_id,
                         attempt=self.run.attempt,
                     )

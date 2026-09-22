@@ -51,13 +51,20 @@ def _load_json(value: str | None, default: Any = None) -> Any:
 
 
 def _run_dict(record: AgentRun) -> dict[str, Any]:
+    request = _load_json(record.request_json, {})
+    runtime_metadata = (
+        request.get("runtime_metadata")
+        if isinstance(request, Mapping) and isinstance(request.get("runtime_metadata"), Mapping)
+        else None
+    )
     return {
         "run_id": record.id,
         "conversation_id": record.conversation_id,
         "tenant_id": record.tenant_id,
         "owner_id": record.owner_id,
         "status": record.status,
-        "request": _load_json(record.request_json, {}),
+        "request": request,
+        "runtime_metadata": runtime_metadata,
         "context_snapshot": _load_json(record.context_snapshot_json),
         "result": _load_json(record.result_json),
         "final_text": record.final_text,
@@ -82,7 +89,10 @@ def _run_dict(record: AgentRun) -> dict[str, Any]:
 
 
 from ._agent_runtime_methods1 import _AgentRuntimeMixinMethods1
-from ._agent_runtime_methods2 import _AgentRuntimeMixinMethods2
+from ._agent_runtime_methods2 import (
+    _AgentRuntimeMixinMethods2,
+    _event_observability_envelope,
+)
 from ._agent_runtime_methods3 import _AgentRuntimeMixinMethods3
 from ._agent_runtime_methods4 import _AgentRuntimeMixinMethods4
 class AgentRuntimeMixin(_AgentRuntimeMixinMethods1, _AgentRuntimeMixinMethods2, _AgentRuntimeMixinMethods3, _AgentRuntimeMixinMethods4):
