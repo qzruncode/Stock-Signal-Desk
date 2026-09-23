@@ -1,14 +1,18 @@
 # Planning 协调器运行契约
 
-本功能沿用 `create_agent`、ToolRegistry、AtomicToolExecutor、LangGraph checkpoint、证据检查及 Reflection。四种产品模式共享这些运行时边界；Planning 是 Plan 模式中的协调中间件，不是第二套执行器，也不提供独立的 replan 开关。
+本功能沿用 `create_agent`、ToolRegistry、AtomicToolExecutor、LangGraph checkpoint、证据检查及 Reflection。五种产品模式共享这些底层运行时边界；Planning 是 Plan 模式中的协调中间件，不是第二套执行器，也不提供独立的 replan 开关。Goal 是独立的顶层执行模式。
 
 ## 入口
 
-产品层明确提供四种模式：`Auto`、`Direct`、`Plan`、`Team`。聊天选择器发送 `agent_mode=auto|direct|plan|team`，模式在本轮开始前确定并在执行期间保持不变：Direct 走现有 Agent Loop，Plan 走本 PlanningCoordinator，Team 走独立的 supervisor/worker 协作图；Auto 交给模型在这三条执行路径之间路由，并且是默认模式。
+产品层明确提供五种模式：`Auto`、`Direct`、`Plan`、`Team`、`Goal`。聊天选择器发送 `agent_mode=auto|direct|plan|team|goal`，模式在本轮开始前确定并在执行期间保持不变：Direct 走现有 Agent Loop，Plan 走本 PlanningCoordinator，Team 走独立的 supervisor/worker 协作图，Goal 走独立的 GoalGraph；Auto 交给 Runtime 层模型在当前已开放的执行路径之间路由，并且是默认模式。
 
-`agent_mode=plan` 进入 PlanningCoordinator；`agent_mode=team` 直接进入 Team 图，不调用自动路由模型；`agent_mode=auto` 先在 runtime 的 `_dispatch_product_mode` 顶层步骤中调用 Auto 路由模型，选择 Direct、Plan 或 Team 后才进入被选中的图，不能先进入 `build_team_graph` 再决定。四种选择共享 checkpoint、证据、审批、恢复和最终发布边界。
+`agent_mode=plan` 进入 PlanningCoordinator；`agent_mode=team` 直接进入 Team 图；`agent_mode=goal` 直接进入独立 GoalGraph，不调用 Plan/Team 业务协议；`agent_mode=auto` 先在 runtime 的 `_dispatch_product_mode` 顶层步骤中调用 Auto 路由模型，选择 Direct、Plan、Team，或在灰度开关开启后选择 Goal，才进入被选中的图，不能先进入 `build_team_graph` 再决定。Direct、Plan、Team 继续共享标准 checkpoint；Goal 使用 `goal-v1:{conversation_id}` 独立 checkpoint，但共享证据、审批、恢复和最终发布边界。
 
-Auto 模式默认由模型选择 Direct、Plan 或 Team；Direct 模式使用原有问答循环，不生成 Planning 步骤；Plan 模式显式生成步骤并逐步核验；Team 模式显式生成领域任务并并行交接。内部直接调用 runtime 的默认值仍是 direct，测试或受控调用方可以明确传 `agent_mode`。
+Goal 默认只允许用户显式选择；部署验证稳定后，设置服务端环境变量
+`AGENT_GOAL_AUTO_ROUTING_ENABLED=true` 才开放 Auto -> Goal。显式
+`agent_mode=goal` 不受该开关影响。
+
+Auto 模式默认由模型选择 Direct、Plan 或 Team；Goal 只有在 `AGENT_GOAL_AUTO_ROUTING_ENABLED=true` 灰度开关打开后才加入 Auto 候选。Direct 模式使用原有问答循环，不生成 Planning 步骤；Plan 模式显式生成步骤并逐步核验；Team 模式显式生成领域任务并并行交接；Goal 模式围绕 GoalContract、证据门禁和服务端预算执行独立动作循环。内部直接调用 runtime 的默认值仍是 direct，测试或受控调用方可以明确传 `agent_mode`。
 
 ## 执行与完成
 

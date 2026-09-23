@@ -12,7 +12,7 @@ from fastapi import Body, Depends, HTTPException, Query, Request
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
 from api.v1.endpoints.agent.conversation_lifecycle import conversation_transition
-from src.agent.run_registry import active_run_registry
+from src.agent.run_registry import RunBroadcaster, active_run_registry
 from src.agent.langgraph_runtime import agent_graph_runtime
 from src.agent.langgraph_runtime.answer_contract import project_structured_answer
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
@@ -31,11 +31,11 @@ def _client_evidence_is_resolvable(item: Mapping[str, Any]) -> bool:
     return evidence_record_is_eligible(item)
 
 
-def _stage_history_from_events(
+def _run_history_from_events(
     db_manager: DatabaseManager,
     run_id: str,
 ) -> list[dict[str, Any]]:
-    """Recover stage-only progress when a run has not reached terminal trace commit."""
+    """Read the existing ordered run facts, including user-facing model prose."""
     if not run_id:
         return []
     try:
@@ -45,17 +45,9 @@ def _stage_history_from_events(
             limit=10_000,
         )
     except Exception:
-        logger.warning("[Agent] unable to read stage history run_id=%s", run_id, exc_info=True)
+        logger.warning("[Agent] unable to read run history run_id=%s", run_id, exc_info=True)
         return []
-    stages: list[dict[str, Any]] = []
-    for event in events:
-        if str(event.get("event_type") or "") != "data":
-            continue
-        payload = event.get("payload")
-        data = payload.get("data") if isinstance(payload, Mapping) else None
-        if isinstance(data, Mapping) and data.get("event") == "agent_stage":
-            stages.append(dict(data))
-    return stages
+    return events
 
 
 def _execution_trace_for_run(
@@ -79,7 +71,36 @@ def _execution_trace_for_run(
     # therefore contains only new chunks. Read the ordered event log as the
     # base, then merge the local committed suffix for the tiny publication
     # window before the next database read.
-    stages = _stage_history_from_events(db_manager, run_id)
+    events = _run_history_from_events(db_manager, run_id)
+    stages: list[dict[str, Any]] = []
+    for event in events:
+        payload = event.get("payload")
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        if event.get("event_type") == "data" and isinstance(data, Mapping) and data.get("event") == "agent_stage":
+            stages.append(dict(data))
+
+    # Paused runs have no terminal trace yet. Recover their actual message
+    # parts instead of replacing already-visible narration with stage labels.
+    broadcaster = run.broadcaster if run is not None else RunBroadcaster(
+        initial_sequence=max((int(event.get("sequence") or 0) + 1 for event in events), default=0),
+    )
+    if (
+        isinstance(broadcaster, RunBroadcaster)
+        and (events or broadcaster.history_length)
+        and (not persisted.get("display_parts") or persisted.get("goal"))
+    ):
+        matching_final = (
+            trace.get("final_text")
+            if isinstance(trace, Mapping) and str(trace.get("run_id") or "") == run_id
+            else ""
+        )
+        parts = broadcaster.display_parts_snapshot(
+            persisted_events=events,
+            final_text=str((durable_run or {}).get("final_text") or matching_final or ""),
+        )
+        if parts:
+            persisted["display_parts"] = parts
+            persisted["display_parts_version"] = 2
     if run is not None:
         snapshot = getattr(run.broadcaster, "stage_history_snapshot", None)
         local_stages = snapshot() if callable(snapshot) else []

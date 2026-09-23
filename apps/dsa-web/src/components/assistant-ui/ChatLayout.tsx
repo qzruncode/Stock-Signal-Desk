@@ -11,6 +11,7 @@ import {
   XIcon,
 } from 'lucide-react';
 import type {
+  AgentInterruptDecision,
   ChatConversationItem,
   PendingAgentInterrupt,
 } from '../../api/agent';
@@ -41,9 +42,9 @@ export type ChatLayoutProps = {
   isClearingConversations: boolean;
   onClearAllConversations: () => void;
   pendingInterrupt: PendingAgentInterrupt | null;
-  approvalDecision: 'approve' | 'reject' | null;
+  approvalDecision: AgentInterruptDecision['decision'] | null;
   approvalError: string | null;
-  onInterruptDecision: (decision: 'approve' | 'reject') => void;
+  onInterruptDecision: (decision: AgentInterruptDecision) => void;
   agentMode: AgentProductMode;
   onAgentModeChange: (mode: AgentProductMode) => void;
 };
@@ -276,6 +277,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
           </Suspense>
           {pendingInterrupt ? (
             <ApprovalCard
+              key={pendingInterrupt.interruptId}
               interrupt={pendingInterrupt}
               decision={approvalDecision}
               error={approvalError}
@@ -306,11 +308,24 @@ function ApprovalCard({
   onDecision,
 }: {
   interrupt: PendingAgentInterrupt;
-  decision: 'approve' | 'reject' | null;
+  decision: AgentInterruptDecision['decision'] | null;
   error: string | null;
-  onDecision: (decision: 'approve' | 'reject') => void;
+  onDecision: (decision: AgentInterruptDecision) => void;
 }) {
   const busy = decision !== null;
+  const [modification, setModification] = useState('');
+  const isGoalConfirmation = Boolean(interrupt.kind?.startsWith('goal_'));
+  const canModifyGoal = interrupt.kind === 'goal_contract_confirmation'
+    || interrupt.kind === 'goal_progress_confirmation';
+  const goalContract = interrupt.goalContract;
+  const goalObjective = goalContract && typeof goalContract.objective === 'string'
+    ? goalContract.objective
+    : '';
+  const goalCriteria = Array.isArray(interrupt.criteria)
+    ? interrupt.criteria.filter((item): item is Record<string, unknown> => (
+        typeof item === 'object' && item !== null && !Array.isArray(item)
+      ))
+    : [];
   return (
     <div className="absolute bottom-24 left-3 right-3 z-20 mx-auto max-w-2xl rounded-2xl border border-amber-300/70 bg-amber-50/95 p-4 shadow-xl backdrop-blur sm:left-5 sm:right-5">
       <div className="flex items-start gap-3">
@@ -321,8 +336,18 @@ function ApprovalCard({
           <p className="font-semibold text-amber-950">需要你的确认</p>
           <p className="mt-1 text-sm leading-6 text-amber-900">{interrupt.summary}</p>
           <div className="mt-2 rounded-lg border border-amber-200/80 bg-white/70 px-3 py-2 text-xs text-amber-950">
-            <p><span className="text-amber-700">操作：</span>{interrupt.toolName}</p>
-            {Object.keys(interrupt.arguments || {}).length > 0 ? (
+            <p><span className="text-amber-700">{isGoalConfirmation ? '目标：' : '操作：'}</span>{interrupt.toolName || goalObjective || 'Goal 目标确认'}</p>
+            {isGoalConfirmation && goalCriteria.length > 0 ? (
+              <ul className="mt-2 space-y-1 leading-5">
+                {goalCriteria.slice(0, 8).map((criterion, index) => (
+                  <li key={String(criterion.criterionId || criterion.criterion_id || index)}>
+                    <span className="text-amber-700">{criterion.required === false ? '可选' : '必需'}：</span>
+                    {String(criterion.description || `完成条件 ${index + 1}`)}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {!isGoalConfirmation && Object.keys(interrupt.arguments || {}).length > 0 ? (
               <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-amber-900">
                 {JSON.stringify(interrupt.arguments, null, 2)}
               </pre>
@@ -333,7 +358,7 @@ function ApprovalCard({
             <button
               type="button"
               disabled={busy}
-              onClick={() => onDecision('approve')}
+              onClick={() => onDecision({ decision: 'approve' })}
               className="inline-flex h-9 items-center justify-center rounded-lg bg-amber-700 px-4 text-sm font-medium text-white transition hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {decision === 'approve' ? <Loader2Icon className="mr-2 size-4 animate-spin" /> : null}
@@ -342,12 +367,38 @@ function ApprovalCard({
             <button
               type="button"
               disabled={busy}
-              onClick={() => onDecision('reject')}
+              onClick={() => onDecision({ decision: 'reject' })}
               className="inline-flex h-9 items-center justify-center rounded-lg border border-amber-300 bg-white px-4 text-sm font-medium text-amber-900 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {decision === 'reject' ? <Loader2Icon className="mr-2 size-4 animate-spin" /> : null}
               拒绝
             </button>
+            {canModifyGoal ? (
+              <div className="basis-full pt-1">
+                <label className="block text-xs text-amber-800" htmlFor="goal-confirmation-modification">
+                  也可以修改目标，系统会重新提取完成条件：
+                </label>
+                <textarea
+                  id="goal-confirmation-modification"
+                  value={modification}
+                  onChange={(event) => setModification(event.target.value)}
+                  disabled={busy}
+                  rows={2}
+                  maxLength={8_000}
+                  className="mt-1 w-full resize-y rounded-lg border border-amber-300 bg-white px-2.5 py-2 text-sm text-amber-950 outline-none placeholder:text-amber-700/50 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 disabled:opacity-60"
+                  placeholder="例如：只检查最近 30 天，并且必须给出可核对来源"
+                />
+                <button
+                  type="button"
+                  disabled={busy || !modification.trim()}
+                  onClick={() => onDecision({ decision: 'modify', message: modification.trim() })}
+                  className="mt-2 inline-flex h-9 items-center justify-center rounded-lg border border-amber-400 bg-amber-100 px-4 text-sm font-medium text-amber-950 transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {decision === 'modify' ? <Loader2Icon className="mr-2 size-4 animate-spin" /> : null}
+                  使用修改后的目标
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

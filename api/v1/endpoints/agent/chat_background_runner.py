@@ -40,14 +40,21 @@ def _graph_history_mode(body: Mapping[str, Any]) -> str:
 
 def _normalize_agent_mode(value: Any) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized not in {"auto", "direct", "plan", "team"}:
+    if normalized not in {"auto", "direct", "plan", "team", "goal"}:
         raise ValueError(f"unknown agent mode: {normalized}")
     return normalized
 
 
 def _agent_mode(body: Mapping[str, Any]) -> str:
-    """Resolve the four-mode product contract; Auto is the default."""
+    """Resolve the five-mode product contract; Auto is the default."""
     return _normalize_agent_mode(body.get("agent_mode") or "auto")
+
+
+def _checkpoint_thread_id(state: Mapping[str, Any], conversation_id: str) -> str:
+    """Persist the thread namespace owned by the selected product graph."""
+    if str(state.get("resolved_agent_mode") or state.get("agent_mode") or "").strip().lower() == "goal":
+        return agent_graph_runtime.goal_thread_id(conversation_id)
+    return agent_graph_runtime.thread_id(conversation_id)
 
 
 def _terminal_runtime_metadata(
@@ -199,6 +206,7 @@ async def _execute_background_agent_run(
                 decision={
                     "decision": str(resume_decision.get("decision") or ""),
                     "fingerprint": str(resume_decision.get("fingerprint") or ""),
+                    "message": str(resume_decision.get("message") or ""),
                 },
                 **common,
             )
@@ -239,7 +247,7 @@ async def _execute_background_agent_run(
                 attempt=run.attempt,
                 checkpoint={
                     "engine": "langgraph_agent_loop",
-                    "thread_id": agent_graph_runtime.thread_id(conversation_id),
+                    "thread_id": _checkpoint_thread_id(graph_result.state, conversation_id),
                     "pending_interrupt": pending,
                 },
             )

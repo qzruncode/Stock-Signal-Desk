@@ -14,11 +14,11 @@ describe('agent product modes', () => {
     window.localStorage.clear();
   });
 
-  it('exposes exactly Auto, Direct, Plan, and Team to the composer', () => {
-    expect(AGENT_MODE_OPTIONS.map((option) => option.value)).toEqual(['auto', 'direct', 'plan', 'team']);
+  it('exposes exactly the five product modes to the composer', () => {
+    expect(AGENT_MODE_OPTIONS.map((option) => option.value)).toEqual(['auto', 'direct', 'plan', 'team', 'goal']);
   });
 
-  it('keeps an invalid stored value from becoming a fourth mode', () => {
+  it('keeps an invalid stored value from becoming a supported mode', () => {
     window.localStorage.setItem(AGENT_MODE_STORAGE_KEY, 'invalid');
     expect(readStoredAgentMode()).toBe(DEFAULT_AGENT_MODE);
     expect(isAgentProductMode('invalid')).toBe(false);

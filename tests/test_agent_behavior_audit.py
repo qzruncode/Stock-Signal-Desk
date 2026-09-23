@@ -57,6 +57,34 @@ def test_legacy_claim_with_invalid_citation_requires_action_despite_passing_chec
     assert "1 个结论的引用" in finding["detail"]
 
 
+def test_goal_validation_receipt_is_visible_and_claim_mapping_is_not_reported_clear():
+    snapshot = _snapshot([], final_text="这是基于有限资料整理的阶段性结果。")
+    snapshot["run"]["status"] = "blocked"
+    snapshot["quality_projection"].update({
+        "agent_mode": "goal",
+        "resolved_agent_mode": "goal",
+        "goal": {"schema_version": "goal.v1", "status": "blocked"},
+        "runtime_errors": [{
+            "failure_kind": "tool_validation",
+            "error_code": "goal_action_invalid",
+            "tool_name": "eastmoney_search",
+            "action_id": "action-invalid",
+            "message": "未注册的工具 operation：eastmoney_search。",
+        }],
+    })
+
+    audit = build_behavior_audit(snapshot)
+
+    assert audit["failed_tool_count"] == 0
+    assert audit["goal_action_failure_count"] == 1
+    failure = next(item for item in audit["findings"] if item["code"] == "goal_action_validation_failed")
+    assert failure["disposition"] == "action_required"
+    assert "未交给工具执行" in failure["detail"]
+    evidence_check = next(item for item in audit["checks"] if item["code"] == "evidence")
+    assert evidence_check["status"] == "info"
+    assert any(item["code"] == "goal_claim_evidence_mapping_unavailable" for item in audit["findings"])
+
+
 def test_reference_links_are_not_treated_as_document_reads() -> None:
     audit = build_behavior_audit(
         _snapshot(

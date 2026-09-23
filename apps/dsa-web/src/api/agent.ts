@@ -230,8 +230,55 @@ export interface AgentTeamTrace {
   failure?: AgentTeamFailure | null;
 }
 
+export interface AgentGoalCriterion {
+  criterionId: string;
+  description: string;
+  required: boolean;
+  verificationMethod: string;
+  status: 'satisfied' | 'pending' | 'failed' | 'unverifiable' | string;
+  evidenceIds: string[];
+  explanation?: string;
+}
+
+export interface AgentGoalAction {
+  actionId: string;
+  kind: 'tool' | 'ask_user' | 'finish' | string;
+  toolName?: string | null;
+  status?: string;
+  criterionIds: string[];
+  rationale?: string;
+}
+
+export interface AgentGoalTrace {
+  schemaVersion?: string;
+  status: string;
+  objective: string;
+  scope?: string;
+  revision?: number;
+  criteria: AgentGoalCriterion[];
+  currentAction?: AgentGoalAction | null;
+  lastAction?: AgentGoalAction | null;
+  progress?: string;
+  iteration?: number;
+  replanCount?: number;
+  limits?: {
+    iterations?: number;
+    replans?: number;
+    toolCalls?: number;
+    modelCalls?: number;
+    timeLimitSeconds?: number;
+    actionValidationRepairs?: number;
+    actionValidationRepairLimit?: number;
+  };
+  evidenceIds?: string[];
+  blocker?: string | null;
+  terminalReason?: string | null;
+  confirmationStatus?: string;
+  pendingConfirmationCriteria?: string[];
+}
+
 export interface AgentExecutionTrace {
-  /** Product mode selected for this turn: auto, direct, plan, or team. */
+  /** Product mode selected for this turn: auto, direct, plan, team, or goal. */
   agentMode?: string;
   /** Effective route selected by Auto, when Auto was requested. */
   resolvedAgentMode?: string | null;
@@ -246,6 +293,7 @@ export interface AgentExecutionTrace {
   structuredAnswer?: StructuredAnswerProjection | null;
   planning?: AgentPlanningTrace | null;
   team?: AgentTeamTrace | null;
+  goal?: AgentGoalTrace | null;
   loop?: Record<string, unknown>;
   completedToolCallIds?: string[];
   /** Defensive marker when a malformed API response was compacted for rendering. */
@@ -297,6 +345,13 @@ export interface AgentCheckpointStateSummary {
   planningCurrentStepId?: string | null;
   planningReplanCount?: number;
   planningStepCount?: number;
+  goalStatus?: string;
+  goalRevision?: number;
+  goalIteration?: number;
+  goalReplanCount?: number;
+  goalCriterionCount?: number;
+  goalEvidenceCount?: number;
+  goalBlocker?: string | null;
   hasPendingInterrupt: boolean;
   hasAnswer: boolean;
 }
@@ -330,10 +385,20 @@ export interface PendingAgentInterrupt {
   conversationId?: string;
   fingerprint: string;
   actionId?: string;
-  toolName: string;
+  kind?: string;
+  toolName?: string;
   summary: string;
-  arguments: Record<string, unknown>;
+  arguments?: Record<string, unknown>;
+  goalContract?: Record<string, unknown> | null;
+  criteria?: Record<string, unknown>[];
+  pendingCriteria?: string[];
+  action?: Record<string, unknown> | null;
   createdAt?: string;
+}
+
+export interface AgentInterruptDecision {
+  decision: 'approve' | 'reject' | 'modify';
+  message?: string;
 }
 
 export interface ChatConversationDetail extends ChatConversationItem {
@@ -380,6 +445,7 @@ const CLIENT_TRACE_MAX_OBJECT_KEYS = 24;
 // "queued" during history replay. Keep the Team object bounded, but large
 // enough to retain its complete lifecycle contract.
 const CLIENT_TEAM_MAX_OBJECT_KEYS = 96;
+const CLIENT_GOAL_MAX_OBJECT_KEYS = 48;
 const CLIENT_TRACE_MAX_TEXT = 1_600;
 const CLIENT_DISPLAY_PART_TEXT = 12_000;
 const CLIENT_STRUCTURED_ANSWER_TEXT = 12_000;
@@ -390,6 +456,7 @@ const CLIENT_TRACE_FIELD_LIMITS: Array<[string, string, number]> = [
   // verbose tool/evidence payloads so a large research answer cannot erase the
   // per-member terminal status during refresh replay.
   ['team', 'team', 1],
+  ['goal', 'goal', 1],
   // Citations are part of the final answer contract.  Keep the compact
   // evidence/result projections before the verbose stage history so a long
   // run cannot make every hover degrade to "details unavailable" merely
@@ -765,7 +832,11 @@ const projectExecutionTraceForClient = (value: unknown): Record<string, unknown>
       textLimit,
       snakeKey === 'structured_answer' ? CLIENT_STRUCTURED_ANSWER_MAX_DEPTH : CLIENT_TRACE_MAX_DEPTH,
       snakeKey === 'structured_answer' ? CLIENT_STRUCTURED_ANSWER_ARRAY_LIMIT : 16,
-      snakeKey === 'team' ? CLIENT_TEAM_MAX_OBJECT_KEYS : CLIENT_TRACE_MAX_OBJECT_KEYS,
+      snakeKey === 'team'
+        ? CLIENT_TEAM_MAX_OBJECT_KEYS
+        : snakeKey === 'goal'
+          ? CLIENT_GOAL_MAX_OBJECT_KEYS
+          : CLIENT_TRACE_MAX_OBJECT_KEYS,
     );
     truncated ||= fieldBudget.exhausted;
   }
@@ -969,7 +1040,8 @@ export const agentApi = {
     payload: {
       runId: string;
       fingerprint: string;
-      decision: 'approve' | 'reject';
+      decision: AgentInterruptDecision['decision'];
+      message?: string;
     },
   ): Promise<void> {
     await apiClient.post(
@@ -978,6 +1050,7 @@ export const agentApi = {
         run_id: payload.runId,
         fingerprint: payload.fingerprint,
         decision: payload.decision,
+        ...(payload.message ? { message: payload.message } : {}),
       },
     );
   },

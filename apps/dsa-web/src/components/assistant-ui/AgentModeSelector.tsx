@@ -12,7 +12,7 @@ export type AgentModeSelectorProps = {
   disabled?: boolean;
 };
 
-/** The four product modes are selected before a turn and stay fixed during it. */
+/** The five product modes are selected before a turn and stay fixed during it. */
 export const AgentModeSelector: FC<AgentModeSelectorProps> = ({
   value,
   onChange,

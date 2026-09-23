@@ -59,12 +59,12 @@ from .answer_contract import (
 )
 from .graph import DEFAULT_RESPONSE_FORMAT, build_agent_graph
 from .model import LiteLLMChatModel, LiteLLMGateway
+from .mode_dispatch import normalize_product_mode, resolve_product_mode
 from .planning import PLANNING_DEFAULT_REPLAN_LIMIT, resolve_planning_mode
 from .state import AgentGraphInput, GraphContext
+from .goal import GoalContext, build_goal_graph, goal_turn_defaults
 from .team.graph import (
     build_team_graph,
-    resolve_agent_mode,
-    resolve_orchestrator_route,
 )
 from .team.registry import ExpertRegistry
 from src.tools.base import evidence_record_is_eligible
@@ -76,6 +76,8 @@ from src.tools.base import evidence_record_is_eligible
 # removed semantic DAG from being resumed by this loop.
 CHECKPOINT_THREAD_PREFIX = "agent-v2"
 CHECKPOINT_NAMESPACE = ""
+GOAL_CHECKPOINT_THREAD_PREFIX = "goal-v1"
+GOAL_CHECKPOINT_NAMESPACE = ""
 
 
 def _identity_compact(_tool_name: str, result: Any) -> Any:
@@ -149,6 +151,18 @@ def _checkpoint_is_team_state(values: Mapping[str, Any] | None) -> bool:
     return has_team_markers
 
 
+def _checkpoint_is_goal_state(values: Mapping[str, Any] | None) -> bool:
+    """Recognize a Goal checkpoint before materializing any graph snapshot."""
+    if not isinstance(values, Mapping):
+        return False
+    return (
+        str(values.get("agent_mode") or "").strip().lower() == "goal"
+        or str(values.get("resolved_agent_mode") or "").strip().lower() == "goal"
+        or str(values.get("orchestrator_mode") or "").strip().lower() == "goal_v1"
+        or isinstance(values.get("goal_contract"), Mapping)
+    )
+
+
 def _terminal_status(current: Any, requested: str) -> str:
     """Keep a durable terminal state monotonic when cleanup races the graph."""
     normalized_requested = str(requested or "failed").strip().lower()
@@ -167,7 +181,7 @@ def _terminal_checkpoint_update(
     error_code: str,
     terminal_detail: str,
 ) -> dict[str, Any]:
-    """Build one durable terminal update for generic and Team state.
+    """Build one durable terminal update for generic, Goal, and Team state.
 
     ``agent_runs`` and the LangGraph checkpoint have different owners, so a
     cancellation or exception can otherwise leave the browser with a terminal
@@ -188,6 +202,24 @@ def _terminal_checkpoint_update(
         "error_code": safe_error_code,
         "terminal_detail": safe_detail,
     }
+    if _checkpoint_is_goal_state(state):
+        goal_status = (
+            "failed"
+            if effective_status == "failed"
+            else "blocked"
+            if effective_status in {"partial", "cancelled", "blocked"}
+            else effective_status
+        )
+        update.update(
+            {
+                "goal_status": goal_status,
+                "goal_terminal_reason": safe_detail,
+                "goal_blocker": safe_detail if goal_status != "completed" else "",
+                "goal_progress": "Goal 已终止并保留当前证据。",
+                "pending_interrupt": None,
+            }
+        )
+        return update
     if not _checkpoint_is_team_state(state) or effective_status == "completed":
         return update
 
@@ -538,6 +570,17 @@ def _checkpoint_summary(snapshot: Any) -> dict[str, Any]:
             "planning_step_count": len(values.get("planning_plan", {}).get("steps") or [])
             if isinstance(values.get("planning_plan"), Mapping)
             else 0,
+            "goal_status": str(values.get("goal_status") or "not_started"),
+            "goal_revision": int(
+                values.get("goal_contract", {}).get("revision") or 0
+            )
+            if isinstance(values.get("goal_contract"), Mapping)
+            else 0,
+            "goal_iteration": int(values.get("goal_iterations") or 0),
+            "goal_replan_count": int(values.get("goal_replan_count") or 0),
+            "goal_criterion_count": len(values.get("goal_criteria") or []),
+            "goal_evidence_count": len(values.get("goal_evidence_ids") or []),
+            "goal_blocker": str(values.get("goal_blocker") or "") or None,
             "required_content_read_count": len(values.get("required_content_reads") or []),
             "pending_content_read_count": len(values.get("pending_content_reads") or []),
             "has_pending_interrupt": isinstance(values.get("pending_interrupt"), Mapping),
@@ -603,7 +646,7 @@ class GraphRunResult:
 
 
 class LangGraphRuntimeManager:
-    """Own the direct/team graphs and one native checkpointer."""
+    """Own independent product graphs and one native checkpointer."""
 
     def __init__(
         self,
@@ -623,11 +666,15 @@ class LangGraphRuntimeManager:
         self.checkpointer: Any | None = None
         self.graph: Any | None = None
         self.team_graph: Any | None = None
+        self.goal_graph: Any | None = None
         self._checkpointer_context: AbstractAsyncContextManager[Any] | None = None
         self._backend = "uninitialized"
 
     @property
     def initialized(self) -> bool:
+        # Keep the existing readiness contract stable for health checks and
+        # embedded tests.  Goal is required only when a Goal request selects
+        # the independent graph via ``_require_goal_graph``.
         return self.graph is not None
 
     @property
@@ -651,7 +698,7 @@ class LangGraphRuntimeManager:
         testing: bool = False,
         checkpointer: Any | None = None,
     ) -> None:
-        if self.initialized:
+        if self.graph is not None and self.team_graph is not None and self.goal_graph is not None:
             return
         if checkpointer is not None:
             self.checkpointer = checkpointer
@@ -694,10 +741,12 @@ class LangGraphRuntimeManager:
             expert_registry=self.expert_registry,
             response_format=self.response_format,
         )
+        self.goal_graph = build_goal_graph(checkpointer=self.checkpointer)
 
     async def close(self) -> None:
         self.graph = None
         self.team_graph = None
+        self.goal_graph = None
         self.checkpointer = None
         context = self._checkpointer_context
         self._checkpointer_context = None
@@ -709,13 +758,18 @@ class LangGraphRuntimeManager:
     def thread_id(conversation_id: str) -> str:
         return f"{CHECKPOINT_THREAD_PREFIX}:{conversation_id}"
 
+    @staticmethod
+    def goal_thread_id(conversation_id: str) -> str:
+        return f"{GOAL_CHECKPOINT_THREAD_PREFIX}:{conversation_id}"
+
     @classmethod
-    def graph_config(cls, conversation_id: str) -> dict[str, Any]:
+    def graph_config(cls, conversation_id: str, *, mode: str = "standard") -> dict[str, Any]:
         limits = get_agent_runtime_limits()
+        is_goal = str(mode or "standard").strip().lower() == "goal"
         return {
             "configurable": {
-                "thread_id": cls.thread_id(conversation_id),
-                "checkpoint_ns": CHECKPOINT_NAMESPACE,
+                "thread_id": cls.goal_thread_id(conversation_id) if is_goal else cls.thread_id(conversation_id),
+                "checkpoint_ns": GOAL_CHECKPOINT_NAMESPACE if is_goal else CHECKPOINT_NAMESPACE,
             },
             # This guards the number of graph transitions, never the duration
             # of a provider's reasoning.  Tool/provider budgets remain the
@@ -733,42 +787,84 @@ class LangGraphRuntimeManager:
             raise RuntimeError("LangGraph multi-agent runtime has not been initialized")
         return self.team_graph
 
+    def _require_goal_graph(self) -> Any:
+        if self.goal_graph is None:
+            raise RuntimeError("Independent Goal runtime has not been initialized")
+        return self.goal_graph
+
+    def _graph_mode(self, graph: Any) -> str:
+        return "goal" if graph is self.goal_graph else "standard"
+
+    def _graph_config(self, conversation_id: str, graph: Any) -> dict[str, Any]:
+        return self.graph_config(conversation_id, mode=self._graph_mode(graph))
+
     async def _graph_for_checkpoint(self, conversation_id: str) -> Any:
         """Select the graph that owns the durable checkpointed run.
 
-        Do not probe the direct graph first.  LangGraph validates pending
-        ``Send`` packets against the graph being queried; a Team checkpoint
-        can therefore emit misleading ``unknown node`` warnings (and discard
-        the pending expert sends) when it is inspected through the direct
-        graph.  Read the raw checkpoint channel values first, before asking
-        either compiled graph to materialize a snapshot.
+        Goal uses a separate thread namespace.  Inspect raw checkpoint values
+        before materializing any graph so a pending Goal or Team checkpoint is
+        never probed through the wrong StateGraph.
         """
-        config = self.graph_config(conversation_id)
         checkpointer = self.checkpointer
         if checkpointer is not None and hasattr(checkpointer, "aget_tuple"):
             try:
-                checkpoint_tuple = await checkpointer.aget_tuple(config)
+                goal_tuple = await checkpointer.aget_tuple(
+                    self.graph_config(conversation_id, mode="goal")
+                )
+                standard_tuple = await checkpointer.aget_tuple(
+                    self.graph_config(conversation_id, mode="standard")
+                )
             except Exception as exc:
                 raise RuntimeError("无法读取当前运行的 LangGraph checkpoint") from exc
-            if checkpoint_tuple is not None:
+
+            def channel_values(checkpoint_tuple: Any) -> Mapping[str, Any] | None:
                 checkpoint = getattr(checkpoint_tuple, "checkpoint", None)
-                channel_values = (
-                    checkpoint.get("channel_values")
-                    if isinstance(checkpoint, Mapping)
-                    else None
-                )
-                if isinstance(channel_values, Mapping):
-                    if _checkpoint_is_team_state(channel_values):
-                        return self._require_team_graph()
-                    return self._require_graph()
+                values = checkpoint.get("channel_values") if isinstance(checkpoint, Mapping) else None
+                return values if isinstance(values, Mapping) else None
+
+            goal_values = channel_values(goal_tuple)
+            standard_values = channel_values(standard_tuple)
+            goal_active = str(goal_values.get("status") or "").lower() in {
+                "running", "interrupted", "waiting_for_user", "replanning"
+            } if goal_values else False
+            standard_active = str(standard_values.get("status") or "").lower() in {
+                "running", "interrupted", "waiting_for_user", "replanning"
+            } if standard_values else False
+            if (
+                goal_values is not None
+                and _checkpoint_is_goal_state(goal_values)
+                and (goal_active or not standard_active)
+            ):
+                return self._require_goal_graph()
+            if standard_values is not None:
+                if _checkpoint_is_team_state(standard_values):
+                    return self._require_team_graph()
+                return self._require_graph()
+            if goal_values is not None and _checkpoint_is_goal_state(goal_values):
+                return self._require_goal_graph()
 
         # Test and embedded runtimes may expose graph state without a native
-        # checkpointer. Resolve the current graph from its canonical state
-        # rather than assuming the root graph owns every Team run.
+        # checkpointer. Resolve the current graph from its canonical state.
+        goal_graph = self.goal_graph
+        if goal_graph is not None:
+            try:
+                goal_snapshot = await goal_graph.aget_state(
+                    self.graph_config(conversation_id, mode="goal")
+                )
+            except Exception:
+                goal_snapshot = None
+            if _checkpoint_is_goal_state(getattr(goal_snapshot, "values", None)):
+                values = getattr(goal_snapshot, "values", {}) or {}
+                if str(values.get("status") or "").lower() in {
+                    "running", "interrupted", "waiting_for_user", "replanning"
+                } or self.graph is None:
+                    return goal_graph
+
+        standard_config = self.graph_config(conversation_id, mode="standard")
         team_graph = self.team_graph
         if team_graph is not None and team_graph is not self.graph:
             try:
-                team_snapshot = await team_graph.aget_state(config)
+                team_snapshot = await team_graph.aget_state(standard_config)
             except Exception:
                 team_snapshot = None
             if _checkpoint_is_team_state(getattr(team_snapshot, "values", None)):
@@ -788,9 +884,20 @@ class LangGraphRuntimeManager:
         together so the next continuation cannot resurrect the old branch.
         """
         graph = await self._graph_for_checkpoint(conversation_id)
-        config = self.graph_config(conversation_id)
+        config = self._graph_config(conversation_id, graph)
         snapshot = await graph.aget_state(config)
         if not _checkpoint_has_messages(snapshot):
+            return
+        if graph is self.goal_graph:
+            update = {
+                **goal_turn_defaults(),
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    *convert_to_messages(messages),
+                ],
+                "status": "idle",
+            }
+            await graph.aupdate_state(config, update)
             return
         update: dict[str, Any] = {
             **_reset_turn_state(),
@@ -872,6 +979,23 @@ class LangGraphRuntimeManager:
             side_effect_lock=asyncio.Lock(),
         )
 
+    def _goal_context(self, base: GraphContext) -> GoalContext:
+        """Adapt only platform dependencies into the independent Goal context."""
+        return GoalContext(
+            model=base.model,
+            catalog=base.catalog,
+            registry=base.registry,
+            executor=base.executor,
+            events=base.events,
+            database=base.database,
+            run_id=base.run_id,
+            conversation_id=base.conversation_id,
+            run_attempt=base.run_attempt,
+            tenant_id=base.tenant_id,
+            owner_id=base.owner_id,
+            side_effect_lock=base.side_effect_lock,
+        )
+
     async def _dispatch_product_mode(
         self,
         context: GraphContext,
@@ -881,23 +1005,19 @@ class LangGraphRuntimeManager:
     ) -> dict[str, Any]:
         """Resolve Auto before selecting the graph that owns this run.
 
-        This is intentionally a runtime-level dispatch step.  Team's
-        ``CollaborationCoordinator`` starts only after this returns ``team``;
-        it is not responsible for deciding whether the product mode should be
-        Direct, Plan, or Team.
+        This is intentionally a runtime-level dispatch step.  Team and Goal
+        graphs start only after this returns their respective mode; neither
+        graph owns the product-level decision.
         """
-        return await resolve_orchestrator_route(
+        return await resolve_product_mode(
             {
                 "run_id": run_id,
                 "user_text": user_text,
                 "agent_mode": "auto",
-                "team_id": "",
             },
             context,
             requested="auto",
             route_id=f"run-{run_id}:mode-dispatch",
-            collaboration_id=run_id,
-            team_graph=False,
         )
 
     async def _invoke_graph(
@@ -906,9 +1026,9 @@ class LangGraphRuntimeManager:
         graph_input: Any,
         *,
         conversation_id: str,
-        context: GraphContext,
+        context: GraphContext | GoalContext,
     ) -> Mapping[str, Any] | None:
-        config = self.graph_config(conversation_id)
+        config = self._graph_config(conversation_id, graph)
         try:
             last_update: Mapping[str, Any] | None = None
             compression_recorded = False
@@ -1009,11 +1129,11 @@ class LangGraphRuntimeManager:
         """
         graph = await self._graph_for_checkpoint(conversation_id)
         safe_limit = max(1, min(100, int(limit)))
-        config = self.graph_config(conversation_id)
+        config = self._graph_config(conversation_id, graph)
         before_config: Mapping[str, Any] | None = None
         normalized_before = str(before_checkpoint_id or "").strip()
         if normalized_before:
-            before_config = self.graph_config(conversation_id)
+            before_config = self._graph_config(conversation_id, graph)
             before_config["configurable"]["checkpoint_id"] = normalized_before
 
         snapshots: list[dict[str, Any]] = []
@@ -1029,7 +1149,7 @@ class LangGraphRuntimeManager:
         current = await graph.aget_state(config)
         return {
             "conversation_id": conversation_id,
-            "thread_id": self.thread_id(conversation_id),
+            "thread_id": self.goal_thread_id(conversation_id) if graph is self.goal_graph else self.thread_id(conversation_id),
             "current_checkpoint_id": _checkpoint_id(getattr(current, "config", None)),
             "checkpoint_authority": "langgraph_checkpointer",
             "run_lifecycle_authority": "agent_runs",
@@ -1220,7 +1340,7 @@ class LangGraphRuntimeManager:
             graph = await self._graph_for_checkpoint(conversation_id)
         except Exception:
             return {}
-        config = self.graph_config(conversation_id)
+        config = self._graph_config(conversation_id, graph)
         try:
             snapshot = await graph.aget_state(config)
             state = dict(snapshot.values or {})
@@ -1261,30 +1381,8 @@ class LangGraphRuntimeManager:
         planning_mode: str = "direct",
         agent_mode: str | None = None,
     ) -> GraphRunResult:
-        requested_agent_mode = resolve_agent_mode(agent_mode)
-        # Auto is a top-level product dispatcher.  Do not select the Team
-        # graph before Auto has resolved the effective product mode.  The
-        # direct graph is used only to read the shared checkpoint while the
-        # dispatcher is deciding; both compiled graphs use the same saver and
-        # thread namespace, so this does not create a second conversation.
-        graph = (
-            self._require_team_graph()
-            if requested_agent_mode == "team"
-            else self._require_graph()
-        )
-        normalized_history_mode = str(history_mode or "auto").strip().lower()
-        checkpoint = await graph.aget_state(self.graph_config(conversation_id))
-        continue_checkpoint = (
-            _checkpoint_has_messages(checkpoint)
-            and normalized_history_mode not in {"replace", "branch", "reset"}
-        )
-        graph_messages = _latest_turn_messages(messages) if continue_checkpoint else [dict(item) for item in messages]
-        checkpoint_cleanup = (
-            _checkpoint_cleanup_for_continuation(checkpoint)
-            if continue_checkpoint
-            else []
-        )
-        context = self._context(
+        requested_agent_mode = normalize_product_mode(agent_mode)
+        base_context = self._context(
             llm_config=llm_config,
             database=database,
             controller=controller,
@@ -1296,6 +1394,10 @@ class LangGraphRuntimeManager:
             model=model,
             executor=executor,
         )
+        # Auto routing is a Runtime concern and therefore always uses the
+        # shared platform context.  Only after the owning graph is selected
+        # may a Goal run receive its independent GoalContext adapter.
+        context: GraphContext | GoalContext = base_context
         route_state: dict[str, Any] = {}
         effective_agent_mode = requested_agent_mode
         if requested_agent_mode == "auto":
@@ -1308,9 +1410,9 @@ class LangGraphRuntimeManager:
                 user_text=user_text,
             )
             effective_agent_mode = str(route_state.get("resolved_agent_mode") or "").strip().lower()
-            if effective_agent_mode not in {"direct", "plan", "team"}:
-                # Route resolution is fail-closed.  Do not silently execute a
-                # Direct or Team graph after the product dispatcher failed.
+            if effective_agent_mode not in {"direct", "plan", "team", "goal"}:
+                # Route resolution is fail-closed.  Never silently execute a
+                # different product mode after the dispatcher fails.
                 failure_state = {
                     **_reset_turn_state(),
                     "run_id": run_id,
@@ -1330,13 +1432,13 @@ class LangGraphRuntimeManager:
                     ),
                 }
                 try:
-                    await self._require_graph().aupdate_state(
-                        self.graph_config(conversation_id),
-                        failure_state,
+                    standard_graph = self._require_graph()
+                    await standard_graph.aupdate_state(
+                        self._graph_config(conversation_id, standard_graph), failure_state
                     )
                     return await self._result(
                         {},
-                        graph=self._require_graph(),
+                        graph=standard_graph,
                         conversation_id=conversation_id,
                         events=context.events,
                     )
@@ -1353,24 +1455,67 @@ class LangGraphRuntimeManager:
                         pending_interrupt=None,
                         error_code=str(failure_state["error_code"]),
                     )
-            graph = (
-                self._require_team_graph()
-                if effective_agent_mode == "team"
-                else self._require_graph()
-            )
-            # The graph selected below is the only graph that may execute
-            # model/tools for this turn.  Team receives an explicit Team mode
-            # so it does not run a second top-level Auto decision.
+        if effective_agent_mode == "team":
+            graph = self._require_team_graph()
+        elif effective_agent_mode == "goal":
+            graph = self._require_goal_graph()
+        else:
+            graph = self._require_graph()
+        if graph is self.goal_graph:
+            context = self._goal_context(base_context)
+
+        normalized_history_mode = str(history_mode or "auto").strip().lower()
+        checkpoint = await graph.aget_state(self._graph_config(conversation_id, graph))
+        continue_checkpoint = (
+            _checkpoint_has_messages(checkpoint)
+            and normalized_history_mode not in {"replace", "branch", "reset"}
+        )
+        graph_messages = _latest_turn_messages(messages) if continue_checkpoint else [dict(item) for item in messages]
+        checkpoint_cleanup = (
+            _checkpoint_cleanup_for_continuation(checkpoint)
+            if continue_checkpoint
+            else []
+        )
         limits = get_agent_runtime_limits()
         resolved_planning_mode = (
             "planned"
             if effective_agent_mode == "plan"
             else "direct"
-            if effective_agent_mode == "direct"
+            if effective_agent_mode in {"direct", "goal"}
             else resolve_planning_mode(user_text, planning_mode)
         )
         team_enabled = effective_agent_mode == "team"
         resolved_agent_mode = effective_agent_mode
+        if effective_agent_mode == "goal":
+            goal_context = self._goal_context(context)
+            goal_input: Any = {
+                **goal_turn_defaults(tool_call_limit=limits.max_tool_calls),
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "user_text": user_text,
+                "system_prompt": system_prompt,
+                "reference_time": datetime.now().astimezone().isoformat(),
+                "agent_mode": requested_agent_mode,
+                "resolved_agent_mode": "goal",
+                "orchestrator_mode": "goal_v1",
+                "messages": (
+                    [*checkpoint_cleanup, *convert_to_messages(graph_messages)]
+                    if continue_checkpoint
+                    else Overwrite(convert_to_messages(graph_messages))
+                ),
+            }
+            output = await self._invoke_graph(
+                graph,
+                goal_input,
+                conversation_id=conversation_id,
+                context=goal_context,
+            )
+            return await self._result(
+                output,
+                graph=graph,
+                conversation_id=conversation_id,
+                events=context.events,
+            )
         input_state: AgentGraphInput = {
             **_reset_turn_state(),
             **({} if continue_checkpoint else {"conversation_context": None}),
@@ -1440,7 +1585,7 @@ class LangGraphRuntimeManager:
         executor: Any | None = None,
     ) -> GraphRunResult:
         graph = await self._graph_for_checkpoint(conversation_id)
-        context = self._context(
+        base_context = self._context(
             llm_config=llm_config,
             database=database,
             controller=controller,
@@ -1451,6 +1596,9 @@ class LangGraphRuntimeManager:
             owner_id=owner_id,
             model=model,
             executor=executor,
+        )
+        context: GraphContext | GoalContext = (
+            self._goal_context(base_context) if graph is self.goal_graph else base_context
         )
         output = await self._invoke_graph(
             graph,
@@ -1480,7 +1628,7 @@ class LangGraphRuntimeManager:
         executor: Any | None = None,
     ) -> GraphRunResult:
         graph = await self._graph_for_checkpoint(conversation_id)
-        context = self._context(
+        base_context = self._context(
             llm_config=llm_config,
             database=database,
             controller=controller,
@@ -1491,6 +1639,9 @@ class LangGraphRuntimeManager:
             owner_id=owner_id,
             model=model,
             executor=executor,
+        )
+        context: GraphContext | GoalContext = (
+            self._goal_context(base_context) if graph is self.goal_graph else base_context
         )
         output = await self._invoke_graph(graph, None, conversation_id=conversation_id, context=context)
         return await self._result(
@@ -1510,7 +1661,7 @@ class LangGraphRuntimeManager:
     ) -> GraphRunResult:
         raw_output = dict(output or {})
         interrupts = list(raw_output.pop("__interrupt__", []) or [])
-        snapshot = await graph.aget_state(self.graph_config(conversation_id))
+        snapshot = await graph.aget_state(self._graph_config(conversation_id, graph))
         state = dict(snapshot.values or raw_output)
         if not interrupts:
             # ``astream(version="v2")`` may expose an interrupt inside an
@@ -1548,7 +1699,7 @@ class LangGraphRuntimeManager:
 
     async def pending_interrupt(self, conversation_id: str) -> dict[str, Any] | None:
         graph = await self._graph_for_checkpoint(conversation_id)
-        snapshot = await graph.aget_state(self.graph_config(conversation_id))
+        snapshot = await graph.aget_state(self._graph_config(conversation_id, graph))
         for task in snapshot.tasks:
             for item in getattr(task, "interrupts", ()) or ():
                 value = dict(getattr(item, "value", {}) or {})
@@ -1557,12 +1708,12 @@ class LangGraphRuntimeManager:
 
     async def get_state(self, conversation_id: str) -> dict[str, Any]:
         graph = await self._graph_for_checkpoint(conversation_id)
-        snapshot = await graph.aget_state(self.graph_config(conversation_id))
+        snapshot = await graph.aget_state(self._graph_config(conversation_id, graph))
         return dict(snapshot.values or {})
 
     async def has_checkpoint(self, conversation_id: str, *, run_id: str | None = None) -> bool:
         graph = await self._graph_for_checkpoint(conversation_id)
-        snapshot = await graph.aget_state(self.graph_config(conversation_id))
+        snapshot = await graph.aget_state(self._graph_config(conversation_id, graph))
         state = dict(snapshot.values or {})
         if not snapshot.config or not state:
             return False
@@ -1574,6 +1725,7 @@ class LangGraphRuntimeManager:
         if self.checkpointer is None:
             return
         await self.checkpointer.adelete_thread(self.thread_id(conversation_id))
+        await self.checkpointer.adelete_thread(self.goal_thread_id(conversation_id))
 
 
 agent_graph_runtime = LangGraphRuntimeManager()

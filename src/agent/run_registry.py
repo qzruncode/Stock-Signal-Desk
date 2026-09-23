@@ -473,6 +473,11 @@ class RunBroadcaster:
         return self._history_next_index
 
     @property
+    def history_start_index(self) -> int:
+        """First event cursor owned by this in-memory suffix."""
+        return self._history_start_index
+
+    @property
     def has_tool_events(self) -> bool:
         return self._has_tool_events
 
@@ -500,6 +505,7 @@ class RunBroadcaster:
         structured_answer: Mapping[str, Any] | None = None,
         evidence: Sequence[Any] = (),
         tool_results: Sequence[Any] = (),
+        persisted_events: Sequence[Mapping[str, Any]] = (),
     ) -> list[dict[str, Any]]:
         """Project the committed native stream into ordered UI message parts.
 
@@ -641,7 +647,21 @@ class RunBroadcaster:
                     anchored[answer_index:answer_index] = unmatched
             parts[:] = anchored
 
-        for chunk in self._history:
+        # A resumed broadcaster owns only the suffix starting at its durable
+        # cursor. Reuse this same native-part projector for the earlier events
+        # without re-emitting them or duplicating text/tool argument deltas.
+        prefix_chunks: list[AssistantStreamChunk] = []
+        for event in persisted_events:
+            if int(event.get("sequence") or 0) >= self._history_start_index:
+                continue
+            try:
+                prefix_chunks.append(deserialize_assistant_chunk(
+                    str(event.get("event_type") or ""), event.get("payload") or {},
+                ))
+            except (TypeError, ValueError):
+                logger.warning("[RunBroadcaster] skipped invalid display replay event")
+
+        for chunk in [*prefix_chunks, *self._history]:
             if isinstance(chunk, DataChunk):
                 data = chunk.data
                 if not isinstance(data, Mapping):
@@ -860,7 +880,10 @@ class RunBroadcaster:
         # disappear when the live stream is replaced by the terminal snapshot.
         def is_narrative(item: Mapping[str, Any]) -> bool:
             return item.get("type") == "text" or (
-                item.get("type") == "data" and item.get("name") in {"team-model-projection", "team-review-report"}
+                item.get("type") == "data" and (
+                    item.get("name") in _MODEL_PROJECTION_PART_NAMES
+                    or item.get("name") == "team-review-report"
+                )
             )
 
         narrative_parts = [item for item in parts if is_narrative(item)]

@@ -1,8 +1,10 @@
-"""Checkpoint-safe state for the native Agent loop and Planning coordinator.
+"""Checkpoint-safe state for the native Agent loop and shared coordinators.
 
 The graph is still supplied by :func:`langchain.agents.create_agent`. Planning
 adds only checkpoint-safe coordination fields; tool execution, evidence, and
-terminal publication remain owned by the existing runtime contracts.
+terminal publication remain owned by the existing runtime contracts. Goal uses
+its own state in ``langgraph_runtime.goal`` and does not extend this Planning
+state with Goal-specific fields.
 """
 
 from __future__ import annotations
@@ -272,7 +274,7 @@ class AgentState(LangChainAgentState, total=False):
     # Agent loop. These fields are compact projections; worker transcripts are
     # kept in per-invocation subgraphs that inherit the parent checkpointer
     # under LangGraph's task namespace rather than copied into parent state.
-    # User-selected product mode: auto, direct, plan, or team.
+    # User-selected product mode: auto, direct, plan, team, or goal.
     agent_mode: str
     # Effective route after Auto is resolved; empty while Auto is still routing.
     resolved_agent_mode: str

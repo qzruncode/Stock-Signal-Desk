@@ -16,6 +16,7 @@ from src.agent.langgraph_runtime.answer_contract import (
 )
 from src.agent.langgraph_runtime.reflection import reflection_review_projection
 from src.agent.langgraph_runtime.planning import planning_trace
+from src.agent.langgraph_runtime.goal.trace import goal_trace
 from src.agent.langgraph_runtime.team.trace import team_trace
 from src.agent.langgraph_runtime.presentation import (
     enrich_execution_trace_with_result_previews,
@@ -356,6 +357,9 @@ def _execution_trace(
     team = team_trace(state)
     if team is not None:
         projected["team"] = team
+    goal = goal_trace(state)
+    if goal is not None:
+        projected["goal"] = goal
     if structured_answer:
         projected["structured_answer"] = dict(structured_answer)
     reflection = _reflection_trace(state)
@@ -434,12 +438,22 @@ class AgentTerminalPublisher:
             snapshot = getattr(self.controller, "stage_history_snapshot", None)
             stage_history = snapshot() if callable(snapshot) else []
         display_parts_snapshot = getattr(self.controller, "display_parts_snapshot", None)
+        # Resume keeps one run/event log but starts a new local broadcaster.
+        # Its suffix must not erase the narration before an interrupt.
+        prior_events = (
+            await asyncio.to_thread(
+                self.database.list_agent_run_events, self.run.run_id,
+                after_sequence=0, limit=10_000,
+            )
+            if getattr(self.controller, "history_start_index", 0) > 0 else []
+        )
         display_parts = (
             display_parts_snapshot(
                 final_text=final_text,
                 structured_answer=structured_answer,
                 evidence=evidence,
                 tool_results=tool_results,
+                persisted_events=prior_events,
             )
             if callable(display_parts_snapshot)
             else []
@@ -581,6 +595,9 @@ class AgentTerminalPublisher:
             quality_projection["planning"] = execution_trace["planning"]
         if execution_trace.get("team") is not None:
             quality_projection["team"] = execution_trace["team"]
+        if execution_trace.get("goal") is not None:
+            quality_projection["goal"] = execution_trace["goal"]
+            quality_projection["runtime_errors"] = execution_trace.get("runtime_errors", [])
         reflection = _reflection_trace(state)
         if reflection:
             quality_projection["reflection"] = reflection

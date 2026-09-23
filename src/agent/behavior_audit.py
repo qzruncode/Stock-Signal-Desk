@@ -712,7 +712,18 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
 
     root = _mapping(snapshot)
     projection = _mapping(root.get("quality_projection"))
+    projection_trace = _mapping(projection.get("execution_trace"))
+    resolved_mode = _text(
+        _field(projection, "resolved_agent_mode", "resolvedAgentMode", "agent_mode", "agentMode"),
+        32,
+    ).lower()
+    is_goal_run = resolved_mode == "goal" or bool(_mapping(projection.get("goal")))
     raw_results = [item for item in _sequence(projection.get("tool_results")) if isinstance(item, Mapping)]
+    runtime_errors = [
+        item for item in _sequence(
+            projection.get("runtime_errors") or _field(projection_trace, "runtime_errors", "runtimeErrors")
+        ) if isinstance(item, Mapping)
+    ] if is_goal_run else []
     steps = _sequence(root.get("steps"))
     evidence = [item for item in _sequence(projection.get("evidence")) if isinstance(item, Mapping)]
     claims = [item for item in _sequence(projection.get("claim_evidence")) if isinstance(item, Mapping)]
@@ -735,6 +746,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     tool_chain: list[dict[str, Any]] = []
     candidate_links: dict[str, dict[str, Any]] = {}
     failed_tools: list[tuple[str, str, str, str]] = []
+    goal_action_failures: list[tuple[str, str, str, str]] = []
     empty_tools: list[tuple[str, str]] = []
     fallback_tools: list[tuple[str, str]] = []
     stale_tools: list[tuple[str, str]] = []
@@ -874,6 +886,73 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 "result_count": result_count_int,
             }
         )
+
+    # A Goal action can fail before AtomicToolExecutor is entered (for example,
+    # an unknown operation or invalid arguments). Preserve that attempt in the
+    # same execution audit without pretending it produced a tool observation.
+    represented_failed_action_ids = {
+        action_id for _tool, action_id, _error, _fingerprint in failed_tools if action_id
+    }
+    for receipt in runtime_errors:
+        failure_kind = _text(_field(receipt, "failure_kind", "failureKind"), 48).lower()
+        action_id = _text(_field(receipt, "action_id", "actionId"), 192)
+        tool_name = _text(_field(receipt, "tool_name", "toolName"), 160)
+        if failure_kind in {"tool", "tool_validation"}:
+            if action_id and action_id in represented_failed_action_ids:
+                continue
+            display_name = tool_name or "Goal 工具动作"
+            message = _text(_field(receipt, "message", "error"), 500) or _text(
+                _field(receipt, "error_code", "errorCode"), 160
+            ) or "未提供具体错误"
+            if failure_kind == "tool_validation":
+                message = f"动作未通过参数/operation 校验，未交给工具执行：{message}"
+                display_name = f"{display_name}（动作校验）"
+                goal_action_failures.append((failure_kind, display_name, action_id, message))
+                if action_id:
+                    represented_failed_action_ids.add(action_id)
+            else:
+                failed_tools.append((display_name, action_id, message, ""))
+                if action_id:
+                    represented_failed_action_ids.add(action_id)
+        elif failure_kind == "model_output":
+            if action_id and action_id in represented_failed_action_ids:
+                continue
+            goal_action_failures.append((
+                failure_kind,
+                tool_name or "Goal 动作选择",
+                action_id,
+                _text(_field(receipt, "message", "error"), 500)
+                or "Goal 动作模型没有返回有效结构化结果。",
+            ))
+            if action_id:
+                represented_failed_action_ids.add(action_id)
+
+    validation_failures = [item for item in goal_action_failures if item[0] == "tool_validation"]
+    model_output_failures = [item for item in goal_action_failures if item[0] == "model_output"]
+    if validation_failures:
+        findings.append(_finding(
+            code="goal_action_validation_failed",
+            severity="danger",
+            category="execution",
+            title="Goal 工具动作未通过校验，未进入执行器",
+            detail=(
+                f"{len(validation_failures)} 次工具动作未通过 operation/参数 schema 校验。"
+                + "；".join(item[3] for item in validation_failures[:3])
+            )[:1_200],
+            remediation="核对运行记录中的 Goal 动作与注册工具参数 schema；修复后重新运行。",
+            tool_names=[item[1] for item in validation_failures],
+            action_ids=[item[2] for item in validation_failures],
+        ))
+    if model_output_failures:
+        findings.append(_finding(
+            code="goal_action_model_output_failed",
+            severity="danger",
+            category="execution",
+            title="Goal 无法生成可执行的下一步动作",
+            detail="；".join(item[3] for item in model_output_failures[:3])[:1_200],
+            remediation="查看动作选择与模型调用记录；Goal 在没有有效动作时已停止，不会尝试执行未知操作。",
+            action_ids=[item[2] for item in model_output_failures],
+        ))
 
     unread = [entry for key, entry in candidate_links.items() if key not in read_urls]
     unread_documents = [entry for entry in unread if entry.get("kind") == "document"]
@@ -1445,6 +1524,18 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 disposition=ACTION_REQUIRED,
             )
         )
+    elif is_goal_run and final_text and not claims:
+        findings.append(
+            _finding(
+                code="goal_claim_evidence_mapping_unavailable",
+                severity="info",
+                category="evidence",
+                title="Goal 条件有证据门禁，但最终回答没有逐句证据映射",
+                detail="Goal 的完成条件与证据已单独核验；当前运行记录没有最终回答陈述到证据的逐条映射，无法据此自动核对每句话的出处。",
+                remediation="查看 Goal 完成条件及其证据；需要逐句引用核验时，使用支持声明级证据映射的回答模式。",
+                disposition=ADVISORY,
+            )
+        )
 
     run = _mapping(root.get("run"))
     trace = _mapping(root.get("trace"))
@@ -1576,6 +1667,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         "cited_reference_tool_count": len(cited_reference_actions),
         "cited_unread_reference_count": sum(len(links) for links in cited_unread_links_by_action.values()),
         "failed_tool_count": len(failed_tools),
+        "goal_action_failure_count": len(goal_action_failures),
         "evidence_count": len(evidence),
         "claim_count": len(claims),
         "checks": checks,

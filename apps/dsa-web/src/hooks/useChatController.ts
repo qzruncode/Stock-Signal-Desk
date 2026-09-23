@@ -7,7 +7,12 @@ import {
   WebSpeechSynthesisAdapter,
 } from '@assistant-ui/react';
 import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
-import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
+import {
+  agentApi,
+  type AgentInterruptDecision,
+  type ChatConversationDetail,
+  type ChatConversationItem,
+} from '../api/agent';
 import { toApiErrorMessage } from '../api/error';
 import {
   removeUserTurnFromThread,
@@ -42,7 +47,7 @@ export function useChatController() {
   const [conversationLoadAttempt, setConversationLoadAttempt] = useState(0);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | null>(null);
+  const [approvalDecision, setApprovalDecision] = useState<AgentInterruptDecision['decision'] | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentProductMode>(() => readStoredAgentMode());
   const threadRuntimeRef = useRef<ReturnType<typeof useThreadRuntime> | null>(null);
@@ -194,18 +199,19 @@ export function useChatController() {
       });
   }, [loadConversationDetail]);
 
-  const handleInterruptDecision = useCallback((decision: 'approve' | 'reject') => {
+  const handleInterruptDecision = useCallback((request: AgentInterruptDecision) => {
     const conversationId = selectedConversationIdRef.current;
     const pending = selectedConversationDetail?.pendingInterrupt;
     if (!conversationId || !pending || approvalDecision !== null) return;
-    setApprovalDecision(decision);
+    setApprovalDecision(request.decision);
     setApprovalError(null);
     void (async () => {
       try {
         await agentApi.decideInterrupt(conversationId, pending.interruptId, {
           runId: pending.runId,
           fingerprint: pending.fingerprint,
-          decision,
+          decision: request.decision,
+          message: request.message,
         });
         for (let attempt = 0; attempt < 12; attempt += 1) {
           const detail = await loadConversationDetail(conversationId);

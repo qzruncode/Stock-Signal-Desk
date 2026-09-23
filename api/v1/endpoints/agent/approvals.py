@@ -25,7 +25,8 @@ class InterruptDecisionRequest(BaseModel):
 
     run_id: str = Field(min_length=1, max_length=64)
     fingerprint: str = Field(min_length=32, max_length=128)
-    decision: Literal["approve", "reject"]
+    decision: Literal["approve", "reject", "modify"]
+    message: str | None = Field(default=None, max_length=8_000)
 
 
 @router.post(
@@ -54,6 +55,8 @@ async def decide_agent_interrupt(
             or str(pending.get("fingerprint") or "") != payload.fingerprint
         ):
             raise HTTPException(status_code=409, detail="审批已过期、已处理或指纹不匹配")
+        if payload.decision == "modify" and not str(payload.message or "").strip():
+            raise HTTPException(status_code=422, detail="修改 Goal 时必须提供新的目标内容")
 
         # The approval event is committed immediately before the durable run is
         # parked. Accommodate that tiny publication/transition window without
@@ -122,10 +125,11 @@ async def decide_agent_interrupt(
                     tenant_id=tenant_id,
                     owner_id=owner_id,
                     resume_decision={
-                        "interrupt_id": interrupt_id,
-                        "fingerprint": payload.fingerprint,
-                        "decision": payload.decision,
-                    },
+                    "interrupt_id": interrupt_id,
+                    "fingerprint": payload.fingerprint,
+                    "decision": payload.decision,
+                    "message": payload.message or "",
+                },
                 )
             )
 

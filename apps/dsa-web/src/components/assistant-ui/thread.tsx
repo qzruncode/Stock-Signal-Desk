@@ -1,42 +1,29 @@
 import type { ErrorInfo, FC, ReactNode } from 'react';
 import {
   Component,
-  createContext,
-  useContext,
-  useId,
-  useMemo,
-  useRef,
   useState,
 } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
 import {
   AuiIf,
   ThreadPrimitive,
   MessagePrimitive,
   ActionBarPrimitive,
   useMessage,
-  useMessageTiming,
-  useScrollLock,
   useAuiState,
 } from '@assistant-ui/react';
-import type { DataMessagePartProps, TextMessagePartProps } from '@assistant-ui/react';
 import {
   ChevronDownIcon,
-  ChevronRightIcon,
   CopyIcon,
   RefreshCwIcon,
   DownloadIcon,
   Volume2Icon,
   SquareIcon as StopIcon,
 } from 'lucide-react';
-import { AssistantMarkdown, AssistantMarkdownText } from './AssistantMarkdownText';
+import { AssistantMarkdown } from './AssistantMarkdownText';
 import {
-  ChartReference,
   StructuredAnswerReferences,
 } from './StructuredAnswerReferences';
 import {
-  normalizeChartReference,
-  stripNativeAnswerReferenceFallbacks,
   stripStructuredAnswerReferenceFallbacks,
   structuredAnswerFromTrace,
 } from './StructuredAnswerReferencesUtils';
@@ -49,16 +36,16 @@ import {
 } from '../../utils/assistantAnswer';
 import { cn } from '../../utils/cn';
 import {
-  agentStageDurationMs,
   agentStageEvents,
 } from '../../utils/agentStage';
-import { formatElapsedDuration } from '../../utils/format';
-import { AgentExecutionTimeline, AgentStageIndicator, AgentToolCallPart } from './AgentReasoning';
+import { AgentExecutionTimeline } from './AgentReasoning';
 import { AssistantTypingIndicator } from './AssistantTypingIndicator';
 import { Composer } from './ThreadComposer';
 import { EmptyState } from './ThreadEmptyState';
 import { UserMessage } from './ThreadUserMessage';
 import { TeamCollaborationView } from './TeamBoard';
+import { NativeAssistantParts, NativeExecutionDisclosure } from './ThreadNativeParts';
+import { GoalMessageContent } from './GoalMessageContent';
 import { isRecord } from './AgentReasoningUtils';
 import type { AgentProductMode } from '../../utils/agentMode';
 
@@ -172,296 +159,6 @@ class AssistantMessageBoundary extends Component<
   }
 }
 
-const InlineMessagePartGroup: FC<{ children?: ReactNode }> = ({ children }) => <>{children}</>;
-
-const DISCLOSURE_ANIMATION_DURATION_MS = 300;
-
-type NativeDisclosureProps = {
-  children?: ReactNode;
-  open: boolean;
-  onToggle: () => void;
-  detailId: string;
-  ariaLabel: string;
-  renderTrigger?: (toggle: () => void) => ReactNode;
-};
-
-/**
- * Keep the details in the message's normal flow so the answer moves through
- * the same local layout as the details collapse. Motion owns the height
- * interpolation, while the viewport's scroll lock and disabled scroll
- * anchoring prevent the thread from being treated as a page transition.
- */
-const NativeDisclosure: FC<NativeDisclosureProps> = ({
-  children,
-  open,
-  onToggle,
-  detailId,
-  ariaLabel,
-  renderTrigger,
-}) => {
-  const disclosureRef = useRef<HTMLDivElement | null>(null);
-  const lockScroll = useScrollLock(disclosureRef, DISCLOSURE_ANIMATION_DURATION_MS);
-
-  const toggle = () => {
-    lockScroll();
-    onToggle();
-  };
-
-  return (
-    <div ref={disclosureRef} className="min-w-0">
-      {renderTrigger?.(toggle)}
-      <AnimatePresence initial={false}>
-        {open ? (
-          <motion.div
-            id={detailId}
-            role="region"
-            aria-label={ariaLabel}
-            aria-hidden={false}
-            initial={{ height: 0 }}
-            animate={{ height: 'auto' }}
-            exit={{ height: 0 }}
-            transition={{ duration: DISCLOSURE_ANIMATION_DURATION_MS / 1000, ease: 'easeOut' }}
-            className="min-w-0 overflow-hidden"
-          >
-            <div className="min-w-0">{children}</div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-    </div>
-  );
-};
-
-/**
- * Keep consecutive tool parts as standalone children. Parallel workers may
- * legitimately produce adjacent calls, but wrapping the whole range in one
- * disclosure makes the chat look as if all tools happened at the end.
- */
-const NativeToolGroup: FC<{
-  children?: ReactNode;
-  startIndex: number;
-  endIndex: number;
-}> = ({ children }) => <>{children}</>;
-
-const NativeTextPart: FC<TextMessagePartProps> = (part) => (
-  <NativeTextPartContent {...part} />
-);
-
-const NativeAnswerAnimationContext = createContext(false);
-
-const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
-  const messageStatus = useMessage((state) => state.status?.type);
-  const active = messageStatus === 'running' || messageStatus === 'requires-action';
-  const animateAcceptedAnswer = useContext(NativeAnswerAnimationContext);
-  // TextDeltaChunk intentionally carries only text, so the live answer's
-  // display kind cannot be recovered from the text part itself.  The server
-  // emits a boundary immediately before the accepted answer; use the ordered
-  // part position to identify the text that follows it. Hydrated history
-  // drops that marker, so completed messages do not replay the animation.
-  const isLiveAnswerText = useMessage((state) => {
-    let afterAnswerBoundary = false;
-    return state.content.some((item) => {
-      if (item.type === 'data' && item.name === 'agent-answer-boundary') {
-        afterAnswerBoundary = true;
-        return false;
-      }
-      return afterAnswerBoundary && item.type === 'text' && item.text === part.text;
-    });
-  });
-  const executionTrace = useMessage((state) => (
-    state.metadata?.custom?.agent_execution_trace
-      ?? state.metadata?.custom?.agentExecutionTrace
-  ));
-  const structuredAnswer = structuredAnswerFromTrace(executionTrace);
-  const text = displayKindOf(part) === 'answer'
-    ? stripNativeAnswerReferenceFallbacks(
-        stripStructuredAnswerReferenceFallbacks(part.text, structuredAnswer),
-      )
-    : part.text;
-  const animate = active || isLiveAnswerText || (
-    animateAcceptedAnswer && displayKindOf(part) === 'answer'
-  );
-  return <AssistantMarkdownText {...part} text={text} evidence={executionTrace} animate={animate} />;
-};
-
-const TeamProgressParts: FC = () => {
-  return (
-    <TeamCollaborationView />
-  );
-};
-
-const NativeExecutionDisclosure: FC<{
-  children?: ReactNode;
-  label?: string;
-  forceOpen?: boolean;
-}> = ({ children, label = '执行过程', forceOpen = false }) => {
-  const messageStatus = useMessage((state) => state.status?.type);
-  const active = messageStatus === 'running' || messageStatus === 'requires-action';
-  const messageTiming = useMessageTiming();
-  const persistedDuration = useMessage((state) => state.metadata?.custom?.agent_run_duration_ms);
-  const stageData = useMessage((state) => state.metadata?.unstable_data);
-  const eventDurationMs = useMemo(() => agentStageDurationMs(agentStageEvents(stageData)), [stageData]);
-  const streamDurationMs = typeof messageTiming?.totalStreamTime === 'number'
-    && Number.isFinite(messageTiming.totalStreamTime)
-    && messageTiming.totalStreamTime >= 0
-    ? messageTiming.totalStreamTime
-    : undefined;
-  // Persisted server events remain valid across reconnection and hydration;
-  // a client stream timer can include time outside this run.
-  const durationMs = typeof persistedDuration === 'number' && Number.isFinite(persistedDuration) && persistedDuration >= 0
-    ? persistedDuration
-    : eventDurationMs ?? streamDurationMs;
-  const durationLabel = durationMs == null ? '—' : formatElapsedDuration(durationMs);
-  const compactLabel = active
-    ? '执行中'
-    : `${label === '执行过程' ? '' : `${label} · `}用时 ${durationLabel}`;
-  const detailId = useId();
-  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
-  const expanded = active || (forceOpen && expandedOverride !== false) || expandedOverride === true;
-
-  return (
-    <section className="relative mb-3 min-w-0" aria-label={label}>
-      <NativeDisclosure
-        open={expanded}
-        onToggle={() => setExpandedOverride((value) => value === true ? false : true)}
-        detailId={detailId}
-        ariaLabel={`${label}详情`}
-        renderTrigger={!active ? (toggle) => (
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls={detailId}
-            aria-label={`${expanded ? '收起' : '展开'}${compactLabel}`}
-            onClick={toggle}
-            className="flex w-full min-w-0 items-center justify-between gap-3 py-2 text-left text-sm text-muted-foreground transition-colors duration-300 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-          >
-            <span className="min-w-0 truncate">{compactLabel}</span>
-            <ChevronRightIcon
-              className={cn(
-                'size-4 shrink-0 transition-transform duration-300 ease-out',
-                expanded && 'rotate-90',
-              )}
-              aria-hidden="true"
-            />
-          </button>
-        ) : undefined}
-      >
-        <div className="pt-0">
-          {children}
-        </div>
-      </NativeDisclosure>
-    </section>
-  );
-};
-
-const NativeAgentStagePart: FC<DataMessagePartProps> = ({ data }) => {
-  const event = agentStageEvents([data]).at(-1);
-  if (!event) return null;
-  return (
-    <div data-agent-display-part="stage">
-      <AgentStageIndicator event={event} />
-    </div>
-  );
-};
-
-const NativeStockChartPart: FC<DataMessagePartProps> = ({ data }) => {
-  const reference = normalizeChartReference(data);
-  if (!reference) return null;
-  return (
-    <div data-agent-display-part="chart">
-      <ChartReference reference={reference} />
-    </div>
-  );
-};
-
-const modelProgressDelimiters: Record<string, string> = {
-  '(': ')',
-  '（': '）',
-  '[': ']',
-  '［': '］',
-  '【': '】',
-  '{': '}',
-  '｛': '｝',
-};
-
-/** Hide legacy/provisional model projections that are visibly incomplete. */
-const isRenderableModelProgress = (value: string): boolean => {
-  const text = value.trim();
-  if (!/[。！？!?.]$/.test(text)) return false;
-  const closing = new Set(Object.values(modelProgressDelimiters));
-  const stack: string[] = [];
-  for (const character of text) {
-    if (modelProgressDelimiters[character]) {
-      stack.push(modelProgressDelimiters[character]);
-    } else if (closing.has(character)) {
-      if (stack.pop() !== character) return false;
-    }
-  }
-  return stack.length === 0;
-};
-
-const NativeAgentModelProjectionPart: FC<DataMessagePartProps> = ({ data }) => {
-  const active = useMessage((state) => (
-    state.status?.type === 'running' || state.status?.type === 'requires-action'
-  ));
-  const projectionData = isRecord(data) ? data : null;
-  const projectionIdValue = projectionData?.projection_id ?? projectionData?.projectionId;
-  const projectionId = typeof projectionIdValue === 'string' ? projectionIdValue : '';
-  const projectionSequence = typeof projectionData?.sequence === 'number'
-    ? projectionData.sequence
-    : 0;
-  const isLatestProjection = useMessage((state) => {
-    if (!projectionId) return true;
-    return !state.content.some((part) => {
-      if (part.type !== 'data' || part.name !== 'agent-model-projection' || !isRecord(part.data)) {
-        return false;
-      }
-      const partIdValue = part.data.projection_id ?? part.data.projectionId;
-      const partId = typeof partIdValue === 'string' ? partIdValue : '';
-      const partSequence = typeof part.data.sequence === 'number' ? part.data.sequence : 0;
-      return partId === projectionId && partSequence > projectionSequence;
-    });
-  });
-  if (!projectionData || !isLatestProjection) return null;
-  const projectionSource = projectionData.projection_source ?? projectionData.projectionSource;
-  if (projectionSource !== 'model') return null;
-  const text = typeof projectionData.text === 'string' ? projectionData.text.trim() : '';
-  if (!text || !isRenderableModelProgress(text)) return null;
-  return (
-    <div data-agent-display-part="model-projection">
-      <AssistantMarkdown text={text} animate={active} />
-    </div>
-  );
-};
-
-const NativeAnswerBoundaryPart: FC<DataMessagePartProps> = () => null;
-
-const NativeAssistantParts: FC<{ animateAcceptedAnswer?: boolean }> = ({
-  animateAcceptedAnswer = false,
-}) => {
-  return (
-    <NativeAnswerAnimationContext.Provider value={animateAcceptedAnswer}>
-      <MessagePrimitive.Parts
-        unstable_showEmptyOnNonTextEnd={false}
-        components={{
-          Text: NativeTextPart,
-          Reasoning: () => null,
-          tools: { Fallback: AgentToolCallPart },
-          data: {
-            by_name: {
-              'agent-stage': NativeAgentStagePart,
-              'stock-chart': NativeStockChartPart,
-              'agent-model-projection': NativeAgentModelProjectionPart,
-              'agent-answer-boundary': NativeAnswerBoundaryPart,
-            },
-            Fallback: () => null,
-          },
-          ToolGroup: NativeToolGroup,
-          ReasoningGroup: InlineMessagePartGroup,
-        }}
-      />
-    </NativeAnswerAnimationContext.Provider>
-  );
-};
 
 const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }) => {
   const messageStatus = useMessage((s) => s.status?.type);
@@ -511,6 +208,30 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
     ) || agentStageEvents(s.metadata?.unstable_data).some((event) => (
       event.details?.team_id || event.details?.teamId
     ));
+  });
+  const hasGoalMessage = useMessage((s) => {
+    const rawTrace = s.metadata?.custom?.agent_execution_trace
+      ?? s.metadata?.custom?.agentExecutionTrace;
+    return Boolean(isActive && productMode === 'goal')
+      || Boolean(
+        rawTrace && typeof rawTrace === 'object' && !Array.isArray(rawTrace)
+          && 'goal' in rawTrace
+          && rawTrace.goal,
+      )
+      || s.content.some((part) => (
+        part.type === 'data' && part.name === 'agent-model-projection'
+        && isRecord(part.data) && part.data.scope === 'goal'
+      ))
+      || agentStageEvents(s.metadata?.unstable_data).some((event) => (
+        event.stage.startsWith('goal.')
+        || event.details?.kind === 'goal_intake'
+        || event.details?.kind === 'goal_confirm'
+        || event.details?.kind === 'goal_action_select'
+        || event.details?.kind === 'goal_execute'
+        || event.details?.kind === 'goal_observe'
+        || event.details?.kind === 'goal_monitor'
+        || event.details?.kind === 'goal_finalize'
+      ));
   });
   const displayAnswerText = stripStructuredAnswerReferenceFallbacks(
     productMode === 'team' && hasTeamMessage ? publishedAnswerText : answerText,
@@ -604,14 +325,16 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
     <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-start">
       <div className="relative min-w-0 flex-1 pb-5">
         <div className="w-full min-w-0 overflow-hidden text-[17px] leading-7 text-foreground sm:text-[18px]">
-          {hasTeamMessage ? (
+          {hasGoalMessage ? (
+            <GoalMessageContent animateAcceptedAnswer={answerArrivedAfterMount} />
+          ) : hasTeamMessage ? (
             <>
               {hasTeamProgressPart || isActive || hasTeamMessage ? (
                 <NativeExecutionDisclosure
                   label={hasTeamTerminalFailure ? 'Team 协作终态' : 'Team 协作过程'}
                   forceOpen={hasTeamTerminalFailure}
                 >
-                  <TeamProgressParts />
+                  <TeamCollaborationView />
                 </NativeExecutionDisclosure>
               ) : null}
               {displayAnswerText.trim() ? (

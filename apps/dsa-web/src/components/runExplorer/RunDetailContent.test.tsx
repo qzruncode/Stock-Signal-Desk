@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentRunDetail } from '../../api/runExplorer';
 import { RunDetailContent } from './RunDetailContent';
-import { PlanningAuditCard, TeamAuditCard } from './RunDetailCards';
+import { GoalAuditCard, PlanningAuditCard, TeamAuditCard } from './RunDetailCards';
 
 it('shows persisted Planning reports and criterion checks independently of overall run success', () => {
   render(<PlanningAuditCard planning={{
@@ -163,6 +163,47 @@ const completedWithFailedCall: AgentRunDetail = {
 };
 
 describe('RunDetailContent', () => {
+  it('shows unexecuted Goal validation failures and labels the answer as incomplete', () => {
+    render(<RunDetailContent detail={{
+      ...detail,
+      snapshot: {
+        ...detail.snapshot,
+        run: { status: 'blocked', finalText: '目前只核对到部分公开信息。' },
+        qualityProjection: {
+          agentMode: 'goal',
+          goal: {
+            schemaVersion: 'goal.v1', status: 'blocked', objective: '核对公开记录',
+            criteria: [], lastAction: {
+              actionId: 'unknown-action', kind: 'tool', toolName: 'eastmoney_search',
+              status: 'failed', criterionIds: [],
+            },
+          },
+          toolResults: [], evidence: [],
+          runtimeErrors: [{
+            failureKind: 'tool_validation', errorCode: 'goal_action_invalid',
+            actionId: 'unknown-action', toolName: 'eastmoney_search',
+            message: '未注册的工具 operation：eastmoney_search。',
+          }],
+        },
+      },
+    }} onFeedback={vi.fn()} />);
+
+    expect(screen.getByText('阶段性结果（Goal 未完成）')).toBeInTheDocument();
+    expect(screen.getByText('有 1 次工具或动作尝试失败')).toBeInTheDocument();
+    expect(screen.getByText(/未注册的工具 operation：eastmoney_search/)).toBeInTheDocument();
+    expect(screen.getByText(/最近动作：eastmoney_search · 未能执行/)).toBeInTheDocument();
+  });
+
+  it('shows the terminal Goal action as the last action, not a current action', () => {
+    render(<GoalAuditCard goal={{
+      status: 'blocked', objective: '核对目标', criteria: [],
+      lastAction: { actionId: 'action-1', kind: 'tool', toolName: 'search_source', status: 'failed', criterionIds: [] },
+    }} />);
+
+    expect(screen.getByText('最近动作：search_source · 未能执行')).toBeInTheDocument();
+    expect(screen.queryByText(/当前动作：/)).not.toBeInTheDocument();
+  });
+
   it('keeps a completed run distinct from a failed tool attempt and deduplicates the ledger', () => {
     render(<RunDetailContent detail={completedWithFailedCall} onFeedback={vi.fn()} />);
 

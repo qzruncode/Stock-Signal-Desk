@@ -1,6 +1,6 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
-import type { AgentPlanningTrace, AgentTeamTrace } from './agent';
+import type { AgentGoalTrace, AgentPlanningTrace, AgentTeamTrace } from './agent';
 
 export type AgentRunStatus =
   | 'queued'
@@ -89,6 +89,7 @@ export interface AgentBehaviorAudit {
   citedReferenceToolCount?: number;
   citedUnreadReferenceCount?: number;
   failedToolCount: number;
+  goalActionFailureCount?: number;
   evidenceCount: number;
   claimCount: number;
   checks: AgentBehaviorCheck[];
@@ -200,10 +201,12 @@ export interface AgentRunDetail {
       resolvedAgentMode?: string | null;
       planning?: AgentPlanningTrace;
       team?: AgentTeamTrace;
+      goal?: AgentGoalTrace;
       inspectionSchemaVersion?: string;
       toolResults?: Array<Record<string, unknown>>;
       evidence?: Array<Record<string, unknown>>;
       claimEvidence?: Array<Record<string, unknown>>;
+      runtimeErrors?: Array<Record<string, unknown>>;
       loop?: Record<string, unknown>;
       completedToolCallIds?: string[];
     };

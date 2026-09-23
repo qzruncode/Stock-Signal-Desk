@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type React from 'react';
 import { Activity, CheckCircle2, Copy, Database, Link2, LoaderCircle, ShieldCheck, TriangleAlert, Users } from 'lucide-react';
 import type { AgentBehaviorAudit, AgentSourceSampleResponse } from '../../api/runExplorer';
-import type { AgentPlanningTrace, AgentTeamTrace } from '../../api/agent';
+import type { AgentGoalTrace, AgentPlanningTrace, AgentTeamTrace } from '../../api/agent';
 import { AssistantMarkdown } from '../assistant-ui/AssistantMarkdownText';
 import { Badge, Card } from '../common';
 import { cn } from '../../utils/cn';
@@ -91,6 +91,77 @@ export function PlanningAuditCard({ planning }: { planning?: AgentPlanningTrace 
         <p>保留步骤：{stringList(field(event.details, ['completedStepIds', 'completed_step_ids'])).join('、') || '无'}</p>
         <p>调整后步骤：{arrayFrom(field(event.details, ['replacementSteps', 'replacement_steps'])).map((s) => text(record(s).objective)).filter(Boolean).join('；')}</p>
       </details>)}
+    </div>
+  </Card>;
+}
+
+export function GoalAuditCard({ goal }: { goal?: AgentGoalTrace | null }) {
+  if (!goal) return null;
+  const status = text(goal.status) || 'pending';
+  const statusLabel = status === 'completed'
+    ? '目标完成'
+    : status === 'blocked'
+      ? '目标阻塞'
+      : status === 'failed'
+        ? '目标失败'
+        : status === 'waiting_for_user'
+          ? '等待用户确认'
+          : status === 'replanning'
+            ? '重新调整动作'
+            : '执行中';
+  const statusTone = status === 'completed' ? 'success' : status === 'failed' || status === 'blocked' ? 'danger' : status === 'waiting_for_user' ? 'warning' : 'info';
+  const criteria = (goal.criteria ?? []).map((criterion) => ({
+    ...criterion,
+    status: text(criterion.status) || 'pending',
+  }));
+  const satisfiedCount = criteria.filter((criterion) => criterion.status === 'satisfied').length;
+  const terminal = ['completed', 'blocked', 'failed', 'cancelled'].includes(status);
+  const action = terminal ? goal.lastAction : goal.currentAction;
+  const actionStatus = text(action?.status) || 'selected';
+  const actionStatusLabel = actionStatus === 'failed'
+    ? '未能执行'
+    : actionStatus === 'blocked'
+      ? '等待处理'
+      : actionStatus === 'completed'
+        ? '已执行'
+        : actionStatus === 'waiting_for_user'
+          ? '等待用户回复'
+          : '已选定';
+  const limits = goal.limits ?? {};
+  return <Card padding="none" className="rounded-xl p-3" title="Goal 目标执行" subtitle="独立目标合同、证据门禁与受限动作循环">
+    <div className="space-y-3 text-sm leading-6">
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+        <Metric icon={<Activity className="size-3.5 text-cyan" />} label="状态" value={statusLabel} />
+        <Metric icon={<CheckCircle2 className="size-3.5 text-success" />} label="完成条件" value={`${satisfiedCount} / ${criteria.length}`} />
+        <Metric icon={<Database className="size-3.5 text-emerald-600" />} label="迭代" value={`${numberValue(goal.iteration) ?? 0} / ${numberValue(limits.iterations) ?? 0}`} />
+        <Metric icon={<LoaderCircle className="size-3.5 text-warning" />} label="重规划" value={`${numberValue(goal.replanCount) ?? 0} / ${numberValue(limits.replans) ?? 0}`} />
+      </div>
+      <p className="text-xs text-secondary-text"><Badge variant={statusTone}>{statusLabel}</Badge>{goal.revision ? ` · 目标版本 ${goal.revision}` : ''}</p>
+      {text(goal.objective) ? <p className="text-xs text-foreground/85">目标：{text(goal.objective)}</p> : null}
+      {text(goal.progress) ? <p className="text-xs text-secondary-text">进度：{text(goal.progress)}</p> : null}
+      {action ? <div className="rounded-lg border border-border/70 p-2.5 text-xs">
+        <p className="font-medium text-foreground">{terminal ? '最近动作' : '当前动作'}：{text(action.toolName) || text(action.kind) || '未命名动作'} · {actionStatusLabel}</p>
+        {text(action.rationale) ? <p className="mt-1 text-secondary-text">{text(action.rationale)}</p> : null}
+      </div> : null}
+      {numberValue(limits.actionValidationRepairs) ? <p className="text-xs text-secondary-text">工具动作参数修正：本次运行累计 {numberValue(limits.actionValidationRepairs)} 次（单个动作最多 {numberValue(limits.actionValidationRepairLimit) ?? 0} 次）</p> : null}
+      {criteria.length > 0 ? <details open={status !== 'completed'} className="rounded-lg border border-border/70 p-2.5">
+        <summary className="cursor-pointer font-medium">完成条件与证据（{satisfiedCount} / {criteria.length}）</summary>
+        <div className="mt-2 space-y-2 text-xs text-foreground/80">
+          {criteria.map((criterion, index) => (
+            <div key={criterion.criterionId || index} className="border-t border-border/60 pt-1.5 first:border-t-0 first:pt-0">
+              <p className={criterion.status === 'satisfied' ? 'text-success' : criterion.status === 'failed' ? 'text-danger' : 'text-warning'}>
+                {criterion.status === 'satisfied' ? '已满足' : criterion.status === 'failed' ? '失败' : criterion.status === 'unverifiable' ? '无法验证' : '待处理'}：{text(criterion.description) || `条件 ${index + 1}`}
+              </p>
+              <p>验证方式：{text(criterion.verificationMethod) || '未说明'} · 必需条件：{criterion.required ? '是' : '否'}</p>
+              <p>关联证据：{stringList(criterion.evidenceIds).join('、') || '无'}</p>
+              {text(criterion.explanation) ? <p>{text(criterion.explanation)}</p> : null}
+            </div>
+          ))}
+        </div>
+      </details> : null}
+      {goal.evidenceIds?.length ? <p className="text-xs text-secondary-text">已收集证据：{goal.evidenceIds.join('、')}</p> : null}
+      {text(goal.blocker) ? <p className="rounded-lg border border-warning/30 bg-warning/5 px-2.5 py-2 text-xs text-warning">阻塞原因：{text(goal.blocker)}</p> : null}
+      {text(goal.terminalReason) ? <p className="text-xs text-secondary-text">终态说明：{text(goal.terminalReason)}</p> : null}
     </div>
   </Card>;
 }

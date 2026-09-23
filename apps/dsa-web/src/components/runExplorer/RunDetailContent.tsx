@@ -7,6 +7,7 @@ import { agentModeLabel } from '../../utils/agentMode';
 import { formatDateTime } from '../../utils/format';
 import {
   STATUS_LABELS,
+  arrayFrom,
   buildQualityIssues,
   displayDataTime,
   errorCodeFrom,
@@ -16,6 +17,7 @@ import {
   formatDuration,
   hasValue,
   percent,
+  record,
   sourceLabel,
   stringList,
   text,
@@ -31,6 +33,7 @@ import {
   ClaimEvidenceCard,
   ErrorDetails,
   EvidenceRow,
+  GoalAuditCard,
   Metric,
   PlanningAuditCard,
   TeamAuditCard,
@@ -67,9 +70,9 @@ export function RunDetailContent({
   const run = detail.snapshot.run ?? {};
   const projection = detail.snapshot.qualityProjection ?? {};
   const selectedAgentMode = text(projection.agentMode)
-    || (projection.team ? 'team' : projection.planning ? 'plan' : '');
+    || (projection.goal ? 'goal' : projection.team ? 'team' : projection.planning ? 'plan' : '');
   const resolvedAgentMode = text(projection.resolvedAgentMode)
-    || (projection.team ? text(projection.team.resolvedAgentMode) : '');
+    || (projection.goal ? 'goal' : projection.team ? text(projection.team.resolvedAgentMode) : '');
   const modeLabel = selectedAgentMode
     ? selectedAgentMode === 'auto' && resolvedAgentMode
       ? `Auto → ${agentModeLabel(resolvedAgentMode)}`
@@ -77,6 +80,9 @@ export function RunDetailContent({
     : '';
   const behaviorAudit = detail.snapshot.behaviorAudit;
   const toolResults = projection.toolResults ?? [];
+  const executionTrace = record(field(detail.snapshot.trace, ['executionTrace', 'execution_trace']));
+  const goalRuntimeErrors = projection.runtimeErrors
+    ?? arrayFrom(field(executionTrace, ['runtimeErrors', 'runtime_errors'])).map(record);
   const evidence = projection.evidence ?? [];
   const claimEvidence = projection.claimEvidence ?? [];
   const steps = detail.snapshot.steps ?? [];
@@ -102,7 +108,22 @@ export function RunDetailContent({
   ].filter(Boolean));
   const observedCallIds = new Set(toolResults.flatMap(callIds));
   const unobservedFailedSteps = failedSteps.filter((step) => !callIds(step).some((id) => observedCallIds.has(id)));
-  const failedCallCount = failedToolResults.length + unobservedFailedSteps.length;
+  const representedFailureIds = new Set([
+    ...failedToolResults,
+    ...unobservedFailedSteps,
+  ].flatMap(callIds));
+  const seenGoalRuntimeIds = new Set<string>();
+  const unrepresentedGoalErrors = goalRuntimeErrors.filter((error) => {
+    const failureKind = text(field(error, ['failureKind', 'failure_kind']));
+    if (!['tool', 'tool_validation', 'model_output'].includes(failureKind)) return false;
+    const actionId = text(field(error, ['actionId', 'action_id']));
+    const errorId = text(field(error, ['errorId', 'error_id']));
+    const identity = actionId || errorId;
+    if (identity && (representedFailureIds.has(identity) || seenGoalRuntimeIds.has(identity))) return false;
+    if (identity) seenGoalRuntimeIds.add(identity);
+    return true;
+  });
+  const failedCallCount = failedToolResults.length + unobservedFailedSteps.length + unrepresentedGoalErrors.length;
   const blockedRetryCount = [...failedToolResults, ...unobservedFailedSteps]
     .filter((item) => errorCodeFrom(item) === 'repeated_failed_source').length;
   const runErrorCodes = uniqueStrings([
@@ -116,6 +137,7 @@ export function RunDetailContent({
   const toolErrorCodes = uniqueStrings([
     ...failedSteps.map(errorCodeFrom),
     ...failedToolResults.map(errorCodeFrom),
+    ...unrepresentedGoalErrors.map(errorCodeFrom),
   ].filter(Boolean));
   const toolErrorDetails = uniqueStrings([
     ...failedSteps.flatMap((step) => {
@@ -125,6 +147,12 @@ export function RunDetailContent({
     ...failedToolResults.flatMap((result) => {
       const label = text(result.toolName) || '工具调用';
       return errorDetailsFrom(result).map((error) => `${label}: ${error}`);
+    }),
+    ...unrepresentedGoalErrors.flatMap((error) => {
+      const label = text(field(error, ['toolName', 'tool_name']))
+        || text(field(error, ['phase']))
+        || 'Goal 动作';
+      return errorDetailsFrom(error).map((message) => `${label}: ${message}`);
     }),
   ]);
   const runStatus = text(run.status);
@@ -136,6 +164,11 @@ export function RunDetailContent({
     ? new Date(text(run.finishedAt)).getTime() - new Date(text(run.startedAt)).getTime()
     : null;
   const qualityIssues = buildQualityIssues(detail.score, failedToolResults, failedSteps, behaviorAudit, runStatus);
+  const incompleteGoalResult = Boolean(
+    projection.goal
+    && text(projection.goal.status) !== 'completed'
+    && text(run.finalText),
+  );
   const behaviorReviewCount = behaviorAudit?.actionRequiredCount
     ?? (behaviorAudit?.dangerCount ?? 0) + (behaviorAudit?.warningCount ?? 0);
   const behaviorAdvisoryCount = behaviorAudit?.advisoryCount ?? behaviorAudit?.infoCount ?? 0;
@@ -166,7 +199,7 @@ export function RunDetailContent({
         </div>
         <div className="mt-3 rounded-lg border border-border/70 bg-muted/35 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-semibold text-foreground">助手给出的结论</p>
+            <p className="text-xs font-semibold text-foreground">{incompleteGoalResult ? '阶段性结果（Goal 未完成）' : '助手给出的结论'}</p>
             <span className={cn('text-[11px] font-medium', answerStatusTone)}>
               {behaviorAudit?.status === 'danger'
                 ? `执行诊断发现 ${behaviorReviewCount} 个需要处理的问题`
@@ -207,13 +240,15 @@ export function RunDetailContent({
               <p className="text-xs font-semibold text-foreground">
                 {blockedRetryCount > 0
                   ? `${failedCallCount - blockedRetryCount} 次工具失败，${blockedRetryCount} 次重复请求已拦截`
-                  : runStatus === 'completed' ? `已完成，有 ${failedCallCount} 次工具调用失败` : `有 ${failedCallCount} 次工具调用失败`}
+                  : projection.goal
+                    ? `有 ${failedCallCount} 次工具或动作尝试失败`
+                    : runStatus === 'completed' ? `已完成，有 ${failedCallCount} 次工具调用失败` : `有 ${failedCallCount} 次工具调用失败`}
               </p>
-              <p className="mt-0.5 text-[11px] text-foreground/70">失败尝试及恢复情况保留在执行诊断中，可展开查看调用错误。</p>
+              <p className="mt-0.5 text-[11px] text-foreground/70">失败尝试及恢复情况保留在执行诊断中，可展开查看具体原因。</p>
             </div>
             <Badge variant={toolFailureNeedsAttention ? 'warning' : 'info'}>{failedCallCount} 次{blockedRetryCount > 0 ? '失败或拦截' : '失败尝试'}</Badge>
           </div>
-          <ErrorDetails title="查看工具调用错误" errorCode={toolErrorCodes.join('、')} details={toolErrorDetails} fallback="请查看对应工具的调用记录。" />
+          <ErrorDetails title={projection.goal ? '查看工具或动作错误' : '查看工具调用错误'} errorCode={toolErrorCodes.join('、')} details={toolErrorDetails} fallback="请查看对应工具的调用记录。" />
         </div> : null}
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Metric icon={<Clock3 className="size-3.5 text-cyan" />} label="耗时" value={formatDuration(durationMs)} />
@@ -227,6 +262,8 @@ export function RunDetailContent({
       <BehaviorAuditCard audit={behaviorAudit} onSampleSources={onSampleSources} sourceSampling={sourceSampling} sourceSample={sourceSample} />
 
       <PlanningAuditCard planning={projection.planning} />
+
+      <GoalAuditCard goal={projection.goal} />
 
       <TeamAuditCard team={projection.team} />
 

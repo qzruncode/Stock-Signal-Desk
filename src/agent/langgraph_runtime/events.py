@@ -232,6 +232,10 @@ class GraphEventBridge:
         # separate.  Coalesce repeated progress projection text within this
         # run; model text and the audit history remain untouched.
         self._progress_projection_seen: set[str] = set()
+        # Goal's conversational projection is committed only after its action
+        # passes server-side validation. Keep semantic duplicates out of the
+        # live transcript without changing the durable stage/event history.
+        self._goal_progress_projection_seen: set[str] = set()
         # Model-authored Team projections use a parent-owned sequence.  The
         # sequence is durable in the display part and is preferable to
         # object identity, which changes every time a trace is replayed.
@@ -684,11 +688,43 @@ class GraphEventBridge:
                     # use a new projection id instead.
                     return
             self._model_projection_texts[part_id] = normalized
+        occurred_at = datetime.now().astimezone().isoformat()
         self._emit_display_part(
             name=safe_display_part_name,
-            data=projection,
+            data={
+                **projection,
+                "occurred_at": occurred_at,
+                "timestamp": occurred_at,
+            },
             part_id=part_id,
         )
+
+    def publish_goal_progress_projection(
+        self,
+        text: str,
+        *,
+        phase: str = "",
+        kind: str = "progress",
+        projection_id: str | None = None,
+    ) -> None:
+        """Publish distinct, server-accepted Goal narration in transcript order."""
+        normalized = " ".join(str(text or "").split())
+        if not normalized or any(
+            self._is_near_duplicate_progress(normalized, previous)
+            for previous in self._goal_progress_projection_seen
+        ):
+            return
+        self._goal_progress_projection_seen.add(normalized)
+        self.publish_model_projection(
+            normalized,
+            display_part_name="agent-model-projection",
+            scope="goal",
+            phase=phase,
+            kind=kind,
+            projection_id=projection_id,
+        )
+        if len(self._goal_progress_projection_seen) > 256:
+            self._goal_progress_projection_seen = {normalized}
 
     async def add_tool_call(
         self,
