@@ -1,0 +1,7 @@
+# CPU-only local reranker runtime for Python 3.11 on macOS Intel.
+fastapi==0.135.2
+uvicorn==0.42.0
+torch==2.2.2
+transformers==4.38.2
+safetensors==0.7.0
+sentencepiece==0.2.1

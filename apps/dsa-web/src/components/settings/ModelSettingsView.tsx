@@ -63,6 +63,7 @@ export const ModelSettingsView: React.FC = () => {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testingCapability, setTestingCapability] = useState<'chat' | null>(null);
   const { control, getValues, handleSubmit, reset, setValue } = useForm<ModelFormValues>({
     defaultValues: { pasteText: '' },
   });
@@ -221,6 +222,7 @@ export const ModelSettingsView: React.FC = () => {
     if (!config) return;
 
     setTesting(true);
+    setTestingCapability('chat');
     try {
       const result = await systemConfigApi.testModelConnection({
         items: TARGET_KEYS.map((key) => ({ key, value: submittedValues[key] ?? '' })),
@@ -237,6 +239,7 @@ export const ModelSettingsView: React.FC = () => {
       toast({ title: '测试失败', description: msg, variant: 'error' });
     } finally {
       setTesting(false);
+      setTestingCapability(null);
     }
   }, [config, toast]);
 
@@ -273,10 +276,10 @@ export const ModelSettingsView: React.FC = () => {
             </p>
             <h2 className="text-lg font-semibold tracking-tight text-foreground">模型设置</h2>
             <p className="mt-1 text-xs text-secondary-text">
-              配置 Anthropic 兼容网关、模型名称和 Claude Code 参数。
+              配置聊天模型网关与生成参数；PDF 知识库使用独立部署的开源检索模型。
             </p>
           </div>
-          <div className="flex shrink-0 gap-1.5">
+          <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
             <Button
               variant="ghost"
               size="sm"
@@ -284,11 +287,11 @@ export const ModelSettingsView: React.FC = () => {
               type="button"
               onClick={() => { void handleSubmit(handleTest)(); }}
               disabled={saving || testing}
-              isLoading={testing}
+              isLoading={testingCapability === 'chat'}
               loadingText="测试中"
             >
               <PlugZap className="h-3.5 w-3.5" />
-              测试连接
+              测试聊天
             </Button>
             <Button
               variant="secondary"

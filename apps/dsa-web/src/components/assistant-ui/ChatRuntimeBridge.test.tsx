@@ -235,14 +235,14 @@ describe('ChatRuntimeBridge', () => {
     const answer = '# 买入评估\n\n## 结论\n有条件的判断。\n\n## 行情\n行情证据。\n\n## 基本面\n财务证据。\n\n## 新闻\n新闻证据。';
     detail.messages[1]!.content = answer;
     detail.executionTrace = {
-      team: { status: 'partial' },
+      team: { mode: 'team', status: 'partial' },
       displayParts: [
         { type: 'data', name: 'team-model-projection', partId: 'plan', data: { text: '模型的规划' } },
         { type: 'text', text: '# 买入评估\n\n## 行情\n只有这一段', displayKind: 'answer' },
       ],
     };
     const messages = toRuntimeMessages(detail.id, detail.messages, undefined, detail.executionTrace, 'team-run', answer);
-    const content = messages.find((message) => message.id === 'assistant-1')!.content as Array<Record<string, unknown>>;
+    const content = messages.find((message) => message.id === 'assistant-1')!.content as unknown as Array<Record<string, unknown>>;
     expect(content.filter((part) => part.type === 'text').map((part) => part.text)).toEqual([answer]);
     expect(content[0]?.name).toBe('team-model-projection');
   });

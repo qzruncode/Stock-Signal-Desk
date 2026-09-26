@@ -6,6 +6,7 @@ import {
   DatabaseIcon,
   FileSearchIcon,
   GitCompareArrowsIcon,
+  InfoIcon,
   SparklesIcon,
 } from 'lucide-react';
 import {
@@ -23,7 +24,9 @@ const SuggestionGroup: FC<{ group: AssistantSuggestionGroup }> = ({ group }) => 
       <h3 id={`suggestion-group-${group.id}`} className="shrink-0 text-[11px] font-semibold text-foreground">
         {group.title}
       </h3>
-      <span className="min-w-0 truncate text-[10px] text-muted-foreground">{group.description}</span>
+      <Tooltip focusable ariaLabel={`${group.title}说明`} content={group.description}>
+        <InfoIcon className="size-3.5 shrink-0 cursor-help text-muted-foreground transition-colors hover:text-primary" aria-hidden="true" />
+      </Tooltip>
     </div>
     <div className="grid gap-1.5 min-[520px]:grid-cols-2">
       {group.items.map((suggestion) => (
@@ -98,35 +101,51 @@ export const EmptyState: FC = () => {
       </div>
       <div className="mt-1 sm:mt-3">
         <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-primary sm:text-xs sm:tracking-[0.18em]">A-SHARE RESEARCH AGENT</p>
-        <h2 className="mt-1 text-xl font-semibold tracking-tight text-foreground sm:mt-2 sm:text-3xl">把问题交给会查数据的投研助手</h2>
-        <p className="mx-auto mt-1 hidden max-w-2xl text-sm leading-6 text-muted-foreground sm:block">
-          支持产业链研究、公司比较、财务与估值核验、行情和事件追踪。回答会保留数据时间、来源与风险边界，并能沿着上一轮继续追问。
-        </p>
+        <div className="mt-1 flex items-center justify-center gap-1.5 sm:mt-2">
+          <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-3xl">把问题交给会查数据的投研助手</h2>
+          <Tooltip
+            focusable
+            ariaLabel="投研助手能力说明"
+            content="支持产业链研究、公司比较、财务与估值核验、行情和事件追踪。回答保留数据时间、来源与风险边界，并可沿着上一轮继续追问。"
+            contentClassName="min-w-0 whitespace-normal"
+          >
+            <InfoIcon className="size-3.5 shrink-0 cursor-help text-muted-foreground transition-colors hover:text-primary" aria-hidden="true" />
+          </Tooltip>
+        </div>
       </div>
 
       <div className="mt-3 grid w-full grid-cols-3 gap-1.5 text-left sm:mt-5 sm:gap-3">
         {CAPABILITIES.map(({ title, description, icon: Icon, prompt }) => (
-          <ThreadPrimitive.Suggestion
+          <Tooltip
             key={title}
-            prompt={prompt}
-            clearComposer
-            className="group block w-full rounded-lg border border-border/70 bg-card/70 px-2 py-2 text-left transition hover:-translate-y-0.5 hover:border-primary/30 hover:bg-primary/5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 sm:rounded-2xl sm:border-border/80 sm:bg-card/80 sm:p-3.5 sm:shadow-sm"
+            content={description}
+            className="w-full min-w-0"
+            contentClassName="min-w-0 whitespace-normal"
           >
-            <div className="flex min-w-0 flex-col items-center gap-1 text-center sm:flex-row sm:gap-2.5 sm:text-left">
-              <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary transition group-hover:bg-primary/15 sm:size-8 sm:rounded-xl">
-                <Icon className="size-3.5 sm:size-4" />
+            <ThreadPrimitive.Suggestion
+              prompt={prompt}
+              clearComposer
+              className="group block w-full min-w-0 rounded-lg border border-border/70 bg-card/70 px-2 py-2 text-left transition hover:-translate-y-0.5 hover:border-primary/30 hover:bg-primary/5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 sm:rounded-2xl sm:border-border/80 sm:bg-card/80 sm:p-3.5 sm:shadow-sm"
+            >
+              <div className="flex min-w-0 flex-col items-center gap-1 text-center sm:flex-row sm:gap-2.5 sm:text-left">
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary transition group-hover:bg-primary/15 sm:size-8 sm:rounded-xl">
+                  <Icon className="size-3.5 sm:size-4" />
+                </div>
+                <p className="min-w-0 text-center text-[11px] font-semibold leading-4 text-foreground sm:text-left sm:text-sm">{title}</p>
               </div>
-              <p className="min-w-0 text-center text-[11px] font-semibold leading-4 text-foreground sm:text-left sm:text-sm">{title}</p>
-            </div>
-            <p className="mt-2 hidden text-xs leading-5 text-muted-foreground sm:block">{description}</p>
-          </ThreadPrimitive.Suggestion>
+            </ThreadPrimitive.Suggestion>
+          </Tooltip>
         ))}
       </div>
 
       <div className="mt-3 flex min-h-0 w-full flex-1 flex-col text-left sm:mt-5">
         <div className="mb-2 flex min-w-0 items-baseline justify-between gap-2 px-1">
-          <p className="shrink-0 text-xs font-medium text-muted-foreground">你可以这样问</p>
-          <span className="min-w-0 truncate text-[10px] text-muted-foreground">点击后补充标的、行业或资料对象</span>
+          <div className="flex items-center gap-1.5">
+            <p className="shrink-0 text-xs font-medium text-muted-foreground">你可以这样问</p>
+            <Tooltip focusable ariaLabel="问题模板说明" content="点击问题模板后，在输入框补充具体的标的、行业或资料对象。">
+              <InfoIcon className="size-3.5 cursor-help text-muted-foreground transition-colors hover:text-primary" aria-hidden="true" />
+            </Tooltip>
+          </div>
         </div>
         <div className="w-full flex-none space-y-3 pr-2">
           {primaryGroups.map((group) => <SuggestionGroup key={group.id} group={group} />)}

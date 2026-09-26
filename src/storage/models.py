@@ -46,3 +46,7 @@ for _name in _models_agent_quality.__all__:
 from . import _models_agent_governance as _models_agent_governance
 for _name in _models_agent_governance.__all__:
     globals()[_name] = getattr(_models_agent_governance, _name)
+
+from . import _models_rag as _models_rag
+for _name in _models_rag.__all__:
+    globals()[_name] = getattr(_models_rag, _name)

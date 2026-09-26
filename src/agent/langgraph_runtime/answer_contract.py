@@ -18,8 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
 from src.tools.base import evidence_record_is_eligible
+from src.tools.base import citation_scoped_evidence_records
 
-from .evidence_identity import canonicalize_evidence_markers, resolve_evidence_id
+from .evidence_identity import (
+    canonicalize_evidence_markers,
+    resolve_evidence_id,
+)
 
 
 AnswerProfile = Literal["general", "research"]
@@ -46,6 +50,7 @@ AnswerBlockKind = Literal[
     "recommendation",
     "risk",
     "disclaimer",
+    "action_result",
 ]
 
 
@@ -69,7 +74,9 @@ class StructuredAnswerBlock(TypedDict):
             description=(
                 "Block semantics: answer is a general response; context/disclaimer may be used "
                 "without external evidence; fact/inference/recommendation/risk are material claims "
-                "and require supporting source_ids under the applicable answer profile."
+                "and require supporting source_ids under the applicable answer profile. "
+                "action_result reports only an observed action's execution status and must reference "
+                "the matching action_source_ids; it is not evidence about external document contents."
             ),
         ),
     ]
@@ -428,21 +435,40 @@ def evidence_source_catalog(evidence: Iterable[Any]) -> list[dict[str, Any]]:
     observation cannot renumber another source during repair or resume.
     No secondary counter or parallel-tool state channel is needed.
     """
+    records = citation_scoped_evidence_records(evidence)
     catalog = []
-    for index, item in enumerate(evidence, start=1):
-        if not isinstance(item, Mapping) or not evidence_record_is_eligible(item):
+    source_slot = 0
+    for item in records:
+        source_slot += 1
+        if not evidence_record_is_eligible(item):
             continue
         if str(item.get("effect") or "read") == "side_effect":
             continue
         evidence_id = str(item.get("evidence_id") or item.get("id") or "").strip()
-        if evidence_id:
-            catalog.append({
-                "source_id": index,
-                "evidence_id": evidence_id,
-                "tool_name": item.get("tool_name"),
-                "data_time": item.get("data_time"),
-                "source_refs": item.get("source_refs") or [],
-            })
+        if not evidence_id:
+            continue
+        source = {
+            "source_id": source_slot,
+            "evidence_id": evidence_id,
+            "tool_name": item.get("tool_name"),
+            "data_time": item.get("data_time"),
+            "source_refs": item.get("source_refs") or [],
+        }
+        if item.get("citation_item") is True:
+            hit = item.get("result") if isinstance(item.get("result"), Mapping) else {}
+            page_start = hit.get("page_start")
+            page_end = hit.get("page_end") or page_start
+            page_label = (
+                f"第 {page_start} 页"
+                if page_start and page_start == page_end
+                else f"第 {page_start}–{page_end} 页"
+                if page_start and page_end
+                else "PDF 原文"
+            )
+            filename = str(hit.get("filename") or "PDF 原文").strip()[:180]
+            source["title"] = f"{filename} · {page_label}"
+            source["excerpt"] = str(hit.get("snippet") or hit.get("text") or "").strip()[:600]
+        catalog.append(source)
     return catalog
 
 
@@ -1081,6 +1107,7 @@ def project_structured_answer(
         "recommendation",
         "risk",
         "disclaimer",
+        "action_result",
     }
     for block in structured_answer_blocks(answer)[:80]:
         kind = str(block.get("kind") or "fact").strip().lower()
@@ -1131,7 +1158,7 @@ def project_structured_answer(
 def _canonical_ids(evidence: Iterable[Any]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
-    for item in evidence:
+    for item in citation_scoped_evidence_records(evidence):
         if isinstance(item, Mapping):
             value = str(item.get("evidence_id") or item.get("id") or "").strip()
         else:

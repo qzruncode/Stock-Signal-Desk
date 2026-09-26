@@ -29,6 +29,9 @@ class ToolDispatchRequest:
     force_isolation: bool = False
     conversation_id: str | None = None
     run_id: str | None = None
+    tenant_id: str = "local"
+    owner_id: str = "admin"
+    knowledge_base_ids: tuple[str, ...] = ()
     timeout_seconds: float | None = None
     approved: bool = False
 
@@ -65,12 +68,22 @@ class ToolDispatcher:
         progress_observer: Callable[[ToolProgressUpdate], None],
     ) -> ToolDispatchOutcome:
         arguments = dict(request.arguments)
+        execution_context: dict[str, Any] = {
+            "conversation_id": request.conversation_id,
+            "run_id": request.run_id,
+            "tenant_id": request.tenant_id,
+            "owner_id": request.owner_id,
+            "knowledge_base_ids": ",".join(request.knowledge_base_ids),
+        }
         with (
             tool_progress_observer(progress_observer),
             tool_idempotency_context(request.idempotency_key),
             tool_execution_context(
                 conversation_id=request.conversation_id,
                 run_id=request.run_id,
+                tenant_id=request.tenant_id,
+                owner_id=request.owner_id,
+                knowledge_base_ids=request.knowledge_base_ids,
             ),
             tool_effect_approval(request.approved),
         ):
@@ -83,10 +96,7 @@ class ToolDispatcher:
                     cancel_event=cancel_event,
                     deadline_seconds=request.timeout_seconds,
                     idempotency_key=request.idempotency_key,
-                    execution_context={
-                        "conversation_id": request.conversation_id,
-                        "run_id": request.run_id,
-                    },
+                    execution_context=execution_context,
                     effect_approved=request.approved,
                 )
             else:

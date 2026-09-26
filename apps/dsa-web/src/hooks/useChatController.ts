@@ -39,6 +39,39 @@ import { useQueryClient } from '@tanstack/react-query';
 import { conversationKey } from '../utils/conversationQueries';
 import { useConversationActions } from './useConversationActions';
 
+type KnowledgeChatPreference = { knowledgeBaseIds: string[] };
+type KnowledgeChatPreferences = Record<string, KnowledgeChatPreference>;
+const KNOWLEDGE_CHAT_STORAGE_KEY = 'dsa.knowledge-chat-preferences.v2';
+const LEGACY_KNOWLEDGE_CHAT_STORAGE_KEY = 'dsa.knowledge-chat-preferences.v1';
+const NEW_CONVERSATION_KEY = '__new__';
+
+function readKnowledgeChatPreferences(): KnowledgeChatPreferences {
+  try {
+    const serialized = localStorage.getItem(KNOWLEDGE_CHAT_STORAGE_KEY)
+      ?? localStorage.getItem(LEGACY_KNOWLEDGE_CHAT_STORAGE_KEY)
+      ?? '{}';
+    const parsed = JSON.parse(serialized) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+    const preferences: KnowledgeChatPreferences = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const rawIds = (value as { knowledgeBaseIds?: unknown }).knowledgeBaseIds;
+      if (!Array.isArray(rawIds)) continue;
+      const knowledgeBaseIds = [...new Set(
+        rawIds
+          .filter((id): id is string => typeof id === 'string')
+          .map((id) => id.trim())
+          .filter(Boolean),
+      )].slice(0, 8);
+      if (knowledgeBaseIds.length) preferences[key] = { knowledgeBaseIds };
+    }
+    return preferences;
+  } catch {
+    return {};
+  }
+}
+
 export function useChatController() {
   const [conversations, setConversations] = useState<ChatConversationItem[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -50,6 +83,13 @@ export function useChatController() {
   const [approvalDecision, setApprovalDecision] = useState<AgentInterruptDecision['decision'] | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentProductMode>(() => readStoredAgentMode());
+  const [knowledgeChatPreferences, setKnowledgeChatPreferences] = useState<KnowledgeChatPreferences>(
+    readKnowledgeChatPreferences,
+  );
+  const knowledgePreferenceKey = selectedConversationId || NEW_CONVERSATION_KEY;
+  const knowledgePreference = knowledgeChatPreferences[knowledgePreferenceKey] ?? {
+    knowledgeBaseIds: [],
+  };
   const threadRuntimeRef = useRef<ReturnType<typeof useThreadRuntime> | null>(null);
   const resumeExistingRef = useRef<{
     conversationId: string;
@@ -62,6 +102,25 @@ export function useChatController() {
   useEffect(() => {
     persistAgentMode(agentMode);
   }, [agentMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(KNOWLEDGE_CHAT_STORAGE_KEY, JSON.stringify(knowledgeChatPreferences));
+    } catch {
+      // Local preference persistence is optional; the active turn still uses
+      // the current in-memory selection if browser storage is unavailable.
+    }
+  }, [knowledgeChatPreferences]);
+
+  const setKnowledgeBaseIds = useCallback((ids: string[]) => {
+    setKnowledgeChatPreferences((current) => {
+      const nextIds = [...new Set(ids.map((id) => String(id).trim()).filter(Boolean))].slice(0, 8);
+      const next = { ...current };
+      if (nextIds.length) next[knowledgePreferenceKey] = { knowledgeBaseIds: nextIds };
+      else delete next[knowledgePreferenceKey];
+      return next;
+    });
+  }, [knowledgePreferenceKey]);
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
@@ -126,6 +185,11 @@ export function useChatController() {
   const createConversation = useCallback(async () => {
     const created = await agentApi.createConversation();
     await refreshConversations();
+    setKnowledgeChatPreferences((current) => {
+      const newConversationPreference = current[NEW_CONVERSATION_KEY];
+      if (!newConversationPreference || current[created.id]) return current;
+      return { ...current, [created.id]: newConversationPreference };
+    });
     selectedConversationIdRef.current = created.id;
     setSelectedConversationId(created.id);
     const detail = { ...created, messages: [] };
@@ -349,6 +413,7 @@ export function useChatController() {
         return {
           conversation_id: selectedConversationId,
           agent_mode: agentMode,
+          knowledge_base_ids: knowledgePreference.knowledgeBaseIds,
         };
       }
       return {
@@ -357,6 +422,7 @@ export function useChatController() {
         history_mode: 'server',
         history_parent_id: request.historyParentId,
         agent_mode: agentMode,
+        knowledge_base_ids: knowledgePreference.knowledgeBaseIds,
         stream_presentation: 'timeline',
       };
     },
@@ -498,5 +564,7 @@ export function useChatController() {
     handleRetryConversation, handleCreateConversation, handleSelectConversation, handleDeleteUserTurn,
     handleUserCancelRun, approvalDecision, approvalError, handleInterruptDecision,
     agentMode, setAgentMode,
+    knowledgeBaseIds: knowledgePreference.knowledgeBaseIds,
+    setKnowledgeBaseIds,
   };
 }

@@ -23,4 +23,10 @@ describe('Shell', () => {
     expect(screen.getByRole('navigation')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '/runs');
   });
+
+  it('provides an active workspace navigation item for knowledge management', () => {
+    render(<MemoryRouter initialEntries={['/knowledge']}><Shell><div>knowledge content</div></Shell></MemoryRouter>);
+    expect(screen.getByRole('link', { name: '知识库' })).toHaveAttribute('href', '/knowledge');
+    expect(screen.getByRole('link', { name: '知识库' })).toHaveAttribute('aria-current', 'page');
+  });
 });

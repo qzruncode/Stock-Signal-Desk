@@ -701,6 +701,7 @@ _FALLBACK_TEAM_TOOL_ORDER: dict[str, tuple[str, ...]] = {
     ),
     "fundamental": (
         "search_stocks",
+        "search_company_financial_reports",
         "read_company_profile_cninfo",
         "read_valuation_quote_eastmoney",
         "read_core_financial_indicators_ths",
@@ -711,6 +712,7 @@ _FALLBACK_TEAM_TOOL_ORDER: dict[str, tuple[str, ...]] = {
     ),
     "news": (
         "search_stocks",
+        "search_company_financial_reports",
         "read_company_announcements_akshare",
         "read_company_news_akshare",
         "read_company_research_reports_akshare",

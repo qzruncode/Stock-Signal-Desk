@@ -32,6 +32,9 @@ def main() -> int:
                     "conversation_id"
                 ),
                 run_id=execution_context.get("run_id"),
+                tenant_id=execution_context.get("tenant_id"),
+                owner_id=execution_context.get("owner_id"),
+                knowledge_base_ids=str(execution_context.get("knowledge_base_ids") or "").split(","),
             ),
             tool_effect_approval(request.get("effect_approved") is True),
         ):

@@ -298,6 +298,72 @@ def evidence_record_is_eligible(record: Mapping[str, Any] | None) -> bool:
     if payload is not record and "success" not in payload and record.get("success") is True:
         payload = {**payload, "success": True}
     return bool(classify_result_semantics(payload)["evidence_eligible"])
+
+
+def evidence_records_with_citations(values: Iterable[Any]) -> list[dict[str, Any]]:
+    """Expand stable, individually addressable result hits into evidence rows.
+
+    The original action record remains available for compatibility and audit.
+    A child row narrows its source and payload to one result item, allowing a
+    final answer to cite the exact hit instead of every candidate returned by
+    the same tool call.
+    """
+    expanded: list[dict[str, Any]] = []
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        parent = dict(value)
+        expanded.append(parent)
+        result = parent.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        hits = result.get("results")
+        if not isinstance(hits, (list, tuple)):
+            hits = result.get("result_items")
+        if not isinstance(hits, (list, tuple)):
+            continue
+        parent_id = str(parent.get("evidence_id") or parent.get("id") or "").strip()
+        for raw_hit in hits:
+            if not isinstance(raw_hit, Mapping):
+                continue
+            hit = dict(raw_hit)
+            evidence_id = str(hit.get("evidence_id") or "").strip()
+            if not evidence_id:
+                citation_id = str(hit.get("citation_id") or hit.get("id") or "").strip()
+                if citation_id.startswith("kb_"):
+                    evidence_id = f"ev_{citation_id}"
+            if not evidence_id.startswith("ev_") or evidence_id == parent_id:
+                continue
+            source = str(hit.get("source_url") or hit.get("url") or "").strip()
+            if not source:
+                continue
+            expanded.append({
+                **parent,
+                "id": evidence_id,
+                "evidence_id": evidence_id,
+                "source_refs": [source],
+                "result": hit,
+                "citation_item": True,
+                "citation_parent_id": parent_id or None,
+            })
+    return expanded
+
+
+def citation_scoped_evidence_records(values: Iterable[Any]) -> list[dict[str, Any]]:
+    """Prefer exact hit records over their aggregate action-level envelope."""
+    records = evidence_records_with_citations(values)
+    parents_with_hits = {
+        str(item.get("citation_parent_id") or "").strip()
+        for item in records
+        if item.get("citation_item") is True
+        and str(item.get("citation_parent_id") or "").strip()
+    }
+    return [
+        item
+        for item in records
+        if item.get("citation_item") is True
+        or str(item.get("evidence_id") or item.get("id") or "") not in parents_with_hits
+    ]
 # A model never chooses an operation, workflow, capability, or provider route
 # through an arbitrary argument.  ``source_id`` is the one intentional
 # exception: generic read operations use it to name one entry from their
@@ -380,20 +446,27 @@ def tool_execution_context(
     *,
     conversation_id: str | None = None,
     run_id: str | None = None,
+    tenant_id: str | None = None,
+    owner_id: str | None = None,
+    knowledge_base_ids: Iterable[str] | None = None,
 ) -> Iterator[None]:
-    token = _TOOL_EXECUTION_CONTEXT.set(
-        {
-            "conversation_id": str(conversation_id or ""),
-            "run_id": str(run_id or ""),
-        }
-    )
+    context: dict[str, Any] = {
+        "conversation_id": str(conversation_id or ""),
+        "run_id": str(run_id or ""),
+        "tenant_id": str(tenant_id or "local"),
+        "owner_id": str(owner_id or "admin"),
+        "knowledge_base_ids": ",".join(
+            dict.fromkeys(str(value).strip() for value in knowledge_base_ids or [] if str(value).strip())
+        ),
+    }
+    token = _TOOL_EXECUTION_CONTEXT.set(context)
     try:
         yield
     finally:
         _TOOL_EXECUTION_CONTEXT.reset(token)
 
 
-def current_tool_execution_context() -> dict[str, str]:
+def current_tool_execution_context() -> dict[str, Any]:
     return dict(_TOOL_EXECUTION_CONTEXT.get())
 
 

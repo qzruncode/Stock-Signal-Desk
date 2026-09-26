@@ -222,6 +222,11 @@ async def _execute_background_agent_run(
                 # The visible selector is the only product-mode contract.
                 # Missing values resolve to the explicit default: auto.
                 agent_mode=_agent_mode(body),
+                knowledge_base_ids=[
+                    str(item)
+                    for item in body.get("knowledge_base_ids", [])
+                    if isinstance(item, str) and item.strip()
+                ],
                 **common,
             )
 

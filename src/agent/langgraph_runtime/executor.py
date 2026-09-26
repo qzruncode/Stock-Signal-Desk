@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 import threading
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from src.agent.resource_scheduler import ResourceCapacityExceeded, agent_resource_lease
 from src.agent.run_registry import active_run_registry
@@ -208,6 +208,9 @@ class AtomicToolExecutor:
         database: Any | None,
         run_id: str,
         conversation_id: str,
+        tenant_id: str = "local",
+        owner_id: str = "admin",
+        knowledge_base_ids: Sequence[str] = (),
         controller: Any | None,
         events: Any,
         compact_result: Callable[[str, Any], Any],
@@ -218,6 +221,9 @@ class AtomicToolExecutor:
         self.database = database
         self.run_id = run_id
         self.conversation_id = conversation_id
+        self.tenant_id = tenant_id
+        self.owner_id = owner_id
+        self.knowledge_base_ids = tuple(str(item) for item in knowledge_base_ids)
         self.controller = controller
         self.events = events
         self.compact_result = compact_result
@@ -459,6 +465,9 @@ class AtomicToolExecutor:
                         idempotency_key=idempotency_key,
                         conversation_id=self.conversation_id,
                         run_id=self.run_id,
+                        tenant_id=self.tenant_id,
+                        owner_id=self.owner_id,
+                        knowledge_base_ids=self.knowledge_base_ids,
                         timeout_seconds=spec.timeout_seconds,
                         approved=approved,
                         # A source tool can block in a parser, driver or remote

@@ -56,11 +56,17 @@ const Thread: FC<{
   onDeleteUserTurn?: (messageId: string) => void;
   agentMode: AgentProductMode;
   onAgentModeChange: (mode: AgentProductMode) => void;
+  knowledgeBaseIds: string[];
+  knowledgeSelectionDisabled: boolean;
+  onKnowledgeBaseIdsChange: (ids: string[]) => void;
 }> = ({
   onUserCancel,
   onDeleteUserTurn,
   agentMode,
   onAgentModeChange,
+  knowledgeBaseIds,
+  knowledgeSelectionDisabled,
+  onKnowledgeBaseIdsChange,
 }) => {
   const isRunning = useAuiState((state) => state.thread.isRunning);
 
@@ -108,6 +114,9 @@ const Thread: FC<{
         onUserCancel={onUserCancel}
         agentMode={agentMode}
         onAgentModeChange={onAgentModeChange}
+        knowledgeBaseIds={knowledgeBaseIds}
+        knowledgeSelectionDisabled={knowledgeSelectionDisabled}
+        onKnowledgeBaseIdsChange={onKnowledgeBaseIdsChange}
       />
     </ThreadPrimitive.Root>
   );

@@ -10,6 +10,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 export interface PdfViewerProps {
   /** Same-origin, authenticated TextDocumentResource URL. */
   resourceUrl: string;
+  /** Optional page to show after the PDF is loaded. */
+  initialPage?: number;
 }
 
 type Status = 'loading' | 'ready' | 'error';
@@ -24,7 +26,7 @@ type Status = 'loading' | 'ready' | 'error';
  * `Content-Disposition: inline`, so the browser's built-in PDF viewer renders
  * it as a fallback if PDF.js fails.
  */
-const PdfViewer: React.FC<PdfViewerProps> = ({ resourceUrl }) => {
+const PdfViewer: React.FC<PdfViewerProps> = ({ resourceUrl, initialPage = 1 }) => {
   const [status, setStatus] = useState<Status>('loading');
   const [errorMsg, setErrorMsg] = useState('');
   const [numPages, setNumPages] = useState(0);
@@ -91,11 +93,12 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ resourceUrl }) => {
   // Load the document when the proxy URL changes.
   useEffect(() => {
     let cancelled = false;
+    const requestedPage = Number.isFinite(initialPage) ? Math.max(1, Math.floor(initialPage)) : 1;
     setStatus('loading');
     setErrorMsg('');
     setNumPages(0);
-    setCurrentPage(1);
-    currentPageRef.current = 1;
+    setCurrentPage(requestedPage);
+    currentPageRef.current = requestedPage;
 
     const loadingTask = pdfjsLib.getDocument({ url: resourceUrl });
     loadingTaskRef.current = loadingTask;
@@ -107,7 +110,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ resourceUrl }) => {
         }
         pdfDocRef.current = doc;
         setNumPages(doc.numPages);
-        void renderPage(1);
+        const pageToRender = Math.min(requestedPage, Math.max(1, doc.numPages));
+        setCurrentPage(pageToRender);
+        void renderPage(pageToRender);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -133,7 +138,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ resourceUrl }) => {
       loadingTaskRef.current = null;
       if (task) void task.destroy();
     };
-  }, [resourceUrl, renderPage]);
+  }, [resourceUrl, initialPage, renderPage]);
 
   // Re-render when the page or zoom changes.
   useEffect(() => {

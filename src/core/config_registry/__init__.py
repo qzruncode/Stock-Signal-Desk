@@ -17,7 +17,7 @@ from src.core.config_registry.data_source import _FIELD_DEFINITIONS as _DATA_SOU
 from src.core.config_registry.notification import _FIELD_DEFINITIONS as _NOTIFICATION_FIELDS
 from src.core.config_registry.system import _FIELD_DEFINITIONS as _SYSTEM_FIELDS
 
-SCHEMA_VERSION = "2026-05-10"
+SCHEMA_VERSION = "2026-09-24"
 
 _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {

@@ -63,6 +63,7 @@ async def _start_interrupt(
         run_attempt=1,
         tenant_id="tenant",
         owner_id="owner",
+        agent_mode="direct",
         model=ScriptedChatModel(responses=[_request_action()]),
         executor=executor,
     )
@@ -171,6 +172,7 @@ def test_approved_side_effect_injects_required_server_field_after_model_call() -
                 run_attempt=1,
                 tenant_id="tenant",
                 owner_id="owner",
+                agent_mode="direct",
                 model=ScriptedChatModel(
                     responses=[
                         AIMessage(

@@ -164,6 +164,8 @@ class LiteLLMGateway:
         run_id: str,
         worker_id: str,
         completion: Callable[..., Awaitable[Any]] | None = None,
+        request_timeout_seconds: float | None = None,
+        stream_idle_timeout_seconds: float | None = None,
     ) -> None:
         self.llm_config = dict(llm_config)
         self._completion = completion
@@ -186,6 +188,8 @@ class LiteLLMGateway:
             worker_id=worker_id,
             model=configured_model,
             token_estimator=estimate,
+            request_timeout_seconds=request_timeout_seconds,
+            stream_idle_timeout_seconds=stream_idle_timeout_seconds,
         )
 
     async def complete(self, **kwargs: Any) -> Any:

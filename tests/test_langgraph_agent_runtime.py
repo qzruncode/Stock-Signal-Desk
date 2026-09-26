@@ -18,11 +18,17 @@ from src.agent.langgraph_runtime.answer_contract import STRUCTURED_OUTPUT_TOOL_N
 from src.agent.langgraph_runtime.catalog import ToolCatalog
 from src.agent.langgraph_runtime.executor import action_fingerprint
 from src.agent.langgraph_runtime.graph import DEFAULT_RESPONSE_FORMAT
-from src.agent.langgraph_runtime.middleware import _failed_read_tool_call_keys, _source_fallback_reason, _tool_call_key
+from src.agent.langgraph_runtime.middleware import (
+    _failed_read_tool_call_keys,
+    _source_fallback_reason,
+    _tool_call_key,
+    _user_requests_knowledge_base_only,
+)
 from src.agent.langgraph_runtime.reflection import ReflectionReview
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 from src.tools.base import ToolSpec, object_schema
 from src.tools.registry import ToolRegistry
+from src.tools.search_knowledge_base import TOOL as SEARCH_KNOWLEDGE_BASE_TOOL
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -334,6 +340,8 @@ async def _run(
     executor: FakeAtomicExecutor | None = None,
     conversation_id: str,
     response_format: Any | None = None,
+    knowledge_base_ids: tuple[str, ...] = (),
+    user_text: str = "测试问题",
 ) -> tuple[Any, FakeAtomicExecutor]:
     atomic_executor = executor or FakeAtomicExecutor()
     manager = LangGraphRuntimeManager(
@@ -343,8 +351,8 @@ async def _run(
     await manager.start(testing=True)
     try:
         result = await manager.run_new(
-            messages=[{"role": "user", "content": "测试问题"}],
-            user_text="测试问题",
+            messages=[{"role": "user", "content": user_text}],
+            user_text=user_text,
             system_prompt="",
             llm_config={},
             database=None,
@@ -354,6 +362,7 @@ async def _run(
             run_attempt=1,
             tenant_id="tenant",
             owner_id="owner",
+            knowledge_base_ids=knowledge_base_ids,
             model=model,
             executor=atomic_executor,
             agent_mode="direct",
@@ -1074,6 +1083,244 @@ def test_structured_repair_targets_mixed_valid_and_invalid_references() -> None:
         assert '"unresolved_evidence_ids": ["source:99"]' in feedback
         assert '"reference_integrity": false' in feedback
         assert result.state["claim_evidence"][1]["issues"] == []
+    asyncio.run(scenario())
+
+
+def test_exhausted_pdf_page_citation_repair_does_not_publish_mismatched_answer() -> None:
+    async def scenario() -> None:
+        result_item = {
+            "evidence_id": "ev_kb_page_340",
+            "page_start": 340,
+            "page_end": 340,
+            "filename": "Agentic_Design_Patterns_Complete.pdf",
+            "snippet": "Weaknesses, Originality, Quality, Clarity, and Significance.",
+            "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=340",
+        }
+        search_outcome = {
+            "success": True,
+            "data_time": None,
+            "source_refs": [result_item["url"]],
+            "result": {"success": True, "results": [result_item], "result_items": []},
+        }
+        invalid_answer = [
+            {
+                "section": "Level 0 的主要局限",
+                "kind": "fact",
+                "content": "根据 PDF 第 14 页，Level 0 的局限是缺乏 current-event awareness。",
+                "source_ids": [1],
+            }
+        ]
+        model = ScriptedChatModel(responses=[
+            _structured_output_call("rag-answer-1", invalid_answer, profile="general"),
+            _named_tool_call("rag-search-2", "search_knowledge_base", {"query": "Level 0 current events"}),
+            _structured_output_call("rag-answer-2", invalid_answer, profile="general"),
+            _structured_output_call("rag-answer-3", invalid_answer, profile="general"),
+        ])
+        result, executor = await _run(
+            model=model,
+            registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL),
+            executor=FakeAtomicExecutor({"search_knowledge_base": [search_outcome] * 2}),
+            conversation_id="rag-page-citation-fail-closed",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            knowledge_base_ids=("kb-test",),
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "evidence_link_incomplete"
+        assert "未经核实的结论" in result.final_text
+        assert "Level 0 的局限" not in result.final_text
+        assert "#page=340" not in result.final_text
+        final_blocks = result.state["structured_answer"]["blocks"]
+        assert len(final_blocks) == 1
+        assert final_blocks[0]["kind"] == "disclaimer"
+        assert final_blocks[0]["evidence_ids"] == []
+        assert sum(call["tool_name"] == "search_knowledge_base" for call in executor.calls) == 2
+
+    asyncio.run(scenario())
+
+
+def test_pdf_absence_disclaimer_drops_unrelated_lexical_hit_citation() -> None:
+    async def scenario() -> None:
+        unrelated_hit = {
+            "evidence_id": "ev_kb_shanghai_subsidiary",
+            "page_start": 153,
+            "page_end": 153,
+            "filename": "新强联2026年半年度报告.pdf",
+            "snippet": "新强联（上海）装备有限公司；子公司投资情况。",
+            "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=153",
+        }
+        search_outcome = {
+            "success": True,
+            "data_time": None,
+            "source_refs": [unrelated_hit["url"]],
+            "result": {
+                "success": True,
+                "results": [unrelated_hit],
+                "result_items": [],
+                "no_evidence": False,
+            },
+        }
+        query_outcome = {
+            "success": True,
+            "data_time": None,
+            "source_refs": [],
+            "result": {
+                "success": True,
+                "results": [],
+                "result_items": [],
+                "no_evidence": True,
+            },
+        }
+        model = ScriptedChatModel(responses=[
+            _named_tool_call("pdf-absence-retry", "search_knowledge_base", {"query": "上海天气"}),
+            _structured_output_call(
+                "pdf-absence-disclaimer",
+                [{
+                    "section": "检索结果",
+                    "kind": "disclaimer",
+                    "content": "本轮检索未找到 PDF 提及上海天气的依据。",
+                    "source_ids": [1],
+                }],
+                profile="general",
+            ),
+            _reflection_output_call("pdf-absence-reflection-pass"),
+        ])
+        query = "文档中是否提及今天上海的天气？只依据已选 PDF；如果没有明确说明，请直接说报告未提及，不要使用其他工具。"
+        result, executor = await _run(
+            model=model,
+            registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL, _search_operation(), _web_search_operation()),
+            executor=FakeAtomicExecutor({"search_knowledge_base": [search_outcome, query_outcome]}),
+            conversation_id="pdf-absence-disclaimer-no-unrelated-citation",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            knowledge_base_ids=("kb-test",),
+            user_text=query,
+        )
+
+        assert result.status == "completed", (
+            result.error_code,
+            result.final_text,
+            result.state.get("terminal_detail"),
+            result.state.get("evidence_feedback"),
+        )
+        assert result.final_text == "本轮检索未找到 PDF 提及该内容的依据。"
+        assert "ev_kb_shanghai_subsidiary" not in result.final_text
+        assert "#page=153" not in result.final_text
+        assert "子公司" not in result.final_text
+        final_block = result.state["structured_answer"]["blocks"][0]
+        assert final_block["source_ids"] == []
+        assert final_block["evidence_ids"] == []
+        assert [call["tool_name"] for call in executor.calls] == [
+            "search_knowledge_base",
+            "search_knowledge_base",
+        ]
+        assert all(
+            {tool.name for tool in call["tools"]}.issubset({"search_knowledge_base", STRUCTURED_OUTPUT_TOOL_NAME})
+            for call in model.call_options
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("user_text", "expected"),
+    [
+        ("根据所选 PDF 第 7 页，列出营业收入并引用页码。", True),
+        ("所选 PDF 中是否提及今天上海的天气？", True),
+        ("根据所选 PDF 第 7 页的营业收入，与今天股价进行比较。", False),
+        ("根据 PDF 数据，结合当前市场估值分析。", False),
+    ],
+)
+def test_pdf_grounded_question_filters_other_tools_unless_external_data_is_requested(
+    user_text: str,
+    expected: bool,
+) -> None:
+    assert _user_requests_knowledge_base_only(user_text) is expected
+
+
+def test_pdf_answer_rebinds_exact_quote_to_matching_hit_from_this_run() -> None:
+    async def scenario() -> None:
+        page_340 = {
+            "evidence_id": "ev_kb_page_340",
+            "page_start": 340,
+            "page_end": 340,
+            "filename": "Agentic_Design_Patterns_Complete.pdf",
+            "snippet": "Weaknesses, Originality, Quality, Clarity, and Significance.",
+            "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=340",
+        }
+        page_14 = {
+            "evidence_id": "ev_kb_page_14",
+            "page_start": 14,
+            "page_end": 14,
+            "filename": "Agentic_Design_Patterns_Complete.pdf",
+            "snippet": (
+                "In a 'Level 0' configuration, the LLM operates without tools, memory, or "
+                "environment interaction, responding solely based on its pretrained knowledge. "
+                "The trade-off for this powerful internal reasoning is a complete lack of "
+                "current-event awareness."
+            ),
+            "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=14",
+        }
+
+        def search_result(hit: Mapping[str, Any]) -> dict[str, Any]:
+            return {
+                "success": True,
+                "data_time": None,
+                "source_refs": [str(hit["url"])],
+                "result": {"success": True, "results": [dict(hit)], "result_items": []},
+            }
+
+        model = ScriptedChatModel(responses=[
+            _structured_output_call(
+                "rag-answer-wrong-page",
+                [{
+                    "section": "Level 0 的主要局限",
+                    "kind": "fact",
+                    "content": (
+                        "Level 0 缺乏对当前事件的感知（a complete lack of current-event awareness），"
+                        "原文见第 14 页。"
+                    ),
+                    "source_ids": [1],
+                }],
+                profile="general",
+            ),
+            _named_tool_call("rag-search-right", "search_knowledge_base", {"query": "Level 0 current-event awareness"}),
+            _structured_output_call(
+                "rag-answer-exact-quote",
+                [{
+                    "section": "Level 0 的主要局限",
+                    "kind": "fact",
+                    "content": (
+                        "Level 0 缺乏对当前事件的感知（a complete lack of current-event awareness），"
+                        "原文见第 14 页。"
+                    ),
+                    "source_ids": [1],
+                }],
+                profile="general",
+            ),
+            _reflection_output_call("rag-answer-reflection-pass"),
+        ])
+        result, executor = await _run(
+            model=model,
+            registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL),
+            executor=FakeAtomicExecutor({
+                "search_knowledge_base": [search_result(page_340), search_result(page_14)],
+            }),
+            conversation_id="rag-exact-quote-rebind",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            knowledge_base_ids=("kb-test",),
+        )
+
+        assert result.status == "completed", (
+            result.error_code,
+            result.final_text,
+            result.state.get("terminal_detail"),
+            result.state.get("evidence_feedback"),
+        )
+        assert "#page=14" not in result.final_text
+        assert "【证据 ev_kb_page_14】" in result.final_text
+        assert result.state["claim_evidence"][0]["evidence"][0]["source_refs"] == [page_14["url"]]
+        assert sum(call["tool_name"] == "search_knowledge_base" for call in executor.calls) == 2
+
     asyncio.run(scenario())
 
 

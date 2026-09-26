@@ -15,7 +15,7 @@ def read_company_announcements_akshare(
 TOOLS = (
     ToolSpec(
         name="read_company_announcements_akshare",
-        description="从 AKShare/东方财富的单一公司公告源读取指定时间窗内的正式公告；返回原始公告类型、日期和链接，不使用 RSS 兜底或标题词典分类。",
+        description="从 AKShare/东方财富的单一二手公告源读取指定时间窗内的公告。该工具不是交易所/巨潮正式披露入口，也不提供财报 PDF 原件；用户要下载或入库财报 PDF 时必须改用 search_company_financial_reports 与 import_company_financial_report。",
         parameters=object_schema(
             {
                 "symbol": {"type": "string", "description": "A 股代码或名称"},

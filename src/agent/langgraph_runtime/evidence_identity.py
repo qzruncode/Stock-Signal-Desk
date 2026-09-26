@@ -14,6 +14,8 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from src.tools.base import citation_scoped_evidence_records
+
 
 EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
 _CITATION_MARKER = re.compile(
@@ -47,7 +49,15 @@ def evidence_id_from_record(item: Mapping[str, Any]) -> str:
 def canonical_evidence_ids(values: Iterable[Any]) -> list[str]:
     """Extract unique canonical ids from records or already-normalized ids."""
     ids: list[str] = []
-    for value in values:
+    records = list(values)
+    ids.extend(
+        str(value or "").strip()
+        for value in records
+        if not isinstance(value, Mapping)
+    )
+    for value in citation_scoped_evidence_records(
+        item for item in records if isinstance(item, Mapping)
+    ):
         if isinstance(value, Mapping):
             ids.append(evidence_id_from_record(value))
         else:

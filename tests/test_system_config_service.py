@@ -17,6 +17,7 @@ ensure_litellm_stub()
 
 from src.config import Config
 from src.core.config_manager import ConfigManager
+from src.core.config_registry import get_registered_field_keys
 from src.services.system_config_service import ConfigConflictError, ConfigImportError, SystemConfigService
 
 
@@ -133,6 +134,11 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["stage"], "model_response")
+
+    def test_rag_model_ids_are_not_exposed_as_chat_model_settings(self) -> None:
+        registered = set(get_registered_field_keys())
+        self.assertNotIn("RAG_EMBEDDING_MODEL", registered)
+        self.assertNotIn("RAG_RERANK_MODEL", registered)
 
     def test_config_manager_hardens_rewritten_env_permissions(self) -> None:
         old_version = self.manager.get_config_version()

@@ -7,6 +7,8 @@ RSSHUB_DIR="$PROJECT_DIR/services/rsshub"
 FIRECRAWL_DIR="$PROJECT_DIR/services/firecrawl"
 SEARXNG_DIR="$PROJECT_DIR/services/searxng"
 WEBFETCH_DIR="$PROJECT_DIR/services/webfetch"
+RAG_LOCAL_SCRIPT="$PROJECT_DIR/scripts/rag-local.sh"
+RAG_PID_DIR="$PROJECT_DIR/data/rag/runtime/pids"
 DEFAULT_BACKEND_PORT=8000
 FRONTEND_PORT=5173
 RSSHUB_PORT=1200
@@ -431,7 +433,7 @@ wait_for_backend() {
 }
 
 stop_services() {
-    local backend_pids frontend_pids rsshub_pids firecrawl_pids searxng_pids tunnel_pids
+    local backend_pids frontend_pids rsshub_pids firecrawl_pids searxng_pids tunnel_pids rag_pid_files
     load_backend_state
     backend_pids=$(get_pids "$BACKEND_PORT")
     frontend_pids=$(get_pids "$FRONTEND_PORT")
@@ -439,13 +441,17 @@ stop_services() {
     firecrawl_pids=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT")
     searxng_pids=$(get_pids "$SEARXNG_PORT")
     tunnel_pids=$(pgrep -f "[s]sh .*${PINGGY_HOST}.*127[.]0[.]0[.]1:${FRONTEND_PORT}" 2>/dev/null || true)
+    rag_pid_files=$(find "$RAG_PID_DIR" -maxdepth 1 -type f -name '*.pid' -print 2>/dev/null || true)
 
-    if [[ -z "$backend_pids" && -z "$frontend_pids" && -z "$rsshub_pids" && -z "$firecrawl_pids" && -z "$searxng_pids" && -z "$tunnel_pids" ]] && ! frontend_tunnel_running; then
+    if [[ -z "$backend_pids" && -z "$frontend_pids" && -z "$rsshub_pids" && -z "$firecrawl_pids" && -z "$searxng_pids" && -z "$tunnel_pids" && -z "$rag_pid_files" ]] && ! frontend_tunnel_running; then
         log "没有运行中的服务"
         return 0
     fi
 
     stop_frontend_tunnel
+    if [[ -n "$rag_pid_files" ]]; then
+        bash "$RAG_LOCAL_SCRIPT" stop || log "警告: 本机 RAG 服务未能全部优雅停止"
+    fi
     stop_firecrawl
     stop_searxng
     [[ -n "$rsshub_pids" ]] && log "保留独立数据来源 RSSHub (port $RSSHUB_PORT)，业务停止不影响资讯采集"
@@ -493,6 +499,9 @@ start_services() {
     fi
 
     mkdir -p "$PROJECT_DIR/logs"
+
+    log "启动本机原生 PDF RAG 服务（不使用 Docker）..."
+    bash "$RAG_LOCAL_SCRIPT" start || return 1
 
     ensure_webfetch_runtime
     start_searxng
@@ -588,6 +597,7 @@ status() {
     if [[ -x "$PROJECT_DIR/.venv-data/bin/supervisorctl" ]]; then
         "$PROJECT_DIR/.venv-data/bin/supervisorctl" -c "$PROJECT_DIR/market_data_service/supervisord.conf" status || true
     fi
+    bash "$RAG_LOCAL_SCRIPT" status || true
     rp=$(get_pids "$RSSHUB_PORT")
     bp=$(get_pids "$BACKEND_PORT")
     fp=$(get_pids "$FRONTEND_PORT")

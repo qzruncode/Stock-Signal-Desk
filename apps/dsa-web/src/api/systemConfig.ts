@@ -107,10 +107,7 @@ export const systemConfigApi = {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/system/config/model/test-connection',
       {
-        items: (payload.items || []).map((item) => ({
-          key: item.key,
-          value: item.value,
-        })),
+        items: (payload.items || []).map((item) => ({ key: item.key, value: item.value })),
         mask_token: payload.maskToken ?? '******',
         timeout_seconds: payload.timeoutSeconds ?? 30,
       },

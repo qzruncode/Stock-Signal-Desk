@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_file": "Agentic_Design_Patterns_Complete.pdf",
+  "source_pages": 458,
+  "page_numbering": "1-based physical PDF page index",
+  "questions": [
+    {
+      "id": "agent-definition",
+      "query": "书中如何定义 AI Agent？它相对普通 LLM 增加了什么能力？",
+      "expected_pages": [12],
+      "expected_terms": ["environment", "goal", "plan", "tools"]
+    },
+    {
+      "id": "agent-five-step-loop",
+      "query": "书中给出的 Agent 五步工作循环是什么？",
+      "expected_pages": [12, 13],
+      "expected_terms": [
+        "Get the Mission",
+        "Scan the Scene",
+        "Think It Through",
+        "Take Action",
+        "Learn and Get Better"
+      ]
+    },
+    {
+      "id": "context-engineering",
+      "query": "什么是 context engineering？它如何帮助多步任务控制上下文？",
+      "expected_pages": [15],
+      "expected_terms": ["selecting", "packaging", "managing", "focused context"]
+    },
+    {
+      "id": "level-zero-vs-level-one",
+      "query": "书中 Level 0 与 Level 1 Agent 的关键差异是什么？",
+      "expected_pages": [14, 15],
+      "expected_terms": ["without tools", "external tools"]
+    }
+  ]
+}

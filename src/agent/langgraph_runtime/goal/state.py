@@ -21,6 +21,7 @@ class GoalState(LangChainAgentState, total=False):
     conversation_id: str
     user_text: str
     system_prompt: str
+    knowledge_base_ids: list[str]
     reference_time: str
     status: str
     error_code: str | None
@@ -85,6 +86,7 @@ class GoalGraphInput(TypedDict, total=False):
     conversation_id: str
     user_text: str
     system_prompt: str
+    knowledge_base_ids: list[str]
     reference_time: str
     status: str
     error_code: str | None
@@ -148,6 +150,7 @@ class GoalContext:
     run_attempt: int
     tenant_id: str
     owner_id: str
+    knowledge_base_ids: tuple[str, ...] = ()
     side_effect_lock: Any | None = None
 
 

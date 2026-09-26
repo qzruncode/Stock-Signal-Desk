@@ -1,6 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AssistantMarkdown, AssistantMarkdownText } from './AssistantMarkdownText';
+
+vi.mock('../rss/PdfViewer', () => ({
+  default: ({ resourceUrl, initialPage }: { resourceUrl: string; initialPage?: number }) => (
+    <div data-testid="pdf-viewer" data-page={initialPage}>{resourceUrl}</div>
+  ),
+}));
 
 describe('AssistantMarkdown evidence citations', () => {
   it('reveals live assistant text progressively before settling on the full sentence', async () => {
@@ -61,6 +67,47 @@ describe('AssistantMarkdown evidence citations', () => {
       expect(metadata).not.toBeNull();
       expect(metadata).toHaveTextContent('工具：read_market_indices');
       expect(metadata).toHaveClass('text-[10px]', 'text-muted-foreground');
+    });
+  });
+
+  it('opens a same-origin PDF citation in the in-app viewer at its verified page and rejects external citation URLs', async () => {
+    const citationPath = '/api/v1/knowledge-bases/documents/doc-42/content#page=7';
+    render(
+      <AssistantMarkdown
+        text="报告指出主营业务包含工业视觉检测【ev_pdf】。"
+        evidence={{
+          evidence: [{ evidence_id: 'ev_pdf', action_id: 'pdf-search' }],
+          tool_results: [{
+            action_id: 'pdf-search',
+            tool_name: 'search_knowledge_base',
+            result_items: [
+              { title: 'annual.pdf · 第 7 页', summary: '主营业务包括工业视觉检测。', url: citationPath },
+              {
+                title: 'chunk_id=chunk-8 · document_id=doc-42 · knowledge_base_id=kb-1',
+                summary: '第二段原文。',
+                url: '/api/v1/knowledge-bases/documents/doc-42/content#page=8',
+              },
+              { title: 'untrusted.pdf', summary: '不能把外链作为可点击的知识库引用。', url: 'https://example.com/evil.pdf#page=1' },
+            ],
+          }],
+        }}
+      />,
+    );
+
+    fireEvent.pointerEnter(screen.getByLabelText('查看证据 ①'));
+    const tooltip = await screen.findByRole('tooltip');
+    const openButton = screen.getByRole('button', { name: '在 PDF 中打开 annual.pdf · 第 7 页' });
+    expect(tooltip).toHaveTextContent('主营业务包括工业视觉检测。');
+    expect(screen.getByRole('button', { name: '在 PDF 中打开 PDF 原文 · 第 8 页' })).toBeInTheDocument();
+    expect(tooltip).not.toHaveTextContent('chunk_id=chunk-8');
+    expect(screen.queryByRole('button', { name: /untrusted\.pdf/ })).not.toBeInTheDocument();
+
+    fireEvent.click(openButton);
+    expect(await screen.findByRole('dialog')).toHaveTextContent('原文第 7 页');
+    await waitFor(() => {
+      const viewer = screen.getByTestId('pdf-viewer');
+      expect(viewer).toHaveAttribute('data-page', '7');
+      expect(viewer).toHaveTextContent('/api/v1/knowledge-bases/documents/doc-42/content');
     });
   });
 

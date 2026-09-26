@@ -62,6 +62,7 @@ describe('TeamBoard', () => {
   it('shows persisted camelcase recovery receipts with their original error and call chain', () => {
     render(<RuntimeErrorLine event={{
       event: 'agent_stage', runId: 'run', stage: 'runtime_error', status: 'failed',
+      summary: '上游请求超时，已从备用来源恢复。',
       details: { runtime_error: {
         errorCode: 'provider_timeout', exceptionType: 'TimeoutError', message: '上游请求超时',
         fallbackStatus: 'completed', fallbackCallIds: ['market:search', 'market:read'],

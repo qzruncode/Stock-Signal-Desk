@@ -29,7 +29,7 @@ A 股 / 港股 / 美股自选股 AI 研究工作台。项目由 FastAPI 后端�
 
 ### 环境要求
 
-- Python 3.13（锁文件验收版本）
+- Python 3.13（项目主环境锁文件验收版本）；Intel Mac 的 RAG worker 另用 Python 3.11
 - Node.js 24（本地开发或重新构建 WebUI）
 
 ### 安装依赖
@@ -37,8 +37,12 @@ A 股 / 港股 / 美股自选股 AI 研究工作台。项目由 FastAPI 后端�
 ```bash
 python3.13 -m venv .venv
 source .venv/bin/activate
-# Linux x86_64；Intel macOS 改用 requirements-macos.lock
+# Linux x86_64 / macOS Apple Silicon
 python -m pip install --require-hashes -r requirements.lock
+
+# Intel Mac 主环境
+python -m pip install --require-hashes -r requirements-macos.lock
+# Intel Mac 的 RAG 启动脚本会再用 Python 3.11 和专用锁文件创建隔离 worker 环境
 
 cd apps/dsa-web
 npm ci

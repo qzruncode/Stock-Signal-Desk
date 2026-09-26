@@ -24,6 +24,7 @@ from src.agent.run_streaming import (
 from src.agent.runtime_safety import AgentRequestValidationError, agent_request_rate_limiter, get_agent_runtime_limits, validate_chat_request_body
 from src.auth import get_client_ip
 from src.services.chat_session_service import ChatSessionService
+from src.services.rag_knowledge_base_service import RagKnowledgeBaseService, RagServiceError
 from src.storage import DatabaseManager
 from src.llm.anthropic_gateway import AnthropicGatewayConfigError as AgentModelConfigError
 
@@ -202,6 +203,32 @@ async def agent_chat_impl(
 
     tenant_id = str(getattr(request.state, "tenant_id", "local"))
     owner_id = str(getattr(request.state, "owner_id", "admin"))
+    raw_knowledge_base_ids = body.get("knowledge_base_ids") or []
+    if not isinstance(raw_knowledge_base_ids, list) or any(not isinstance(item, str) for item in raw_knowledge_base_ids):
+        return JSONResponse(
+            status_code=422,
+            content={"error": "invalid_knowledge_base_scope", "message": "knowledge_base_ids 必须是字符串数组"},
+        )
+    knowledge_base_ids = list(dict.fromkeys(item.strip() for item in raw_knowledge_base_ids if item.strip()))
+    if len(knowledge_base_ids) > 8:
+        return JSONResponse(
+            status_code=422,
+            content={"error": "too_many_knowledge_bases", "message": "一次最多选择 8 个知识库"},
+        )
+    knowledge_service = RagKnowledgeBaseService(db_manager)
+    try:
+        for knowledge_base_id in knowledge_base_ids:
+            knowledge_service.assert_knowledge_base(
+                knowledge_base_id,
+                tenant_id=tenant_id,
+                owner_id=owner_id,
+            )
+    except RagServiceError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": exc.code, "message": str(exc)},
+        )
+    body["knowledge_base_ids"] = knowledge_base_ids
     retry_after = agent_request_rate_limiter.check_and_record(
         f"{tenant_id}:{owner_id}:{get_client_ip(request)}",
         limit=limits.requests_per_minute,

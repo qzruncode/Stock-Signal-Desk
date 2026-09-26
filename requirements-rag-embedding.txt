@@ -1,0 +1,4 @@
+# Pinned Qdrant FastEmbed CPU inference runtime (kept isolated under data/rag/runtime).
+fastembed==0.8.0
+fastapi==0.135.2
+uvicorn==0.42.0

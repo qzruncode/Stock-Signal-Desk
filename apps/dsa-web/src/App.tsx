@@ -11,6 +11,7 @@ import {
   NotFoundPage,
   RunExplorerPage,
   SettingPage,
+  KnowledgeBasePage,
 } from './utils/routePreload';
 import './App.css';
 import { WorkspaceQueryProvider } from './components/layout/WorkspaceQueryProvider';
@@ -74,6 +75,7 @@ const AppContent: React.FC = () => {
           <Route path="/setting" element={<SettingPage />} />
           <Route path="/runs" element={<RunExplorerPage />} />
           <Route path="/monitoring" element={<AgentMonitoringPage />} />
+          <Route path="/knowledge" element={<KnowledgeBasePage />} />
           <Route path="/stocks" element={<MarketWorkspacePage section="stocks" />} />
           <Route path="/screening" element={<MarketWorkspacePage section="screening" />} />
           <Route path="/sources" element={<MarketWorkspacePage section="sources" />} />

@@ -92,6 +92,7 @@ static/
 
 # logs
 logs/
+data/rag/
 excalidraw.log
 tmp.md
 todo*.md

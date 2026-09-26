@@ -14,7 +14,6 @@ from src.llm.anthropic_gateway import (
     build_litellm_kwargs,
     resolve_anthropic_gateway_config,
 )
-
 logger = logging.getLogger(__name__)
 
 

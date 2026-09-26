@@ -5,7 +5,7 @@ from src.agent.langgraph_runtime.presentation import (
     project_arguments_for_timeline,
     project_tool_result_for_timeline,
 )
-from src.agent.terminal_publisher import _trace_tool_results
+from src.agent.terminal_publisher import _trace_claim_evidence, _trace_tool_results
 
 
 def test_nested_reader_ids_cannot_collide_when_hydrating_previews() -> None:
@@ -110,6 +110,106 @@ def test_timeline_projection_turns_named_mapping_records_into_result_rows() -> N
         {"name": "price", "value": "3942.0879"},
         {"name": "change_pct", "value": "0.018"},
     ]
+
+
+def test_timeline_projection_prefers_explicit_chunk_citations_over_raw_results() -> None:
+    page_url = "/api/v1/knowledge-bases/documents/doc-1/content#page=14"
+    projected = project_tool_result_for_timeline({
+        "results": [{
+            "chunk_id": "internal-chunk-id",
+            "document_id": "internal-document-id",
+            "page_start": 14,
+            "text": "Raw chunk body",
+            "url": page_url,
+        }],
+        "result_items": [{
+            "id": "kb_stable-hit",
+            "evidence_id": "ev_kb_stable-hit",
+            "title": "Agentic_Design_Patterns_Complete.pdf · 第 14 页",
+            "url": page_url,
+            "summary": "The exact retrieved passage.",
+            "source": "PDF 知识库",
+        }],
+    })
+
+    assert projected["result_items"] == [{
+        "title": "Agentic_Design_Patterns_Complete.pdf · 第 14 页",
+        "url": page_url,
+        "source": "PDF 知识库",
+        "summary": "The exact retrieved passage.",
+        "evidence_id": "ev_kb_stable-hit",
+    }]
+
+
+def test_terminal_trace_preserves_safe_per_hit_evidence_identity() -> None:
+    trace = _trace_tool_results([{
+        "action_id": "call-pdf-search",
+        "tool_name": "search_knowledge_base",
+        "success": True,
+        "result": {
+            "success": True,
+            "results": [{"chunk_id": "internal-id", "page_start": 14}],
+            "result_items": [{
+                "id": "kb_stable-hit",
+                "evidence_id": "ev_kb_stable-hit",
+                "title": "Agentic_Design_Patterns_Complete.pdf · 第 14 页",
+                "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=14",
+                "summary": "The exact retrieved passage.",
+            }],
+        },
+    }])
+
+    assert trace[0]["result_items"][0]["evidence_id"] == "ev_kb_stable-hit"
+    assert "internal-id" not in str(trace[0]["result_items"])
+
+
+def test_terminal_claim_carries_only_its_exact_pdf_excerpt() -> None:
+    page_url = "/api/v1/knowledge-bases/documents/doc-1/content#page=14"
+    claims = [{
+        "claim_id": "claim-1",
+        "evidence_ids": ["ev_kb_stable-hit"],
+        "evidence": [{
+            "evidence_id": "ev_kb_stable-hit",
+            "tool_name": "search_knowledge_base",
+            "source_refs": [page_url],
+        }],
+    }]
+    tool_results = [{
+        "action_id": "call-pdf-search",
+        "tool_name": "search_knowledge_base",
+        "success": True,
+        "result": {
+            "success": True,
+            "result_items": [
+                {
+                    "evidence_id": "ev_kb_stable-hit",
+                    "title": "Agentic_Design_Patterns_Complete.pdf · 第 14 页",
+                    "url": page_url,
+                    "summary": "The exact cited passage.",
+                },
+                {
+                    "evidence_id": "ev_kb_unrelated-hit",
+                    "title": "Agentic_Design_Patterns_Complete.pdf · 第 21 页",
+                    "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=21",
+                    "summary": "An unrelated passage.",
+                },
+            ],
+        },
+    }]
+
+    projected = _trace_claim_evidence(claims, tool_results=tool_results)
+
+    assert projected[0]["evidence"][0]["result_items"] == [{
+        "title": "Agentic_Design_Patterns_Complete.pdf · 第 14 页",
+        "evidence_id": "ev_kb_stable-hit",
+        "url": page_url,
+        "source": None,
+        "published_at": None,
+        "summary": "The exact cited passage.",
+        "attributes": [],
+    }]
+    assert "An unrelated passage." not in str(projected)
+    assert "chunk_id" not in str(projected)
 
 
 def test_historical_trace_enrichment_reuses_the_bounded_result_projection() -> None:

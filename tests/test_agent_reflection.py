@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from src.agent.langgraph_runtime.middleware import ReflectionMiddleware
 from src.agent.langgraph_runtime.reflection import (
     ReflectionReview,
     build_reflection_packet,
     normalize_reflection_review,
     reflection_eligibility,
     reflection_feedback,
+    unrequested_knowledge_table_review,
 )
 
 
@@ -70,6 +74,38 @@ def test_reflection_only_targets_research_judgments_after_hard_checks():
     general = _state()
     general["structured_answer"] = {**general["structured_answer"], "profile": "general"}
     assert reflection_eligibility(general, general["structured_answer"])[1]["reason"] == "general_profile"
+
+    pdf_answer = _state(
+        knowledge_base_ids=["kb-selected"],
+        evidence=[
+            {
+                **_state()["evidence"][0],
+                "tool_name": "search_knowledge_base",
+                "result": {
+                    "results": [
+                        {"page_start": 14, "page_end": 14, "text": "Level 0 uses no memory."}
+                    ]
+                },
+            }
+        ],
+        structured_answer={
+            "profile": "general",
+            "blocks": [
+                {
+                    "kind": "answer",
+                    "content": "Level 0 has no memory; Level 1 memory is provided by tools.",
+                    "evidence_ids": ["ev_secret"],
+                }
+            ],
+        },
+    )
+    pdf_eligible, pdf_details = reflection_eligibility(
+        pdf_answer,
+        pdf_answer["structured_answer"],
+    )
+    assert pdf_eligible is True
+    assert pdf_details["reason"] == "knowledge_base_answer_blocks_present"
+    assert pdf_details["material_block_indices"] == [1]
 
     facts_only = _state()
     facts_only["structured_answer"] = {
@@ -132,3 +168,103 @@ def test_reflection_review_is_strict_and_feedback_is_bounded():
 
     with pytest.raises(ValueError, match="revise"):
         normalize_reflection_review({"verdict": "revise", "issues": []}, block_count=1)
+
+
+def test_reflection_checks_comparisons_without_inventing_unstated_capabilities():
+    from src.agent.langgraph_runtime.reflection import reflection_messages
+
+    messages = reflection_messages(build_reflection_packet(state=_state(), answer=_state()["structured_answer"]))
+    system_prompt = str(messages[0].content)
+
+    assert "不得从一方未提及某项能力反推出另一方具备该能力" in system_prompt
+    assert "逐行逐格核对" in system_prompt
+    assert "来源未说明" in system_prompt
+
+
+def test_pdf_comparison_table_requires_an_explicit_user_format_request():
+    state = _state(
+        user_text="只根据所选 PDF 比较 Level 0 与 Level 1 的差异",
+        knowledge_base_ids=["kb-selected"],
+        evidence=[
+            {
+                **_state()["evidence"][0],
+                "tool_name": "search_knowledge_base",
+                "result": {
+                    "results": [
+                        {"page_start": 14, "page_end": 14, "text": "Level 0 uses no memory."}
+                    ]
+                },
+            }
+        ],
+    )
+    answer = {
+        "profile": "general",
+        "blocks": [{
+            "kind": "answer",
+            "content": (
+                "核心差异\n\n"
+                "| 维度 | Level 0 | Level 1 |\n"
+                "|---|---|---|\n"
+                "| 记忆 | 无记忆 | 外部来源获取信息 |"
+            ),
+            "evidence_ids": ["ev_secret"],
+        }],
+    }
+
+    review = unrequested_knowledge_table_review(state, answer)
+
+    assert review is not None
+    assert review["verdict"] == "revise"
+    assert review["issues"][0]["block_index"] == 1
+    assert "删除表格" in review["issues"][0]["repair_instruction"]
+
+    requested_state = {**state, "user_text": "请用表格比较 Level 0 与 Level 1"}
+    assert unrequested_knowledge_table_review(requested_state, answer) is None
+    assert unrequested_knowledge_table_review(state, {"blocks": [{"content": "逐点说明"}]}) is None
+
+
+def test_reflection_middleware_routes_an_unrequested_pdf_table_through_bounded_revision():
+    class EventCapture:
+        def __init__(self):
+            self.calls = []
+
+        def stage(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+
+    state = _state(
+        user_text="只比较 Level 0 和 Level 1 的差异",
+        knowledge_base_ids=["kb-selected"],
+        evidence=[
+            {
+                **_state()["evidence"][0],
+                "tool_name": "search_knowledge_base",
+                "result": {
+                    "results": [
+                        {"page_start": 14, "page_end": 14, "text": "Level 0 uses no memory."}
+                    ]
+                },
+            }
+        ],
+        structured_answer={
+            "profile": "general",
+            "blocks": [{
+                "kind": "answer",
+                "content": (
+                    "| 维度 | Level 0 | Level 1 |\n"
+                    "|---|---|---|\n"
+                    "| 记忆 | 无记忆 | 外部来源获取信息 |"
+                ),
+                "evidence_ids": ["ev_secret"],
+            }],
+        },
+    )
+    events = EventCapture()
+    runtime = type("Runtime", (), {"context": type("Context", (), {"events": events})()})()
+
+    update = asyncio.run(ReflectionMiddleware().aafter_model(state, runtime))
+
+    assert update["jump_to"] == "model"
+    assert update["reflection_revision_count"] == 1
+    assert update["reflection_call_count"] == 0
+    assert "删除表格" in update["reflection_feedback"]
+    assert events.calls[0][0][:2] == ("reflection", "completed")

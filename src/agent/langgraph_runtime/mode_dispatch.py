@@ -60,6 +60,8 @@ def _route_messages(user_text: str, *, allow_goal: bool) -> list[Any]:
                 "你是产品层 Auto 路由器。可选模式有 direct、plan、team、goal。"
                 "direct 适合单步解释或单一事实；plan 适合需要显式步骤和依赖的多步任务；"
                 "team 只适合需要多个领域并行协作的任务；"
+                "单一且明确的持久化动作（例如导入用户选定知识库中的一个文件）应走 direct，"
+                "由执行器在动作前请求审批；不要为了一个动作路由到 Team。"
                 + goal_instruction
                 + "goal 是独立产品模式，不要把它描述成 plan 或 team 的子流程。"
                 "不要执行工具，不要输出最终答案。只能返回 ProductModeRoute；"

@@ -169,15 +169,33 @@ class ContextBudget:
         return max(1, self.input_tokens - self.response_schema_tokens)
 
 
-def completed_answers_as_context(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+def completed_answers_as_context(
+    messages: Sequence[BaseMessage],
+    *,
+    selected_knowledge_base: bool = False,
+) -> list[BaseMessage]:
     """Past typed answers are conversation content, not live tool receipts.
 
     Preserve native tool pairs in the current user turn (including repairs),
     every ordinary history message, and domain-tool pairs. Only a previous
     turn's output-schema call is rendered through the existing answer renderer
     and its corresponding protocol receipt omitted from the transient request.
+
+    For selected-document RAG, older assistant/tool messages are deliberately
+    excluded from the provider request: they may contain stale or unsupported
+    claims that look like evidence. Keep recent user turns for follow-up
+    resolution and retain the complete current-turn tool/repair protocol.
     """
     last_user = max((i for i, message in enumerate(messages) if isinstance(message, HumanMessage)), default=-1)
+    if selected_knowledge_base:
+        if last_user < 0:
+            return list(messages)
+        prior_user_messages = [
+            message
+            for message in messages[:last_user]
+            if isinstance(message, HumanMessage)
+        ]
+        return [*prior_user_messages[-2:], *messages[last_user:]]
     output_ids = {
         str(call.get("id"))
         for message in messages[: max(0, last_user)]
@@ -220,7 +238,12 @@ class ContextBudgetMiddleware(AgentMiddleware):
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         model = request.model
         system_messages = [request.system_message] if request.system_message else []
-        messages = completed_answers_as_context(request.messages or [])
+        messages = completed_answers_as_context(
+            request.messages or [],
+            selected_knowledge_base=bool(
+                (request.state or {}).get("knowledge_base_ids")
+            ),
+        )
         request = request.override(messages=messages)
         budget = ContextBudget(
             context_window=model_context_window(model),

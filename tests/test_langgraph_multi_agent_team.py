@@ -1263,6 +1263,8 @@ def test_worker_scope_is_deny_by_default_and_prefixes_action_identity() -> None:
         assert scope.get_tool_names() == ["market_probe"]
         assert scope.get_tool("fundamental_probe") is None
         assert scope.get_tool("dynamic_effect") is None
+        schemas = scope.get_all_schemas(include_server_controlled=True)
+        assert [item["function"]["name"] for item in schemas] == ["market_probe"]
 
         executor = FakeAtomicExecutor()
         scoped = TaskScopedExecutor(

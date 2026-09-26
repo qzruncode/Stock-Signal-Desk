@@ -81,6 +81,11 @@ def _trace_result_items(value: Any) -> list[dict[str, Any]]:
         projected.append(
             {
                 "title": _short_text(raw.get("title"), 360),
+                "evidence_id": (
+                    _short_text(raw.get("evidence_id"), 160)
+                    if _short_text(raw.get("evidence_id"), 160).startswith("ev_")
+                    else None
+                ),
                 "url": _short_text(raw.get("url"), 1_000) or None,
                 "source": _short_text(raw.get("source"), 320) or None,
                 "published_at": _short_text(raw.get("published_at"), 160) or None,
@@ -250,12 +255,42 @@ def _trace_evidence(evidence: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
     ]
 
 
-def _trace_claim_evidence(claims: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Persist the compact, user-safe projection of the claim audit ledger."""
+def _trace_claim_evidence(
+    claims: Sequence[Mapping[str, Any]],
+    *,
+    tool_results: Sequence[Mapping[str, Any]] = (),
+) -> list[dict[str, Any]]:
+    """Persist claim evidence with its exact bounded source excerpt."""
+    result_item_by_evidence_id: dict[str, dict[str, Any]] = {}
+    for result in _trace_tool_results(tool_results):
+        for result_item in result.get("result_items") or []:
+            if not isinstance(result_item, Mapping):
+                continue
+            evidence_id = _short_text(result_item.get("evidence_id"), 160)
+            if evidence_id.startswith("ev_"):
+                result_item_by_evidence_id.setdefault(evidence_id, dict(result_item))
+
     projected: list[dict[str, Any]] = []
     for item in claims[:80]:
         checks = item.get("checks") if isinstance(item.get("checks"), Mapping) else {}
         evidence = item.get("evidence") if isinstance(item.get("evidence"), Sequence) else []
+        evidence_projection: list[dict[str, Any]] = []
+        for entry in evidence[:16]:
+            if not isinstance(entry, Mapping):
+                continue
+            evidence_id = _short_text(entry.get("evidence_id"), 160)
+            projected_entry = {
+                "evidence_id": evidence_id,
+                "tool_name": _short_text(entry.get("tool_name"), 128),
+                "data_time": _short_text(entry.get("data_time"), 160) or None,
+                "source_refs": _short_list(entry.get("source_refs"), item_limit=8, text_limit=240),
+            }
+            # Keep each citation self-contained without attaching the entire
+            # top-k result list to it. This is a bounded preview, not raw PDF.
+            result_item = result_item_by_evidence_id.get(evidence_id)
+            if result_item:
+                projected_entry["result_items"] = [result_item]
+            evidence_projection.append(projected_entry)
         projected.append(
             {
                 "claim_id": _short_text(item.get("claim_id"), 96),
@@ -272,16 +307,7 @@ def _trace_claim_evidence(claims: Sequence[Mapping[str, Any]]) -> list[dict[str,
                     "entity_scope": checks.get("entity_scope") is True,
                     "time": checks.get("time") is True,
                 },
-                "evidence": [
-                    {
-                        "evidence_id": str(entry.get("evidence_id") or ""),
-                        "tool_name": _short_text(entry.get("tool_name"), 128),
-                        "data_time": _short_text(entry.get("data_time"), 160) or None,
-                        "source_refs": _short_list(entry.get("source_refs"), item_limit=8, text_limit=240),
-                    }
-                    for entry in evidence[:16]
-                    if isinstance(entry, Mapping)
-                ],
+                "evidence": evidence_projection,
             }
         )
     return projected
@@ -326,7 +352,10 @@ def _execution_trace(
             if isinstance(item, Mapping)
         ],
         "evidence": _trace_evidence(evidence),
-        "claim_evidence": _trace_claim_evidence(claim_evidence),
+        "claim_evidence": _trace_claim_evidence(
+            claim_evidence,
+            tool_results=tool_results,
+        ),
         "loop": {
             "model_turn_count": int(state.get("model_turn_count") or 0),
             "tool_call_count": int(state.get("tool_call_count") or 0),

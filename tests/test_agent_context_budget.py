@@ -89,6 +89,27 @@ def test_prior_typed_answer_becomes_context_without_touching_current_tool_pairs(
     assert messages[1].tool_calls and len(messages) == 8
 
 
+def test_selected_pdf_context_excludes_old_assistant_claims_but_keeps_current_tool_pairs():
+    from tests.test_langgraph_agent_runtime import _named_tool_call
+
+    current_call = _named_tool_call("current-search", "search_knowledge_base", {"query": "Level 1"})
+    messages = [
+        HumanMessage(content="上一轮问题"),
+        AIMessage(content="旧助手结论：Level 1 有记忆。"),
+        ToolMessage(content="旧检索摘要", tool_call_id="old-search"),
+        HumanMessage(content="只依据 PDF 回答这个比较"),
+        AIMessage(content="旧阶段进度也声称 Level 1 有记忆。"),
+        HumanMessage(content="Level 0 与 Level 1 的核心差异？"),
+        current_call,
+        ToolMessage(content="本轮 PDF 原文命中", tool_call_id="current-search"),
+    ]
+
+    projected = completed_answers_as_context(messages, selected_knowledge_base=True)
+
+    assert projected == [messages[0], messages[3], *messages[5:]]
+    assert all("Level 1 有记忆" not in str(message.content) for message in projected)
+
+
 def test_context_budget_trims_transient_messages_and_preserves_canonical_input(monkeypatch):
     monkeypatch.setenv("AGENT_CONTEXT_OUTPUT_TOKENS", "256")
     monkeypatch.setenv("AGENT_CONTEXT_SAFETY_TOKENS", "256")

@@ -118,6 +118,8 @@ TOOL_MODULES: tuple[str, ...] = (
     "read_text_document",
     "get_announcements",
     "get_research_report",
+    "search_knowledge_base",
+    "company_financial_report_import",
     # Market context
     "get_index_data",
     "get_bond_yield",

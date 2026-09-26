@@ -160,6 +160,8 @@ class AgentState(LangChainAgentState, total=False):
     conversation_id: str
     user_text: str
     system_prompt: str
+    knowledge_base_ids: list[str]
+    knowledge_base_search_required: bool
     reference_time: str
     # Small, durable reference context resolved from a successful read tool.
     # Large member collections remain in the tool observation and are fetched
@@ -357,6 +359,8 @@ class AgentGraphInput(TypedDict, total=False):
     conversation_id: str
     user_text: str
     system_prompt: str
+    knowledge_base_ids: list[str]
+    knowledge_base_search_required: bool
     reference_time: str
     conversation_context: dict[str, Any] | None
     engine: str
@@ -508,6 +512,7 @@ class GraphContext:
     run_attempt: int
     tenant_id: str
     owner_id: str
+    knowledge_base_ids: tuple[str, ...] = ()
     # Team workers may compile the shared web tools into their child graph so
     # a recovery turn can use the native LangGraph tool path.  Middleware hides
     # these names during normal turns and allows them only when fallback state

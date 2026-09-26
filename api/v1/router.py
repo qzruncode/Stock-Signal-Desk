@@ -20,6 +20,7 @@ from api.v1.endpoints import (
     rss,
     indicator_screening,
     data_service,
+    knowledge_base,
 )
 
 # 创建 v1 版本主路由
@@ -43,3 +44,5 @@ router.include_router(
 router.include_router(agent.router, prefix="", tags=["Agent"])
 
 router.include_router(rss.router, prefix="/rss", tags=["RSS"])
+
+router.include_router(knowledge_base.router, prefix="", tags=["KnowledgeBase"])

@@ -38,6 +38,86 @@ def test_numbered_sources_remain_stable_across_replay_append_and_ineligible_resu
     assert set(ledger["unresolved_evidence_ids"]) == {"source:2", "source:3", "source:99"}
 
 
+def test_pdf_source_slots_and_claims_resolve_to_one_retrieved_chunk() -> None:
+    page_14 = "/api/v1/knowledge-bases/documents/doc-1/content#page=14"
+    page_85 = "/api/v1/knowledge-bases/documents/doc-1/content#page=85"
+    evidence = [{
+        "evidence_id": "ev_search_action",
+        "action_id": "call-pdf-search",
+        "tool_name": "search_knowledge_base",
+        "success": True,
+        "has_data": True,
+        "evidence_eligible": True,
+        "entities": {"query": "Level 0 Agent"},
+        "data_time_applicable": False,
+        "source_refs": [page_14, page_85],
+        "result": {
+            "success": True,
+            "results": [
+                {
+                    "citation_id": "kb_level_zero",
+                    "page_start": 14,
+                    "page_end": 14,
+                    "filename": "Agentic_Design_Patterns_Complete.pdf",
+                    "snippet": "Level 0 operates without tools, memory, or environment interaction.",
+                    "url": page_14,
+                },
+                {
+                    "citation_id": "kb_unrelated",
+                    "page_start": 85,
+                    "page_end": 85,
+                    "filename": "Agentic_Design_Patterns_Complete.pdf",
+                    "snippet": "Unrelated code example.",
+                    "url": page_85,
+                },
+            ],
+        },
+    }]
+
+    catalog = evidence_source_catalog(evidence)
+    assert [(item["source_id"], item["evidence_id"]) for item in catalog] == [
+        (1, "ev_kb_level_zero"),
+        (2, "ev_kb_unrelated"),
+    ]
+    assert catalog[0]["source_refs"] == [page_14]
+    assert catalog[0]["title"].endswith("第 14 页")
+    assert catalog[0]["excerpt"].startswith("Level 0 operates")
+
+    normalized, unresolved = canonicalize_evidence_markers(
+        "聚合检索记录不应成为结论引用。【证据 ev_search_action】",
+        evidence,
+    )
+    assert normalized == "聚合检索记录不应成为结论引用。"
+    assert unresolved == ["ev_search_action"]
+    normalized, unresolved = canonicalize_evidence_markers(
+        "Level 0 原文。【证据 ev_kb_level_zero】",
+        evidence,
+    )
+    assert normalized == "Level 0 原文。【证据 ev_kb_level_zero】"
+    assert unresolved == []
+
+    answer = resolve_answer_sources({"blocks": [{
+        "kind": "fact",
+        "content": "原文片段已核验。",
+        "source_ids": [1],
+    }]}, evidence)
+    assert answer["blocks"][0]["evidence_ids"] == ["ev_kb_level_zero"]
+    ledger = build_structured_claim_evidence_ledger(
+        answer["blocks"], evidence, [{
+            "action_id": "call-pdf-search",
+            "tool_name": "search_knowledge_base",
+            "success": True,
+        }],
+    )
+    assert claim_checks_pass(ledger["claims"][0])
+    assert ledger["claims"][0]["evidence"] == [{
+        "evidence_id": "ev_kb_level_zero",
+        "tool_name": "search_knowledge_base",
+        "data_time": None,
+        "source_refs": [page_14],
+    }]
+
+
 @pytest.mark.parametrize("source_id", ["ev_typo", "1", 0, -1, 1.5, True])
 def test_native_source_schema_rejects_hashes_and_invalid_source_numbers(source_id) -> None:
     with pytest.raises(ValidationError):
@@ -196,6 +276,62 @@ def test_claim_ledger_rejects_unmatched_identifier_and_time() -> None:
     assert claim["checks"]["time"] is False
 
 
+def test_claim_ledger_resolves_prior_year_from_the_same_report_table_hit() -> None:
+    evidence = _evidence(
+        tool_name="search_knowledge_base",
+        data_time=None,
+        data_time_applicable=False,
+        freshness_unknown=True,
+        is_stale=False,
+        result={
+            "filename": "新强联_2026年半年度报告.pdf",
+            "snippet": "| 本报告期 | 上年同期 | 本报告期比上年同期增减 |",
+        },
+    )
+
+    ledger = build_claim_evidence_ledger(
+        "2025年半年度为上年同期。【证据 ev_robot】",
+        [evidence],
+        [_tool_result(tool_name="search_knowledge_base")],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][0]["checks"]["time"] is True
+
+
+@pytest.mark.parametrize(
+    ("filename", "claim_year"),
+    [
+        ("新强联_2026年半年度报告.pdf", "2024"),
+        ("新强联_半年度报告.pdf", "2025"),
+    ],
+)
+def test_claim_ledger_does_not_guess_a_prior_year_without_matching_report_metadata(
+    filename: str,
+    claim_year: str,
+) -> None:
+    evidence = _evidence(
+        tool_name="search_knowledge_base",
+        data_time=None,
+        data_time_applicable=False,
+        freshness_unknown=True,
+        is_stale=False,
+        result={
+            "filename": filename,
+            "snippet": "| 本报告期 | 上年同期 | 本报告期比上年同期增减 |",
+        },
+    )
+
+    ledger = build_claim_evidence_ledger(
+        f"{claim_year}年半年度为上年同期。【证据 ev_robot】",
+        [evidence],
+        [_tool_result(tool_name="search_knowledge_base")],
+    )
+
+    assert any("时间无法" in issue and claim_year in issue for issue in ledger["issues"])
+    assert ledger["claims"][0]["checks"]["time"] is False
+
+
 def test_claim_ledger_does_not_extract_decimal_prefixes_as_entity_identifiers() -> None:
     ledger = build_claim_evidence_ledger(
         "ROE-15.17%，EPS-1.14元，其他指标ABC-12.34【证据 ev_robot】",
@@ -220,6 +356,58 @@ def test_claim_ledger_requires_source_data_time_for_latest_answer_scope() -> Non
     )
 
     assert any("当前/最新时间口径" in issue for issue in ledger["issues"])
+
+
+def test_claim_ledger_does_not_treat_current_event_awareness_as_a_freshness_claim() -> None:
+    source_text = (
+        "The trade-off is a complete lack of current-event awareness."
+    )
+    evidence = _evidence(
+        tool_name="search_knowledge_base",
+        data_time=None,
+        freshness_unknown=True,
+        is_stale=False,
+        result={"text": source_text},
+    )
+    tool_result = _tool_result(tool_name="search_knowledge_base")
+
+    ledger = build_structured_claim_evidence_ledger(
+        [{
+            "kind": "fact",
+            "content": "The trade-off is a complete lack of current-event awareness. 【证据 ev_robot】",
+            "evidence_ids": ["ev_robot"],
+        }],
+        [evidence],
+        [tool_result],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][0]["checks"]["time"] is True
+
+
+def test_claim_ledger_uses_document_source_time_applicability_for_capability_text() -> None:
+    source_text = "The agent can search for current information and synthesize the results."
+    evidence = _evidence(
+        tool_name="search_knowledge_base",
+        data_time=None,
+        data_time_applicable=False,
+        freshness_unknown=True,
+        is_stale=False,
+        result={"text": source_text},
+    )
+
+    ledger = build_structured_claim_evidence_ledger(
+        [{
+            "kind": "fact",
+            "content": "The book describes Level 1 as able to find current information through tools. 【证据 ev_robot】",
+            "evidence_ids": ["ev_robot"],
+        }],
+        [evidence],
+        [_tool_result(tool_name="search_knowledge_base")],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][0]["checks"]["time"] is True
 
 
 def test_claim_ledger_does_not_let_an_uncited_latest_intro_borrow_later_evidence() -> None:

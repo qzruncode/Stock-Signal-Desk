@@ -89,6 +89,8 @@ _ATTRIBUTE_EXCLUSIONS = {
     "attachments",
     "item_ref",
     "content_hash",
+    "id",
+    "evidence_id",
     "result_type",
     "search_provider",
 }
@@ -296,6 +298,9 @@ def _result_item(value: Any, index: int) -> dict[str, Any]:
         projected["summary"] = summary
     if attributes:
         projected["attributes"] = attributes
+    evidence_id = _text(value.get("evidence_id"), 160)
+    if evidence_id.startswith("ev_"):
+        projected["evidence_id"] = evidence_id
     return projected
 
 
@@ -342,7 +347,11 @@ def project_tool_result_for_timeline(
     """Build a compact result ledger for live and hydrated timeline rows."""
     if not isinstance(result, Mapping):
         return {}
-    collection = _result_collection(result)
+    explicit_items = result.get("result_items")
+    if isinstance(explicit_items, Sequence) and not isinstance(explicit_items, (str, bytes, bytearray)):
+        collection = list(explicit_items)
+    else:
+        collection = _result_collection(result)
     if not collection:
         collection = _singleton_result(result)
     item_limit = max(1, min(int(max_items), 20))

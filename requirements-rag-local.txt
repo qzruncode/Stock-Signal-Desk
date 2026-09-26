@@ -1,0 +1,4 @@
+# Local API/worker dependencies, separately checked by scripts/rag-local.sh.
+qdrant-client==1.19.1
+celery[redis]==5.6.3
+pdfminer.six==20260107

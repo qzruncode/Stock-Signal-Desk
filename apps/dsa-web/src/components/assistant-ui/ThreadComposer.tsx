@@ -12,13 +12,24 @@ import {
 } from './attachment';
 import { cn } from '../../utils/cn';
 import { AgentModeSelector } from './AgentModeSelector';
+import { KnowledgeBaseChatSelector } from './KnowledgeBaseChatSelector';
 import type { AgentProductMode } from '../../utils/agentMode';
 
 export const Composer: FC<{
   onUserCancel?: () => void;
   agentMode: AgentProductMode;
   onAgentModeChange: (mode: AgentProductMode) => void;
-}> = ({ onUserCancel, agentMode, onAgentModeChange }) => {
+  knowledgeBaseIds: string[];
+  knowledgeSelectionDisabled: boolean;
+  onKnowledgeBaseIdsChange: (ids: string[]) => void;
+}> = ({
+  onUserCancel,
+  agentMode,
+  onAgentModeChange,
+  knowledgeBaseIds,
+  knowledgeSelectionDisabled,
+  onKnowledgeBaseIdsChange,
+}) => {
   const isRunning = useThread((s) => s.isRunning);
   return (
     <div className="shrink-0 border-t border-border/70 bg-background/90 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
@@ -44,6 +55,11 @@ export const Composer: FC<{
 
         <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
           <div className="flex items-center gap-0.5">
+            <KnowledgeBaseChatSelector
+              knowledgeBaseIds={knowledgeBaseIds}
+              disabled={knowledgeSelectionDisabled || isRunning}
+              onKnowledgeBaseIdsChange={onKnowledgeBaseIdsChange}
+            />
             <ComposerAddAttachment />
             {/* 语音输入:无 DictationAdapter(浏览器不支持)或非编辑态时 Dictate 自动隐藏;
                 录音中显示 StopDictation(红点)+ 实时转写预览。 */}

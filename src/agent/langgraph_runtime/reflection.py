@@ -1,4 +1,4 @@
-"""Bounded semantic review for evidence-backed stock research answers.
+"""Bounded semantic review for evidence-backed answers.
 
 Reflection is deliberately narrower than evidence validation.  The existing
 runtime remains responsible for source eligibility, citation integrity, time
@@ -75,6 +75,16 @@ _LOCAL_PATH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _EVIDENCE_ID_PATTERN = re.compile(r"\bev_[A-Za-z0-9_.:-]+\b")
+_MARKDOWN_TABLE = re.compile(
+    r"(?m)^\s*\|[^\n]*\|\s*\r?\n\s*\|(?:\s*:?-{3,}:?\s*\|)+"
+)
+_TABLE_FORMAT_REQUEST = re.compile(
+    r"(?:用|以|按|整理成|做成|制成|列成|给我(?:一个|一张|个)?)\s*"
+    r"(?:markdown\s*)?(?:对比|比较|对照)?(?:表格|表)"
+    r"|(?:对比|比较|对照)表(?:格)?(?:形式|展示|呈现|输出|列出)?"
+    r"|\b(?:in|as)\s+(?:a\s+)?table\b|\btable\s+format\b",
+    re.IGNORECASE,
+)
 _HIDDEN_KEYS = frozenset(
     {
         "url",
@@ -183,7 +193,10 @@ def reflection_eligibility(
     if not candidate:
         return False, {"reason": "no_structured_answer"}
     profile = structured_answer_profile(candidate)
-    if profile != "research":
+    evidence = _eligible_evidence(state)
+    blocks = structured_answer_blocks(candidate)
+    knowledge_base_answer = bool(state.get("knowledge_base_ids"))
+    if profile != "research" and not knowledge_base_answer:
         return False, {"reason": "general_profile", "profile": profile}
     status = str(state.get("status") or "").strip().lower()
     if status and status != "completed":
@@ -197,14 +210,15 @@ def reflection_eligibility(
     ]
     if pending or str(state.get("content_access_feedback") or "").strip():
         return False, {"reason": "content_access_pending", "pending_count": len(pending)}
-    evidence = _eligible_evidence(state)
     if not evidence:
         return False, {"reason": "no_eligible_evidence", "evidence_count": 0}
-    blocks = structured_answer_blocks(candidate)
+    material_kinds = REFLECTION_MATERIAL_KINDS | (
+        frozenset({"answer", "fact"}) if knowledge_base_answer else frozenset()
+    )
     material_indices = [
         index
         for index, block in enumerate(blocks, start=1)
-        if str(block.get("kind") or "fact").strip().lower() in REFLECTION_MATERIAL_KINDS
+        if str(block.get("kind") or "fact").strip().lower() in material_kinds
     ]
     if not material_indices:
         return False, {
@@ -213,11 +227,53 @@ def reflection_eligibility(
             "material_block_indices": [],
         }
     return True, {
-        "reason": "judgment_blocks_present",
+        "reason": "knowledge_base_answer_blocks_present" if knowledge_base_answer else "judgment_blocks_present",
         "profile": profile,
         "evidence_count": len(evidence),
         "material_block_indices": material_indices,
         "pending_count": 0,
+        "knowledge_base_answer": knowledge_base_answer,
+    }
+
+
+def unrequested_knowledge_table_review(
+    state: Mapping[str, Any],
+    answer: Any,
+) -> dict[str, Any] | None:
+    """Require prose for PDF answers unless the user asks for a table.
+
+    Markdown comparison tables make it easy to imply a symmetric capability
+    that the document never states. The bounded revision keeps the answer
+    source-grounded without banning tables when the user explicitly requests
+    that presentation.
+    """
+    candidate = structured_answer_mapping(answer)
+    evidence = _eligible_evidence(state)
+    if not state.get("knowledge_base_ids"):
+        return None
+    question = str(state.get("user_text") or "")
+    if _TABLE_FORMAT_REQUEST.search(question):
+        return None
+    block_indexes = [
+        index
+        for index, block in enumerate(structured_answer_blocks(candidate), start=1)
+        if _MARKDOWN_TABLE.search(str(block.get("content") or ""))
+    ]
+    if not block_indexes:
+        return None
+    return {
+        "verdict": "revise",
+        "summary": "用户未要求表格；将回答改为平行要点，避免表格补齐文档未说明的比较维度。",
+        "issues": [
+            {
+                "block_index": index,
+                "category": "reasoning",
+                "severity": "medium",
+                "reason": "PDF 回答包含用户未要求的 Markdown 表格，行标题可能暗示来源未说明的对称能力。",
+                "repair_instruction": "删除表格，改用对齐的分点描述；只陈述 PDF 明确说明的能力，未说明的一侧标为书中未说明，不要据此推断。",
+            }
+            for index in block_indexes[:12]
+        ],
     }
 
 
@@ -310,9 +366,11 @@ def build_reflection_packet(
 def reflection_messages(packet: Mapping[str, Any]) -> list[Any]:
     """Return the critic prompt without exposing raw evidence identities."""
     system = (
-        "你是证据驱动股票研究回答的语义复核器，不是回答者。"
-        "只检查候选 StructuredAgentAnswer 与提供的证据观察是否一致，重点检查推断是否超出证据、实体和时间范围是否一致、"
-        "风险与结论是否完整清楚。现有证据与硬校验已经通过；不要重新取证、不要调用工具、不要写最终答案。"
+        "你是通用证据驱动回答的语义复核器，不是回答者。"
+        "只检查候选 StructuredAgentAnswer 与提供的证据观察是否一致，重点检查事实是否超出原文、推断是否越过证据边界、"
+        "实体和时间范围是否一致，以及回答是否完整清楚。比较层级或方案时，不得从一方未提及某项能力反推出另一方具备该能力；"
+        "如果候选含表格，必须逐行逐格核对：每个单元格的主体与能力都要有独立的原文支持，同一行另一侧的证据不能代替该单元格的证据。"
+        "证据没有描述的维度应标为来源未说明，不得用常识补成文档事实。现有证据与硬校验已经通过；不要重新取证、不要调用工具、不要写最终答案。"
         "证据只使用 e1、e2 等匿名别名，禁止输出真实 evidence_id、URL、本机路径、文件名、命令或可执行内容。"
         "如果候选可以发布，返回 pass；如果可以基于已有证据修正，返回 revise 并给出具体区块和修订要求；"
         "如果关键结论无法由现有证据支持，返回 block。只能返回符合 ReflectionReview 结构的结果。"
@@ -426,4 +484,5 @@ __all__ = [
     "reflection_feedback",
     "reflection_messages",
     "reflection_review_projection",
+    "unrequested_knowledge_table_review",
 ]

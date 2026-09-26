@@ -47,6 +47,8 @@ export type ChatLayoutProps = {
   onInterruptDecision: (decision: AgentInterruptDecision) => void;
   agentMode: AgentProductMode;
   onAgentModeChange: (mode: AgentProductMode) => void;
+  knowledgeBaseIds: string[];
+  onKnowledgeBaseIdsChange: (ids: string[]) => void;
 };
 
 export const ChatLayout: React.FC<ChatLayoutProps> = ({
@@ -73,6 +75,8 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
   onInterruptDecision,
   agentMode,
   onAgentModeChange,
+  knowledgeBaseIds,
+  onKnowledgeBaseIdsChange,
 }) => {
   const [isDesktop, setIsDesktop] = useState(false);
   const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
@@ -273,6 +277,9 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
               onDeleteUserTurn={onDeleteUserTurn}
               agentMode={agentMode}
               onAgentModeChange={onAgentModeChange}
+              knowledgeBaseIds={knowledgeBaseIds}
+              knowledgeSelectionDisabled={isConversationSwitching}
+              onKnowledgeBaseIdsChange={onKnowledgeBaseIdsChange}
             />
           </Suspense>
           {pendingInterrupt ? (

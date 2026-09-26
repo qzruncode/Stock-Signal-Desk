@@ -45,6 +45,59 @@ describe('assistant evidence presentation adapter', () => {
     }));
   });
 
+  it('keeps PDF citation details scoped to the exact retrieved chunk', () => {
+    const index = assistantEvidenceIndexFromTrace({
+      evidence: [{
+        evidence_id: 'ev_search_action',
+        action_id: 'action-pdf-search',
+        tool_name: 'search_knowledge_base',
+        success: true,
+      }],
+      tool_results: [{
+        action_id: 'action-pdf-search',
+        tool_name: 'search_knowledge_base',
+        success: true,
+        result_items: [
+          {
+            id: 'kb_level-zero',
+            evidence_id: 'ev_kb_level-zero',
+            title: 'Agentic_Design_Patterns_Complete.pdf · 第 14 页',
+            url: '/api/v1/knowledge-bases/documents/doc-1/content#page=14',
+            summary: 'Level 0 is without tools, memory, or environment interaction.',
+          },
+          {
+            id: 'kb_unrelated',
+            evidence_id: 'ev_kb_unrelated',
+            title: 'Agentic_Design_Patterns_Complete.pdf · 第 85 页',
+            url: '/api/v1/knowledge-bases/documents/doc-1/content#page=85',
+            summary: 'An unrelated code example.',
+          },
+        ],
+      }],
+      claim_evidence: [{
+        evidence_ids: ['ev_kb_level-zero'],
+        evidence: [{
+          evidence_id: 'ev_kb_level-zero',
+          action_id: 'action-pdf-search',
+          tool_name: 'search_knowledge_base',
+          source_refs: ['/api/v1/knowledge-bases/documents/doc-1/content#page=14'],
+        }],
+      }],
+    });
+
+    expect(assistantEvidenceReferenceForId(index, 'ev_kb_level-zero')).toEqual(
+      expect.objectContaining({
+        evidenceId: 'ev_kb_level-zero',
+        sourceRefs: ['/api/v1/knowledge-bases/documents/doc-1/content#page=14'],
+        resultItems: [expect.objectContaining({
+          title: 'Agentic_Design_Patterns_Complete.pdf · 第 14 页',
+          summary: 'Level 0 is without tools, memory, or environment interaction.',
+        })],
+      }),
+    );
+    expect(assistantEvidenceReferenceForId(index, 'ev_kb_level-zero')?.resultItems).toHaveLength(1);
+  });
+
   it('uses one stable circled footnote for repeated evidence markers', () => {
     expect(replaceAssistantEvidenceMarkers(
       '第一处【证据 ev_a】；再次引用【证据：ev_a】；裸标记【ev_a】；第二条【ev_b】。',

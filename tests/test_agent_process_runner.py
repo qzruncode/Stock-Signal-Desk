@@ -125,7 +125,13 @@ def test_dispatcher_forwards_server_approval_only_to_isolated_worker() -> None:
     )
 
     assert outcome.canonical_result["success"] is True
-    assert captured["execution_context"] == {"conversation_id": "conversation", "run_id": "run"}
+    assert captured["execution_context"] == {
+        "conversation_id": "conversation",
+        "run_id": "run",
+        "tenant_id": "local",
+        "owner_id": "admin",
+        "knowledge_base_ids": "",
+    }
     assert captured["effect_approved"] is True
 
 

@@ -93,6 +93,31 @@ def test_tool_observation_preserves_empty_stale_and_fallback_state_for_the_model
     assert "最新" in payload["next_action"]
 
 
+def test_static_knowledge_source_does_not_surface_an_irrelevant_freshness_warning() -> None:
+    payload = json.loads(
+        _tool_message_content(
+            {
+                "tool_name": "search_knowledge_base",
+                "success": True,
+                "data_time_applicable": False,
+                "freshness_unknown": True,
+                "result": {
+                    "success": True,
+                    "data_time_applicable": False,
+                    "freshness_unknown": True,
+                    "results": [{"text": "The agent can search for current information."}],
+                },
+            },
+            {"evidence_id": "ev_pdf"},
+        )
+    )
+
+    assert payload["observation_status"] == "ok"
+    assert payload["data_time_applicable"] is False
+    assert payload["freshness_unknown"] is False
+    assert "next_action" not in payload
+
+
 def test_reference_only_results_keep_all_links_as_model_selectable_candidates() -> None:
     news_url = "https://example.test/news/1"
     report_url = "https://example.test/report/1.pdf"

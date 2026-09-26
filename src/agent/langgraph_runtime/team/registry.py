@@ -285,6 +285,21 @@ class ScopedToolRegistry:
     def get_tool_names(self) -> list[str]:
         return list(self.allowed_names)
 
+    def get_all_schemas(
+        self,
+        *,
+        include_server_controlled: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Expose only the worker-approved schemas to its ToolCatalog."""
+        allowed = set(self.allowed_names)
+        return [
+            schema
+            for schema in self.parent.get_all_schemas(
+                include_server_controlled=include_server_controlled
+            )
+            if str((schema.get("function") or {}).get("name") or "") in allowed
+        ]
+
     def get_tool(self, name: str) -> Any | None:
         normalized = str(name or "").strip()
         if normalized not in self.allowed_names:

@@ -1,16 +1,26 @@
-import { useEffect, useMemo, useRef, useState, type FC } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FC } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { TextMessagePartProps } from '@assistant-ui/react';
 import { Tooltip } from '../common/Tooltip';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
+import {
   assistantEvidenceIdFromHref,
   assistantEvidenceIndexFromTrace,
   assistantEvidenceReferenceForId,
   replaceAssistantEvidenceMarkers,
+  type AssistantEvidenceItem,
   type AssistantEvidenceReference,
 } from '../../utils/assistantEvidence';
 import { splitAssistantText } from '../../utils/assistantTextSplit';
+
+const PdfViewer = lazy(() => import('../rss/PdfViewer'));
 
 type AssistantMarkdownProps = {
   text: string;
@@ -171,10 +181,34 @@ const evidenceAttributeLabel = (name: string): string => (
   EVIDENCE_ATTRIBUTE_LABELS[name] ?? name.replaceAll('_', ' ')
 );
 
+const safeKnowledgeBasePdfHref = (value?: string): string | null => {
+  const candidate = String(value || '').trim();
+  if (!candidate) return null;
+  try {
+    const target = new URL(candidate, window.location.origin);
+    if (target.origin !== window.location.origin) return null;
+    if (!target.pathname.startsWith('/api/v1/knowledge-bases/documents/')) return null;
+    if (!/^#page=\d+$/.test(target.hash)) return null;
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return null;
+  }
+};
+
+const evidenceItemTitle = (item: AssistantEvidenceItem): string => {
+  const safeHref = safeKnowledgeBasePdfHref(item.url);
+  if (!safeHref || !/\b(?:chunk_id|document_id|knowledge_base_id|index_version_id)\s*=/i.test(item.title)) {
+    return item.title;
+  }
+  const page = /#page=(\d+)$/.exec(safeHref)?.[1];
+  return page ? `PDF 原文 · 第 ${page} 页` : 'PDF 原文';
+};
+
 const EvidenceTooltipContent: FC<{
   label: string;
   reference: AssistantEvidenceReference;
-}> = ({ label, reference }) => {
+  onOpenPdf: (url: string, title: string) => void;
+}> = ({ label, reference, onOpenPdf }) => {
   const sources = [...reference.sourceLabels, ...reference.sourceRefs]
     .map(evidenceSourceLabel)
     .filter(Boolean)
@@ -217,7 +251,18 @@ const EvidenceTooltipContent: FC<{
         <span className="mt-1.5 block space-y-1">
           {visibleItems.map((item, index) => (
             <span key={`${item.title}-${item.url ?? index}`} className="block break-words">
-              <span className="font-medium leading-5 text-foreground">{item.title}</span>
+              {safeKnowledgeBasePdfHref(item.url) ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenPdf(item.url || '', evidenceItemTitle(item))}
+                  className="font-medium leading-5 text-primary underline decoration-primary/35 underline-offset-2 hover:decoration-primary"
+                  aria-label={`在 PDF 中打开 ${evidenceItemTitle(item)}`}
+                >
+                  {evidenceItemTitle(item)}
+                </button>
+              ) : (
+                <span className="font-medium leading-5 text-foreground">{item.title}</span>
+              )}
               {item.summary ? (
                 <span className="mt-0.5 block text-foreground/90">{item.summary}</span>
               ) : null}
@@ -283,7 +328,8 @@ const EvidenceCitation: FC<{
   evidenceId: string;
   label: string;
   reference?: AssistantEvidenceReference;
-}> = ({ evidenceId, label, reference }) => {
+  onOpenPdf: (url: string, title: string) => void;
+}> = ({ evidenceId, label, reference, onOpenPdf }) => {
   const resolvedReference = reference ?? {
     evidenceId,
     sourceLabels: [],
@@ -297,7 +343,7 @@ const EvidenceCitation: FC<{
       focusable
       interactive
       ariaLabel={`查看证据 ${label}`}
-      content={<EvidenceTooltipContent label={label} reference={resolvedReference} />}
+      content={<EvidenceTooltipContent label={label} reference={resolvedReference} onOpenPdf={onOpenPdf} />}
       className="mx-0.5 align-baseline cursor-help"
       contentClassName="max-w-[24rem] whitespace-normal"
     >
@@ -317,6 +363,18 @@ export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({
   const renderedText = useProgressiveText(text, animate, onAnimationComplete);
   const { content, stopped } = splitAssistantText(renderedText);
   const evidenceIndex = useMemo(() => assistantEvidenceIndexFromTrace(evidence), [evidence]);
+  const [pdfViewer, setPdfViewer] = useState<{ url: string; title: string; page: number } | null>(null);
+  const openPdf = (value: string, title: string) => {
+    const safeHref = safeKnowledgeBasePdfHref(value);
+    if (!safeHref) return;
+    const target = new URL(safeHref, window.location.origin);
+    const pageMatch = /^#page=(\d+)$/.exec(target.hash);
+    setPdfViewer({
+      url: `${target.pathname}${target.search}`,
+      title,
+      page: pageMatch ? Math.max(1, Number(pageMatch[1])) : 1,
+    });
+  };
   const renderedContent = useMemo(
     () => replaceAssistantEvidenceMarkers(content, evidenceIndex),
     [content, evidenceIndex],
@@ -346,8 +404,8 @@ export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({
                 </blockquote>
               ),
               table: ({ children }) => (
-                <div className="my-2 overflow-x-auto rounded-md border border-border bg-card/60">
-                  <table className="w-max min-w-full border-collapse text-left text-[11px] sm:text-xs">
+                <div className="my-2 max-w-full overflow-x-auto rounded-md border border-border bg-card/60">
+                  <table className="w-full table-fixed border-collapse text-left text-[11px] sm:text-xs">
                     {children}
                   </table>
                 </div>
@@ -358,12 +416,12 @@ export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({
                 </tr>
               ),
               th: ({ children }) => (
-                <th className="border-b border-border bg-muted px-3 py-2 font-semibold whitespace-nowrap text-foreground first:min-w-20 first:w-20 sm:px-3.5">
+                <th className="border-b border-border bg-muted px-2 py-2 font-semibold break-words text-foreground first:min-w-20 first:w-20 first:whitespace-nowrap sm:px-3.5">
                   {children}
                 </th>
               ),
               td: ({ children }) => (
-                <td className="border-b border-border px-3 py-2 align-top leading-6 break-words first:min-w-20 first:w-20 first:whitespace-nowrap last:min-w-[16rem] sm:px-3.5 sm:last:min-w-[20rem]">
+                <td className="border-b border-border px-2 py-2 align-top leading-6 break-words first:min-w-20 first:w-20 first:whitespace-nowrap sm:px-3.5">
                   {children}
                 </td>
               ),
@@ -391,6 +449,7 @@ export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({
                       evidenceId={evidenceId}
                       label={String(children)}
                       reference={assistantEvidenceReferenceForId(evidenceIndex, evidenceId)}
+                      onOpenPdf={openPdf}
                     />
                   );
                 }
@@ -411,6 +470,21 @@ export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({
           </Markdown>
         </div>
       )}
+      <Dialog open={Boolean(pdfViewer)} onOpenChange={(open) => { if (!open) setPdfViewer(null); }}>
+        {pdfViewer ? (
+          <DialogContent className="z-[130] flex max-h-[calc(100dvh-2rem)] w-[calc(100%-1rem)] max-w-6xl flex-col gap-3 overflow-hidden p-4 sm:p-6">
+            <DialogHeader className="shrink-0 pr-8">
+              <DialogTitle>{pdfViewer.title}</DialogTitle>
+              <DialogDescription>原文第 {pdfViewer.page} 页</DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 overflow-y-auto">
+              <Suspense fallback={<div className="py-12 text-center text-sm text-muted-foreground">正在加载 PDF 查看器…</div>}>
+                <PdfViewer resourceUrl={pdfViewer.url} initialPage={pdfViewer.page} />
+              </Suspense>
+            </div>
+          </DialogContent>
+        ) : null}
+      </Dialog>
     </div>
   );
 };

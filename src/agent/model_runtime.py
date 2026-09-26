@@ -33,6 +33,35 @@ def _env_float(
     return max(minimum, min(maximum, value))
 
 
+def _positive_timeout(value: float | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not timeout > 0:
+        return None
+    return min(3_600.0, timeout)
+
+
+class _LocalModelDeadlineExceeded(TimeoutError):
+    """An application-owned deadline expired while awaiting a provider."""
+
+
+async def _await_with_deadline(awaitable: Any, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None:
+        return await awaitable
+    deadline = asyncio.timeout(timeout_seconds)
+    try:
+        async with deadline:
+            return await awaitable
+    except asyncio.TimeoutError as exc:
+        if deadline.expired():
+            raise _LocalModelDeadlineExceeded from exc
+        raise
+
+
 def _is_transient_provider_error(error: BaseException) -> bool:
     status = getattr(error, "status_code", None)
     if status in {408, 409, 425, 429, 500, 502, 503, 504}:
@@ -121,9 +150,11 @@ class ManagedModelStream:
         response: Any,
         *,
         on_close: Callable[[BaseException | None], Any],
+        idle_timeout_seconds: float | None = None,
     ) -> None:
         self._iterator = response.__aiter__()
         self._on_close = on_close
+        self._idle_timeout_seconds = _positive_timeout(idle_timeout_seconds)
         self._closed = False
 
     def __aiter__(self):
@@ -131,7 +162,16 @@ class ManagedModelStream:
 
     async def __anext__(self):
         try:
-            return await anext(self._iterator)
+            return await _await_with_deadline(
+                anext(self._iterator),
+                self._idle_timeout_seconds,
+            )
+        except _LocalModelDeadlineExceeded as exc:
+            error = ModelProviderReportedTimeoutError(
+                "model provider stream produced no response within the configured idle timeout"
+            )
+            await self._close(error)
+            raise error from exc
         except StopAsyncIteration:
             await self._close(None)
             raise
@@ -167,6 +207,8 @@ class GuardedModelRuntime:
         worker_id: str,
         model: str,
         token_estimator: Callable[[list[dict[str, Any]], str], int],
+        request_timeout_seconds: float | None = None,
+        stream_idle_timeout_seconds: float | None = None,
     ) -> None:
         self.database = database
         self.run_id = run_id
@@ -176,6 +218,8 @@ class GuardedModelRuntime:
             raise ValueError("model must be provided by the configured model settings")
         self.model = model_name
         self.token_estimator = token_estimator
+        self.request_timeout_seconds = _positive_timeout(request_timeout_seconds)
+        self.stream_idle_timeout_seconds = _positive_timeout(stream_idle_timeout_seconds)
 
     async def complete(
         self,
@@ -260,7 +304,17 @@ class GuardedModelRuntime:
                     )
 
             try:
-                response = await completion(**kwargs)
+                response = await _await_with_deadline(
+                    completion(**kwargs),
+                    self.request_timeout_seconds,
+                )
+            except _LocalModelDeadlineExceeded as exc:
+                error = ModelProviderReportedTimeoutError(
+                    "model provider did not start responding within the configured request timeout"
+                )
+                last_error = error
+                await finalize(error)
+                raise error from exc
             except asyncio.CancelledError as exc:
                 await finalize(exc)
                 raise
@@ -297,7 +351,11 @@ class GuardedModelRuntime:
                 continue
 
             if hasattr(response, "__aiter__"):
-                return ManagedModelStream(response, on_close=finalize)
+                return ManagedModelStream(
+                    response,
+                    on_close=finalize,
+                    idle_timeout_seconds=self.stream_idle_timeout_seconds,
+                )
             await finalize(None)
             return response
 

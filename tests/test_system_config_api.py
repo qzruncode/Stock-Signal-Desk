@@ -264,5 +264,10 @@ class SystemConfigApiTestCase(unittest.TestCase):
         mock_test.assert_called_once()
         self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
 
+    def test_system_config_router_has_no_company_rag_model_test_routes(self) -> None:
+        paths = {route.path for route in system_config.router.routes}
+        self.assertNotIn("/config/model/test-embedding", paths)
+        self.assertNotIn("/config/model/test-rerank", paths)
+
 if __name__ == "__main__":
     unittest.main()

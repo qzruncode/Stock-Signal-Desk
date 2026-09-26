@@ -25,6 +25,7 @@ from .evidence_identity import (
     EVIDENCE_REFERENCE as _EVIDENCE_REFERENCE,
     contains_evidence_reference,
     evidence_ids_in_text,
+    citation_scoped_evidence_records,
     resolve_evidence_id,
 )
 
@@ -42,7 +43,11 @@ _EXPLICIT_DATE = re.compile(
     r"\d{1,2}\s*月\s*\d{1,2}\s*日?)(?!\d)"
 )
 _RELATIVE_TIME = re.compile(
-    r"(?:最新|当前|今日|今天|截至|本周|本月|latest|current|today|as\s+of)",
+    # ``current-event awareness`` is a fixed capability term, not a claim
+    # that a cited data point is current. Keep the generic freshness check
+    # from treating that source wording as a relative timestamp.
+    r"(?:最新|当前|今日|今天|截至|本周|本月|latest|"
+    r"current(?![-‐‑‒–— ]events?\s+awareness\b)|today|as\s+of)",
     re.IGNORECASE,
 )
 _RELATIVE_NEGATION = re.compile(
@@ -128,6 +133,20 @@ _INHERITABLE_DATE = re.compile(
     r"(?:(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|"
     r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日?|"
     r"\d{1,2}\s*月\s*\d{1,2}\s*日?)"
+)
+_REPORTING_PERIOD_YEAR = re.compile(
+    r"(?<!\d)((?:19|20)\d{2})\s*年\s*"
+    r"(?:年度|年报|半年度|半年报|半年|中期报告|"
+    r"第[一二三四]季度|[一二三四]季度|季度报告)"
+)
+_CURRENT_REPORT_PERIOD = re.compile(
+    r"(?:本报告期|报告期|本期|current\s+(?:reporting\s+)?period)",
+    re.IGNORECASE,
+)
+_PREVIOUS_COMPARABLE_PERIOD = re.compile(
+    r"(?:上年同期|上年度同期|去年同期|上一年度同期|"
+    r"same\s+period\s+(?:of\s+)?(?:the\s+)?(?:previous|prior|last)\s+year)",
+    re.IGNORECASE,
 )
 _OMITTED = object()
 _SUPPORT_OMIT_FIELDS = frozenset(
@@ -264,11 +283,66 @@ def _supports_explicit_time(value: str, evidence: Sequence[Mapping[str, Any]]) -
         support_digits = _compact_time(support)
         if token in support_digits:
             return True
+        if (
+            len(token) == 4
+            and token.isdigit()
+            and _supports_previous_period_year(token, item)
+        ):
+            return True
+    return False
+
+
+def _supports_previous_period_year(year: str, item: Mapping[str, Any]) -> bool:
+    """Resolve a prior-year label only from one source hit's own period metadata.
+
+    Some filings label comparison columns ``上年同期`` instead of printing the
+    calendar year in every table.  The exact retrieved hit may still establish
+    that year when its document title identifies the reporting period.  Keep
+    this separate from source ``data_time``: it does not assert freshness.
+    """
+    raw_result = item.get("result")
+    if not isinstance(raw_result, Mapping):
+        return False
+    raw_hits = raw_result.get("results")
+    hits = (
+        [hit for hit in raw_hits if isinstance(hit, Mapping)]
+        if isinstance(raw_hits, Sequence)
+        and not isinstance(raw_hits, (str, bytes, bytearray))
+        else [raw_result]
+    )
+    try:
+        requested_year = int(year)
+    except ValueError:
+        return False
+
+    for hit in hits:
+        document_label = " ".join(
+            str(hit.get(field) or "")
+            for field in ("filename", "document_title", "title")
+        )
+        period_years = {
+            int(match)
+            for match in _REPORTING_PERIOD_YEAR.findall(document_label)
+        }
+        if requested_year + 1 not in period_years:
+            continue
+
+        source_text = " ".join(
+            str(hit.get(field) or "")
+            for field in ("text", "snippet", "page_content", "content")
+        )
+        if (
+            _CURRENT_REPORT_PERIOD.search(source_text)
+            and _PREVIOUS_COMPARABLE_PERIOD.search(source_text)
+        ):
+            return True
     return False
 
 
 def _supports_relative_time(evidence: Sequence[Mapping[str, Any]]) -> bool:
     for item in evidence:
+        if item.get("data_time_applicable") is False:
+            return True
         if not item.get("data_time"):
             continue
         if item.get("freshness_unknown") is True or item.get("is_stale") is True:
@@ -760,7 +834,7 @@ def build_claim_evidence_ledger(
     """
     successful = {
         _id(item): item
-        for item in evidence
+        for item in citation_scoped_evidence_records(evidence)
         if evidence_record_is_eligible(item) and _id(item)
     }
     results_by_action = {
@@ -849,7 +923,7 @@ def build_structured_claim_evidence_ledger(
     """
     successful = {
         _id(item): item
-        for item in evidence
+        for item in citation_scoped_evidence_records(evidence)
         if evidence_record_is_eligible(item) and _id(item)
     }
     results_by_action = {
@@ -871,22 +945,53 @@ def build_structured_claim_evidence_ledger(
         if not content:
             continue
         kind = _short(block.get("kind"), 32).lower() or "fact"
+        action_refs = block.get("action_refs")
+        referenced_actions = (
+            [item for item in action_refs if isinstance(item, Mapping)]
+            if isinstance(action_refs, Sequence)
+            and not isinstance(action_refs, (str, bytes, bytearray))
+            else []
+        )
+        supported_action_ids = []
+        for reference in referenced_actions:
+            action_id = str(reference.get("action_id") or "").strip()
+            record = results_by_action.get(action_id)
+            if not action_id or not isinstance(record, Mapping):
+                continue
+            record_success = record.get("success") is True
+            expected_status = "completed" if record_success else "failed"
+            if (
+                str(record.get("effect") or "read").strip().lower() == "side_effect"
+                and str(reference.get("effect") or "read").strip().lower() == "side_effect"
+                and reference.get("success") is record_success
+                and str(reference.get("status") or "").strip().lower() == expected_status
+            ):
+                supported_action_ids.append(action_id)
         raw_ids = (
             block.get("evidence_ids")
             if isinstance(block.get("evidence_ids"), Sequence)
             and not isinstance(block.get("evidence_ids"), (str, bytes, bytearray))
             else []
         )
-        direct_ids, unresolved = _resolve_evidence_ids(raw_ids, successful)
+        # Action-result blocks are supported by the server-owned action record,
+        # not by retrieved document text. They must never borrow PDF citations.
+        direct_ids, unresolved = (
+            ([], [])
+            if kind == "action_result"
+            else _resolve_evidence_ids(raw_ids, successful)
+        )
         cited_evidence_ids = _unique([*cited_evidence_ids, *direct_ids])
         unresolved_evidence_ids = _unique([*unresolved_evidence_ids, *unresolved])
-        # ``research`` retains the old fail-closed rule: every block other
-        # than context/disclaimer is material.  ``general`` adds a neutral
-        # ``answer`` block for explanations that do not rely on external
-        # evidence.  Once a general run has produced readable evidence, an
-        # answer block must cite it as well; this prevents the profile field
-        # from becoming a way to hide tool-backed facts.
-        if normalized_profile == "research":
+        # ``research`` retains the old fail-closed rule: every content block
+        # other than context/disclaimer is material. Action-result blocks use
+        # a separately validated server-owned action reference. ``general``
+        # adds a neutral ``answer`` block for explanations that do not rely on
+        # external evidence. Once a general run has produced readable
+        # evidence, an answer block must cite it as well; this prevents the
+        # profile field from hiding tool-backed facts.
+        if kind == "action_result":
+            requires_evidence = False
+        elif normalized_profile == "research":
             requires_evidence = kind not in {"context", "disclaimer"}
         elif kind in {"context", "disclaimer"}:
             requires_evidence = False
@@ -907,6 +1012,16 @@ def build_structured_claim_evidence_ledger(
             claim_id=f"claim_{index}",
             section=_short(block.get("section"), 160) or None,
         )
+        if kind == "action_result":
+            action_reference_valid = bool(supported_action_ids)
+            claim["action_ids"] = _unique(supported_action_ids)
+            claim["checks"]["action_reference"] = action_reference_valid
+            if not action_reference_valid:
+                action_issue = (
+                    f"第 {index} 个动作结果区块没有引用本轮成功或失败的副作用动作记录"
+                )
+                claim["issues"] = _unique([*claim.get("issues", []), action_issue])
+                issues.append(action_issue)
         claims.append(claim)
 
     return {

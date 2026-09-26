@@ -7,7 +7,7 @@ import { useChatController } from '../useChatController';
 
 vi.mock('@assistant-ui/react-data-stream', () => ({ useDataStreamRuntime: vi.fn(() => ({})) }));
 vi.mock('../../api/agent', () => ({ agentApi: {
-  listConversations: vi.fn(), getConversation: vi.fn(), cancelConversationRun: vi.fn(),
+  listConversations: vi.fn(), getConversation: vi.fn(), cancelConversationRun: vi.fn(), createConversation: vi.fn(),
 } }));
 
 const detail = (id: string): ChatConversationDetail => ({
@@ -19,9 +19,28 @@ const wrapper = ({ children }: PropsWithChildren) => <WorkspaceQueryProvider>{ch
 describe('Conversation query and stream boundaries', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.removeItem('dsa.knowledge-chat-preferences.v2');
+    localStorage.removeItem('dsa.knowledge-chat-preferences.v1');
     vi.mocked(agentApi.listConversations).mockResolvedValue({ items: [detail('a'), detail('b')], total: 2, page: 1, limit: 20 });
     vi.mocked(agentApi.getConversation).mockImplementation(async id => detail(id));
     vi.mocked(agentApi.cancelConversationRun).mockResolvedValue(true);
+    vi.mocked(agentApi.createConversation).mockResolvedValue(detail('new'));
+  });
+
+  it('keeps the selected knowledge bases when the initial conversation is created', async () => {
+    localStorage.setItem('dsa.knowledge-chat-preferences.v2', JSON.stringify({
+      __new__: { knowledgeBaseIds: ['kb-1'] },
+    }));
+    vi.mocked(agentApi.listConversations).mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 });
+    vi.mocked(agentApi.createConversation).mockResolvedValue(detail('fresh'));
+
+    const { result } = renderHook(useChatController, { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.selectedConversationId).toBe('fresh');
+      expect(result.current.knowledgeBaseIds).toEqual(['kb-1']);
+    });
+    expect(JSON.parse(localStorage.getItem('dsa.knowledge-chat-preferences.v2') ?? '{}').fresh.knowledgeBaseIds).toEqual(['kb-1']);
   });
 
   it('does not replace the selected conversation with a slower previous response', async () => {

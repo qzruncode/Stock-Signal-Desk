@@ -215,11 +215,53 @@ export const assistantEvidenceIndexFromTrace = (
     if (evidenceId) upsert(index, evidenceId, result);
   });
 
+  // New PDF traces carry one stable evidence ID per retrieved chunk. Keep the
+  // citation projection narrowed to that single page/snippet instead of
+  // joining it back to the action's complete top-k candidate list.
+  toolResults.forEach((result) => {
+    if (!evidenceIsUsable(result)) return;
+    const actionId = textValue(readValue(result, 'action_id', 'actionId'), 160);
+    const toolCallId = textValue(readValue(result, 'tool_call_id', 'toolCallId'), 160);
+    const toolName = textValue(readValue(result, 'tool_name', 'toolName'), 160);
+    recordList(readValue(result, 'result_items', 'resultItems')).forEach((item) => {
+      const itemId = textValue(readValue(item, 'evidence_id', 'evidenceId', 'id'), 160);
+      const evidenceId = itemId.startsWith('ev_')
+        ? itemId
+        : itemId.startsWith('kb_')
+          ? `ev_${itemId}`
+          : '';
+      const sourceUrl = textValue(readValue(item, 'url', 'link'), 1_000);
+      if (!evidenceId || !sourceUrl) return;
+      upsert(index, evidenceId, {
+        evidence_id: evidenceId,
+        action_id: actionId,
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        success: readValue(result, 'success') !== false,
+        evidence_eligible: true,
+        partial: readValue(result, 'partial') === true,
+        source_refs: [sourceUrl],
+        result_summary: readValue(item, 'summary', 'excerpt', 'description'),
+        result_items: [item],
+        warnings: [],
+        errors: [],
+      });
+    });
+  });
+
   recordList(readValue(trace, 'claim_evidence', 'claimEvidence')).forEach((claim) => {
     recordList(readValue(claim, 'evidence')).forEach((evidence) => {
       if (!evidenceIsUsable(evidence)) return;
       const evidenceId = evidenceIdFrom(evidence);
-      if (evidenceId) upsert(index, evidenceId, evidence, matchingResult(evidence, byAction, byToolCall));
+      if (evidenceId) {
+        // Per-hit PDF records already have a chunk-scoped presentation entry.
+        // Joining the parent action result here would reattach every top-k hit
+        // to that one citation and make unrelated pages appear as its evidence.
+        const relatedResult = evidenceId.startsWith('ev_kb_')
+          ? undefined
+          : matchingResult(evidence, byAction, byToolCall);
+        upsert(index, evidenceId, evidence, relatedResult);
+      }
     });
     stringList(readValue(claim, 'evidence_ids', 'evidenceIds'), 160).forEach((evidenceId) => {
       if (index.has(evidenceId)) return;
