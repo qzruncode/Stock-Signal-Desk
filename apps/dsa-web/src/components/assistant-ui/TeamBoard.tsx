@@ -32,12 +32,22 @@ const TeamLaneProjection: FC<{
   );
 
 const teamFailureTitle = (failure: TeamFailureModel): string => {
+  if (failure.status === 'partial') return 'Team 协作未完成';
   if (failure.status === 'blocked') return 'Team 协作已阻塞';
   if (failure.status === 'cancelled') return 'Team 协作已取消';
   return 'Team 协作失败';
 };
 
 const teamFailureReason = (failure: TeamFailureModel): string => {
+  if (failure.errorCode === 'model_provider_timeout') {
+    return '模型服务超时，本轮已停止；请稍后重试。';
+  }
+  if (failure.errorCode === 'model_provider_unavailable') {
+    return '模型服务暂时不可用，本轮已停止；请稍后重试。';
+  }
+  if (failure.errorCode === 'model_context_window_exceeded') {
+    return '本轮输入超出模型上下文限制，任务已停止；请缩短输入后重试。';
+  }
   if (failure.errorCode === 'team_plan_rejected') {
     return '协作计划未通过服务端边界校验，本轮没有分发专家任务。';
   }
@@ -54,7 +64,12 @@ const TeamFailureReceipt: FC<{
   failure: TeamFailureModel;
 }> = ({ failure }) => {
   const reason = teamFailureReason(failure);
-  const hasDiagnostic = Boolean(failure.detail && failure.detail !== reason);
+  const hasDiagnostic = Boolean(
+    failure.detail
+      && failure.detail !== reason
+      && !failure.errorCode.startsWith('model_provider_')
+      && failure.errorCode !== 'model_context_window_exceeded',
+  );
   return (
     <section
       className="rounded-xl border border-amber-200/80 bg-amber-50/60 px-3 py-2.5 text-sm"

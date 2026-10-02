@@ -52,7 +52,7 @@ export interface TeamReviewReport {
 }
 
 export interface TeamFailureModel {
-  status: Extract<TeamMemberStatus, 'failed' | 'blocked' | 'cancelled'>;
+  status: Extract<TeamMemberStatus, 'partial' | 'failed' | 'blocked' | 'cancelled'>;
   errorCode: string;
   detail: string;
   phase: string;

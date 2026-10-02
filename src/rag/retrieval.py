@@ -26,7 +26,7 @@ from src.rag.model_adapters import (
     RAGProviderError,
     model_version_tag,
 )
-from src.rag.qdrant_store import QdrantStore
+from src.rag.qdrant_store import RRF_K, QdrantStore
 from src.services.rag_knowledge_base_service import RagKnowledgeBaseService, RagServiceError
 from src.storage import DatabaseManager
 from src.storage.models import RagChunk, RagDocument, RagKnowledgeBase
@@ -91,6 +91,51 @@ def _rerank_query(queries: Sequence[str], candidates: Sequence[Mapping[str, Any]
     return next((query for query in queries if _query_script(query) == passage_script), queries[0])
 
 
+def _fuse_hybrid_and_reranker_rankings(
+    candidates: Sequence[Mapping[str, Any]],
+    reranked: Sequence[Any],
+    *,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """Fuse first-stage hybrid and cross-encoder ranks without letting either erase the other."""
+    if not candidates or not reranked:
+        return []
+
+    by_id: dict[str, Mapping[str, Any]] = {}
+    scores: dict[str, float] = defaultdict(float)
+    reranker_positions: dict[str, int] = {}
+    hybrid_positions: dict[str, int] = {}
+    for position, item in enumerate(candidates, start=1):
+        identifier = str(item.get("chunk_id") or "")
+        if not identifier:
+            continue
+        by_id[identifier] = item
+        hybrid_positions[identifier] = position
+        scores[identifier] += 1.0 / (RRF_K + position)
+
+    for position, result in enumerate(reranked, start=1):
+        try:
+            candidate = candidates[int(result.index)]
+        except (AttributeError, IndexError, TypeError, ValueError):
+            continue
+        identifier = str(candidate.get("chunk_id") or "")
+        if not identifier or identifier not in by_id:
+            continue
+        reranker_positions[identifier] = position
+        scores[identifier] += 1.0 / (RRF_K + position)
+
+    ordered = sorted(
+        by_id,
+        key=lambda identifier: (
+            scores[identifier],
+            -reranker_positions.get(identifier, len(reranked) + 1),
+            -hybrid_positions[identifier],
+        ),
+        reverse=True,
+    )
+    return [dict(by_id[identifier]) for identifier in ordered[: max(1, int(top_k))]]
+
+
 class RagSearchError(RuntimeError):
     def __init__(self, message: str, *, code: str = "retrieval_failed", retryable: bool = False):
         super().__init__(message)
@@ -112,7 +157,6 @@ def _runtime_config() -> dict[str, str]:
         "RAG_RERANK_MODEL_REVISION",
         "RAG_RERANK_CANDIDATE_LIMIT",
         "RAG_VECTOR_DIMENSION",
-        "RAG_MODEL_TIMEOUT_SECONDS",
     ):
         if key in os.environ:
             values[key] = str(os.environ[key])
@@ -127,7 +171,6 @@ def check_model_services(
 ) -> dict[str, Any]:
     """Exercise both configured local inference services with small real requests."""
     settings = dict(config) if config is not None else _runtime_config()
-    timeout = float(settings.get("RAG_MODEL_TIMEOUT_SECONDS") or 300)
     embedding_model = str(settings.get("RAG_EMBEDDING_MODEL_ID") or DEFAULT_EMBEDDING_MODEL).strip()
     embedding_revision = str(
         settings.get("RAG_EMBEDDING_MODEL_REVISION") or DEFAULT_EMBEDDING_REVISION
@@ -150,7 +193,7 @@ def check_model_services(
             base_url=str(settings.get("RAG_EMBEDDING_BASE_URL") or DEFAULT_EMBEDDING_BASE_URL),
             model=embedding_model,
             dimension=int(settings.get("RAG_VECTOR_DIMENSION") or DEFAULT_VECTOR_DIMENSION),
-            timeout=timeout,
+            timeout=None,
         )
         vector = embedding.embed_query("知识库中的主要结论是什么？")
         embedding_result.update(
@@ -185,7 +228,7 @@ def check_model_services(
         reranker = reranker_factory(
             base_url=str(settings.get("RAG_RERANK_BASE_URL") or DEFAULT_RERANK_BASE_URL),
             model=reranker_model,
-            timeout=timeout,
+            timeout=None,
         )
         ranked = reranker.rerank(
             "公司的主营业务是什么？",
@@ -306,7 +349,6 @@ class RagSearchService:
         rerank_revision = str(
             config.get("RAG_RERANK_MODEL_REVISION") or DEFAULT_RERANK_REVISION
         ).strip()
-        timeout = float(config.get("RAG_MODEL_TIMEOUT_SECONDS") or 300)
 
         grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
         for item in active_versions:
@@ -330,7 +372,7 @@ class RagSearchService:
                     base_url=embedding_base_url,
                     model=embedding_model,
                     dimension=dimension,
-                    timeout=timeout,
+                    timeout=None,
                 )
                 try:
                     query_vectors = [embedder.embed_query(item) for item in normalized_queries]
@@ -384,7 +426,7 @@ class RagSearchService:
             reranker = self.reranker_factory(
                 base_url=rerank_base_url,
                 model=rerank_model,
-                timeout=timeout,
+                timeout=None,
             )
             rerank_limit = max(
                 int(top_k),
@@ -396,11 +438,17 @@ class RagSearchService:
                 reranked = reranker.rerank(
                     rerank_query,
                     [item["text"] for item in rerank_candidates],
-                    top_n=max(1, min(int(top_k), len(rerank_candidates))),
+                    # The reranker scores every candidate already; retain the full
+                    # ranking so the cross-encoder and hybrid recall can be fused.
+                    top_n=len(rerank_candidates),
                 )
             finally:
                 reranker.close()
-            selected = [rerank_candidates[item.index] for item in reranked]
+            selected = _fuse_hybrid_and_reranker_rankings(
+                rerank_candidates,
+                reranked,
+                top_k=top_k,
+            )
         except RAGProviderError as exc:
             raise RagSearchError(
                 str(exc), code=exc.code, retryable=exc.retryable
@@ -424,8 +472,17 @@ class RagSearchService:
             )
             if located is None:
                 continue
-            context_text = "\n\n".join(str(part["text"]) for part in located["window"] if part["text"])
             page = int(item["page_start"])
+            page_end = int(item.get("page_end") or page)
+            # Keep complete chunks, but never attach another page's content
+            # to this hit's narrower citation. Input fitting belongs to the
+            # existing model context budget, not a character preview here.
+            context_text = "\n\n".join(
+                str(part["text"])
+                for part in located["window"]
+                if part["text"] and page <= int(part["page_start"])
+                and int(part["page_end"]) <= page_end
+            )
             citation_url = f"/api/v1/knowledge-bases/documents/{item['document_id']}/content#page={page}"
             citation_id = hashlib.sha256(
                 f"{item['document_id']}:{item['index_version_id']}:{item['chunk_id']}".encode("utf-8")
@@ -437,8 +494,8 @@ class RagSearchService:
                     "evidence_id": f"ev_kb_{citation_id}",
                     "filename": located["filename"],
                     "knowledge_base_name": located["knowledge_base_name"],
-                    "snippet": str(item["text"])[:1_200],
-                    "text": context_text[:3_200],
+                    "snippet": str(item["text"]),
+                    "text": context_text,
                     "url": citation_url,
                     "source_url": citation_url,
                 }
@@ -462,6 +519,7 @@ class RagSearchService:
             "no_evidence": not bool(projected),
             "retrieval": {
                 "dense_sparse_fusion": "qdrant_rrf",
+                "rerank_fusion": "rrf",
                 "query_variant_count": len(normalized_queries),
                 "page_filter": explicit_page_ranges,
                 "reranker_model": model_version_tag(rerank_model, rerank_revision),

@@ -14,7 +14,12 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.runtime import Runtime
 from pydantic import ConfigDict, Field
 
-from src.agent.langgraph_runtime.context import ContextBudgetMiddleware, completed_answers_as_context
+from src.agent.langgraph_runtime.context import (
+    DEFAULT_OUTPUT_RESERVE_TOKENS,
+    ContextBudgetMiddleware,
+    completed_answers_as_context,
+    model_output_reserve,
+)
 from src.agent.model_runtime import ModelContextWindowExceededError
 
 
@@ -54,6 +59,15 @@ class EventRecorder:
 
     def stage(self, *args: Any, **kwargs: Any) -> None:
         self.stages.append(args)
+
+
+def test_default_model_output_headroom_is_an_input_estimate(monkeypatch):
+    monkeypatch.delenv("AGENT_CONTEXT_OUTPUT_TOKENS", raising=False)
+    assert DEFAULT_OUTPUT_RESERVE_TOKENS == 32_768
+    assert model_output_reserve(CountingChatModel(llm_config={"model": "test-model"})) == 32_768
+    assert model_output_reserve(
+        CountingChatModel(llm_config={"model": "test-model", "max_tokens": 2_048})
+    ) == 2_048
 
 
 def _request(model: CountingChatModel, messages: list[BaseMessage], events: EventRecorder) -> ModelRequest:
@@ -106,8 +120,22 @@ def test_selected_pdf_context_excludes_old_assistant_claims_but_keeps_current_to
 
     projected = completed_answers_as_context(messages, selected_knowledge_base=True)
 
-    assert projected == [messages[0], messages[3], *messages[5:]]
+    assert isinstance(projected[0], SystemMessage)
+    assert projected[0].name == "prior_conversation_context"
+    assert "不是本轮任务" in projected[0].content
+    assert '"上一轮问题"' in projected[0].content
+    assert '"只依据 PDF 回答这个比较"' in projected[0].content
+    assert projected[1:] == [messages[5], *messages[6:]]
+    assert sum(isinstance(message, HumanMessage) for message in projected) == 1
     assert all("Level 1 有记忆" not in str(message.content) for message in projected)
+
+
+def test_selected_pdf_context_does_not_add_history_message_for_first_turn():
+    current = HumanMessage(content="这份报告的研发费用是多少？")
+
+    assert completed_answers_as_context(
+        [current], selected_knowledge_base=True
+    ) == [current]
 
 
 def test_context_budget_trims_transient_messages_and_preserves_canonical_input(monkeypatch):

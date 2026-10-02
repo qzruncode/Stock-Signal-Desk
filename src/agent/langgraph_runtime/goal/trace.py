@@ -94,7 +94,6 @@ def goal_trace(state: Mapping[str, Any]) -> dict[str, Any] | None:
             "replans": int(state.get("goal_replan_limit") or 0),
             "tool_calls": int(state.get("goal_tool_call_limit") or 0),
             "model_calls": int(state.get("goal_model_call_limit") or 0),
-            "time_limit_seconds": int(state.get("goal_time_limit_seconds") or 0),
             "action_validation_repairs": int(state.get("goal_action_validation_repairs") or 0),
             "action_validation_repair_limit": int(state.get("goal_action_validation_repair_limit") or 0),
         },

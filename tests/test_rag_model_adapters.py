@@ -185,3 +185,35 @@ def test_local_fastembed_rejects_wrong_dimension() -> None:
         assert error.value.code == "invalid_response"
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("adapter_type", [OllamaEmbeddingAdapter, LocalFastEmbedAdapter, LocalRerankerAdapter])
+def test_inference_transport_has_no_default_or_legacy_environment_timeout(monkeypatch, adapter_type):
+    monkeypatch.setenv("RAG_MODEL_TIMEOUT_SECONDS", "0.001")
+    requests = []
+
+    def handler(request):
+        requests.append(request.extensions["timeout"])
+        body = json.loads(request.content)
+        payload = ({"ranks": [{"index": 0, "score": 0.9}]} if "texts" in body else
+                   {"embeddings": [[0.1] * body["dimensions"] for _ in body["input"]]})
+        return _json_response(request, payload)
+
+    # Even a caller-supplied client's finite default must not cap inference.
+    with httpx.Client(transport=httpx.MockTransport(handler), timeout=0.001) as client:
+        adapter = adapter_type(client=client)
+        assert adapter.timeout is None
+        if isinstance(adapter, LocalRerankerAdapter):
+            adapter.rerank("query", ["document"])
+        else:
+            adapter.embed_query("query")
+        assert requests == [{"connect": None, "read": None, "write": None, "pool": None}]
+
+
+@pytest.mark.parametrize("adapter_type", [OllamaEmbeddingAdapter, LocalFastEmbedAdapter, LocalRerankerAdapter])
+def test_owned_inference_client_also_has_no_transport_deadline(adapter_type):
+    adapter = adapter_type()
+    try:
+        assert adapter._client.timeout.as_dict() == {"connect": None, "read": None, "write": None, "pool": None}
+    finally:
+        adapter.close()

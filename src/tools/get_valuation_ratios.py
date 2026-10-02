@@ -56,7 +56,7 @@ TOOLS = (
     ),
     ToolSpec(
         name="read_valuation_quote_eastmoney",
-        description="从东方财富读取一只 A 股的当前价格、PE（TTM/静态/动态）、PB（年报）和市值快照；正常不查询历史估值、同行比较或分红；若实时快照缺少 quote_time，按结果合同降级到最近一条带日期估值历史，并明确标注为有日期快照而非实时行情。",
+        description="从东方财富读取一只 A 股的当前价格、PE（TTM/静态/动态）、PB（年报）和市值快照；正常不查询历史估值、同行比较或分红；若实时快照缺少 quote_time 或请求失败，按结果合同降级到最近一条带日期估值历史，并明确标注为有日期快照而非实时行情。",
         parameters=object_schema(
             {
                 "symbol": {

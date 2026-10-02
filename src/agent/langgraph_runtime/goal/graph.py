@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -21,9 +20,17 @@ from langgraph.types import Overwrite, interrupt
 from pydantic import BaseModel
 
 from src.agent.runtime_errors import emit_runtime_error
-from src.tools.base import evidence_record_is_eligible
+from src.tools.base import citation_scoped_evidence_records, evidence_record_is_eligible, tool_execution_context
 
 from ..answer_contract import finalize_terminal_answer
+from ..claim_evidence import build_claim_evidence_ledger
+from ..evidence_identity import canonicalize_evidence_markers
+from ..knowledge_research import (
+    document_catalog_for_model,
+    knowledge_research_instructions,
+    research_tool_names,
+    user_requests_knowledge_base_only,
+)
 from ..model_projection import StructuredContractProjectionCallback, safe_projection_text
 from ..state import merge_records
 from .contracts import (
@@ -39,7 +46,6 @@ from .state import GoalContext, GoalGraphInput, GoalState
 
 GOAL_DEFAULT_ITERATION_LIMIT = 8
 GOAL_DEFAULT_REPLAN_LIMIT = 3
-GOAL_DEFAULT_TIME_LIMIT_SECONDS = 900
 GOAL_DEFAULT_MODEL_CALL_LIMIT = 24
 GOAL_DEFAULT_ACTION_VALIDATION_REPAIR_LIMIT = 1
 
@@ -66,12 +72,6 @@ def goal_runtime_limits(*, tool_call_limit: int | None = None) -> dict[str, int]
             GOAL_DEFAULT_REPLAN_LIMIT,
             minimum=0,
             maximum=16,
-        ),
-        "goal_time_limit_seconds": _bounded_env(
-            "AGENT_GOAL_MAX_DURATION_SECONDS",
-            GOAL_DEFAULT_TIME_LIMIT_SECONDS,
-            minimum=10,
-            maximum=86_400,
         ),
         "goal_tool_call_limit": max(1, int(tool_call_limit or _bounded_env(
             "AGENT_MAX_TOOL_CALLS",
@@ -125,7 +125,6 @@ def goal_turn_defaults(*, tool_call_limit: int | None = None) -> dict[str, Any]:
         "goal_current_action_id": "",
         "goal_pending_confirmation_criteria": [],
         "goal_started_at": started_at,
-        "goal_deadline_epoch": time.time() + limits["goal_time_limit_seconds"],
         "goal_iterations": 0,
         "goal_replan_count": 0,
         **limits,
@@ -184,6 +183,9 @@ def _safe_validation_detail(error: BaseException) -> str:
 def _validate_goal_tool_action(
     action: Mapping[str, Any],
     registry: Any,
+    *,
+    context: GoalContext,
+    tool_results: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Preflight a model-selected operation against the existing registry."""
 
@@ -199,11 +201,15 @@ def _validate_goal_tool_action(
     if not isinstance(arguments, Mapping):
         arguments = {}
     try:
-        validated = registry.validate_model_arguments(
-            tool_name,
-            dict(arguments),
-            approved=False,
-        )
+        with tool_execution_context(
+            conversation_id=getattr(context, "conversation_id", None), run_id=getattr(context, "run_id", None),
+            tenant_id=getattr(context, "tenant_id", None), owner_id=getattr(context, "owner_id", None),
+            knowledge_base_ids=getattr(context, "knowledge_base_ids", ()),
+        ):
+            validated = registry.validate_model_arguments(
+                tool_name, dict(arguments), approved=False,
+                validation_context={"tool_results": list(tool_results)},
+            )
     except Exception as exc:
         try:
             schema = tool.to_openai_schema(include_server_controlled=False)
@@ -223,14 +229,9 @@ def _model_call_limit_reached(state: Mapping[str, Any]) -> bool:
     return int(state.get("model_turn_count") or 0) >= int(state.get("goal_model_call_limit") or 0)
 
 
-def _deadline_reached(state: Mapping[str, Any]) -> bool:
-    deadline = float(state.get("goal_deadline_epoch") or 0)
-    return deadline > 0 and time.time() >= deadline
-
-
 def _goal_evidence(state: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     result: dict[str, Mapping[str, Any]] = {}
-    for item in state.get("evidence") or []:
+    for item in citation_scoped_evidence_records(state.get("evidence") or []):
         if not isinstance(item, Mapping):
             continue
         evidence_id = str(item.get("evidence_id") or item.get("id") or "").strip()
@@ -245,6 +246,29 @@ def _goal_criteria(state: Mapping[str, Any]) -> list[dict[str, Any]]:
         for item in state.get("goal_criteria") or []
         if isinstance(item, Mapping)
     ]
+
+
+def _goal_final_answer_evidence_ids(
+    criteria: Sequence[Mapping[str, Any]],
+    requested_ids: Sequence[Any],
+    eligible_evidence_ids: set[str],
+) -> list[str]:
+    """Keep model-selected citations, or use evidence already bound to satisfied criteria."""
+
+    selected = list(dict.fromkeys(
+        str(value)
+        for value in requested_ids
+        if str(value) in eligible_evidence_ids
+    ))
+    if selected:
+        return selected
+    return list(dict.fromkeys(
+        str(evidence_id)
+        for criterion in criteria
+        if str(criterion.get("status") or "") == "satisfied"
+        for evidence_id in criterion.get("evidence_ids") or []
+        if str(evidence_id) in eligible_evidence_ids
+    ))
 
 
 def _contract(state: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -336,6 +360,32 @@ def _validate_goal_action_criteria(
     }
 
 
+def _validate_goal_finish_action(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Do not accept a finish action while required criteria remain unverified."""
+
+    pending = [
+        {
+            "criterion_id": str(item.get("criterion_id") or ""),
+            "description": _short(item.get("description"), 240),
+            "status": str(item.get("status") or "pending"),
+            "evidence_ids": [
+                str(value)
+                for value in item.get("evidence_ids") or []
+                if str(value or "").strip()
+            ],
+        }
+        for item in _goal_criteria(state)
+        if bool(item.get("required", True))
+        and str(item.get("status") or "pending") != "satisfied"
+    ]
+    if not pending:
+        return None
+    return {
+        "error": "不能结束 Goal：仍有必需完成条件未被核验为 satisfied。请根据 pending_criteria 中的缺口和已关联证据，选择补充取证工具或 ask_user；不得重复选择 finish。",
+        "pending_criteria": pending,
+    }
+
+
 def _link_action_evidence_to_criteria(
     criteria: list[dict[str, Any]],
     action: Mapping[str, Any],
@@ -363,8 +413,10 @@ def _link_action_evidence_to_criteria(
                 for value in item.get("evidence_ids") or []
                 if str(value or "").strip()
             ]
-            if evidence_id not in evidence_ids:
-                evidence_ids.append(evidence_id)
+            for citation in citation_scoped_evidence_records([evidence]):
+                citation_id = str(citation.get("evidence_id") or citation.get("id") or "")
+                if citation_id and citation_id not in evidence_ids:
+                    evidence_ids.append(citation_id)
             item["evidence_ids"] = evidence_ids[-24:]
         linked.append(item)
     return linked
@@ -372,7 +424,7 @@ def _link_action_evidence_to_criteria(
 
 def _evidence_summary(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     summary: list[dict[str, Any]] = []
-    for item in list(state.get("evidence") or [])[-40:]:
+    for item in citation_scoped_evidence_records(state.get("evidence") or [])[-40:]:
         if not isinstance(item, Mapping):
             continue
         summary.append(
@@ -395,11 +447,18 @@ def _evidence_summary(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     return summary
 
 
-def _goal_system_prompt(state: Mapping[str, Any], instruction: str) -> str:
+def _goal_system_prompt(
+    state: Mapping[str, Any],
+    instruction: str,
+) -> str:
     base = _short(state.get("system_prompt"), 8_000)
+    knowledge_policy = knowledge_research_instructions(
+        selected=bool(state.get("knowledge_base_ids")),
+        only_pdf=user_requests_knowledge_base_only(state.get("user_text")),
+    )
     return (
         f"{base}\n\n" if base else ""
-    ) + instruction + (
+    ) + (f"{knowledge_policy}\n\n" if knowledge_policy else "") + instruction + (
         "\n面向用户的 progress_text 是聊天正文的一部分，必须由你结合当前请求和实际结果撰写。"
         "像持续与用户沟通一样，简短、具体、自然，承接 previous_update，只补充新信息。"
         "使用用户的语言；不要念流程、列状态、复述合同，不要写阶段标题或固定开场套话。"
@@ -567,14 +626,6 @@ async def _goal_intake(state: GoalState, runtime: Any) -> dict[str, Any]:
     if isinstance(state.get("goal_contract"), Mapping):
         return {
             "goal_status": "running" if state.get("goal_contract_confirmed") else "pending",
-        }
-    if _deadline_reached(state):
-        return {
-            "goal_status": "blocked",
-            "status": "blocked",
-            "goal_blocker": "Goal 已达到服务端时间上限，尚未提取目标合同。",
-            "goal_terminal_reason": "Goal 时间预算耗尽",
-            "terminal_detail": "Goal 已达到服务端时间上限，未开始目标提取或工具执行。",
         }
 
     context.events.stage(
@@ -840,14 +891,6 @@ def _after_confirm(state: Mapping[str, Any]) -> str:
 
 async def _goal_action_select(state: GoalState, runtime: Any) -> dict[str, Any]:
     context: GoalContext = runtime.context
-    if _deadline_reached(state):
-        return {
-            "goal_status": "blocked",
-            "status": "blocked",
-            "goal_blocker": "已达到 Goal 时间上限。",
-            "goal_terminal_reason": "Goal 时间预算耗尽",
-            "terminal_detail": "Goal 已达到服务端时间上限，保留已有证据并停止继续调用。",
-        }
     if int(state.get("goal_iterations") or 0) >= int(state.get("goal_iteration_limit") or 0):
         return {
             "goal_status": "blocked",
@@ -886,6 +929,22 @@ async def _goal_action_select(state: GoalState, runtime: Any) -> dict[str, Any]:
         catalog = context.catalog.compact_catalog()
     except Exception:
         catalog = context.catalog.planner_catalog() if hasattr(context.catalog, "planner_catalog") else []
+    selected_ids = tuple(
+        str(item).strip()
+        for item in (state.get("knowledge_base_ids") or getattr(context, "knowledge_base_ids", ()) or ())
+        if str(item).strip()
+    )
+    knowledge_base_selected = bool(selected_ids)
+    available_names = research_tool_names(
+        (str(item.get("operation") or item.get("name") or "") for item in catalog if isinstance(item, Mapping)),
+        state,
+        selected=knowledge_base_selected,
+    )
+    catalog = [
+        item for item in catalog
+        if isinstance(item, Mapping)
+        and str(item.get("operation") or item.get("name") or "") in available_names
+    ]
     prompt_payload = {
         "contract": _contract(state),
         "criteria": _goal_criteria(state),
@@ -893,6 +952,8 @@ async def _goal_action_select(state: GoalState, runtime: Any) -> dict[str, Any]:
         "last_observation": state.get("goal_last_observation"),
         "evidence": _evidence_summary(state),
         "iteration": action_number,
+        "knowledge_base_selected": knowledge_base_selected,
+        "selected_document_catalog": document_catalog_for_model(context),
         "remaining_limits": {
             "iterations": max(0, int(state.get("goal_iteration_limit") or 0) - action_number + 1),
             "tool_calls": max(0, int(state.get("goal_tool_call_limit") or 0) - int(state.get("tool_call_count") or 0)),
@@ -951,15 +1012,32 @@ async def _goal_action_select(state: GoalState, runtime: Any) -> dict[str, Any]:
             )
             action = candidate
             normalized = _normalize_action(candidate, state)
-            if normalized.get("kind") != "tool":
-                validation_issue = None
+            validation_issue = None
+            if (
+                normalized.get("kind") == "tool"
+                and normalized.get("tool_name") not in available_names
+            ):
+                validation_issue = {
+                    "tool_name": normalized.get("tool_name"),
+                    "error": "该工具不在当前可用工具目录中，请从本次提供的目录选择。",
+                }
+            action_kind = normalized.get("kind")
+            if action_kind == "ask_user" and validation_issue is None:
                 break
-            validation_issue = _validate_goal_action_criteria(normalized, state)
+            if action_kind == "finish" and validation_issue is None:
+                validation_issue = _validate_goal_finish_action(state)
+                if validation_issue is None:
+                    break
+            if action_kind not in {"tool", "finish", "ask_user"} and validation_issue is None:
+                validation_issue = {"error": "Goal 动作类型无效。"}
+            if validation_issue is None:
+                validation_issue = _validate_goal_action_criteria(normalized, state)
             if validation_issue is None:
                 try:
                     _validated_arguments, validation_issue = _validate_goal_tool_action(
                         normalized,
                         context.registry,
+                        context=context, tool_results=state.get("tool_results") or [],
                     )
                 except Exception as exc:
                     validation_issue = {
@@ -972,7 +1050,6 @@ async def _goal_action_select(state: GoalState, runtime: Any) -> dict[str, Any]:
             can_repair = (
                 attempt + 1 < max_calls
                 and validation_repairs < repair_limit
-                and not _deadline_reached(state)
             )
             context.events.stage(
                 "goal.action_validation",
@@ -1001,7 +1078,9 @@ async def _goal_action_select(state: GoalState, runtime: Any) -> dict[str, Any]:
                             "previous_action": normalized,
                             "validation_feedback": validation_issue,
                             "instruction": (
-                                "上一个 tool 动作未通过服务端校验。请依据反馈修正为有效 GoalAction；"
+                                "上一个 Goal 动作未通过服务端校验。请依据反馈修正为有效 GoalAction；"
+                                "finish 必须等所有必需完成条件被服务端核验为 satisfied 后才能选择。"
+                                "若仍有未满足条件，应依据反馈补充取证或 ask_user，不要再次选择 finish；"
                                 "工具参数须符合 operation schema，criterion_ids 只能引用当前合同中的完成条件。"
                                 "保留目标意图，但不要重述用户进度或输出说明文字。"
                             ),
@@ -1014,10 +1093,9 @@ async def _goal_action_select(state: GoalState, runtime: Any) -> dict[str, Any]:
             last_error = exc
             break
 
-    if normalized is None or (normalized.get("kind") == "tool" and validation_issue is not None):
+    if normalized is None or validation_issue is not None or last_error is not None:
         model_budget_exhausted = bool(validation_issue) and calls_made >= calls_available
-        time_budget_exhausted = _deadline_reached(state)
-        budget_blocked = model_budget_exhausted or time_budget_exhausted
+        budget_blocked = model_budget_exhausted
         if last_error is not None:
             detail = f"{type(last_error).__name__}: 动作选择或修正模型调用失败。"
             if validation_issue:
@@ -1025,9 +1103,7 @@ async def _goal_action_select(state: GoalState, runtime: Any) -> dict[str, Any]:
         else:
             detail = _short(validation_issue.get("error"), 1_000) if validation_issue else ""
         detail = detail or "Goal 未能生成有效的工具动作。"
-        if time_budget_exhausted:
-            detail = f"{detail} Goal 时间预算已耗尽。"
-        elif model_budget_exhausted:
+        if model_budget_exhausted:
             detail = f"{detail} Goal 模型调用预算已耗尽。"
         failed_action_id = str((normalized or {}).get("action_id") or f"goal:{context.run_id}:select:{action_number}")
         failed_tool_name = _short((normalized or {}).get("tool_name"), 128)
@@ -1160,30 +1236,41 @@ def _after_execute(state: Mapping[str, Any]) -> str:
 
 async def _goal_execute(state: GoalState, runtime: Any) -> dict[str, Any]:
     context: GoalContext = runtime.context
-    if _deadline_reached(state):
-        detail = "Goal 已达到服务端时间上限，未启动新的工具动作。"
-        context.events.stage(
-            "goal.execute",
-            "blocked",
-            "Goal 时间预算已耗尽，未启动工具动作",
-            action_id=str(state.get("goal_current_action_id") or "") or None,
-            error_code="goal_time_budget_exhausted",
-            details={"kind": "goal_execute", "phase": "goal_execute"},
-        )
-        return {
-            "goal_action_status": "blocked",
-            "goal_status": "blocked",
-            "status": "blocked",
-            "goal_blocker": detail,
-            "goal_terminal_reason": "Goal 时间预算耗尽",
-            "terminal_detail": detail,
-        }
     raw_action = state.get("goal_action")
     if not isinstance(raw_action, Mapping) or str(raw_action.get("kind") or "") != "tool":
         return {"goal_last_observation": {"success": True, "kind": "finish"}}
     action = dict(raw_action)
     tool_name = _short(action.get("tool_name"), 128)
     action_id = _short(action.get("action_id"), 128)
+    if (
+        user_requests_knowledge_base_only(state.get("user_text"))
+        and tool_name != "search_knowledge_base"
+    ):
+        detail = "用户明确限定只依据所选 PDF；本轮不得调用其他工具。"
+        context.events.stage(
+            "goal.execute",
+            "blocked",
+            "用户限定的 PDF 来源范围已生效，其他工具未执行",
+            action_id=action_id or None,
+            error_code="knowledge_base_only_restriction",
+            details={"kind": "goal_execute", "phase": "goal_execute", "tool_name": tool_name},
+        )
+        return {
+            "goal_last_observation": {
+                "success": False,
+                "error_code": "knowledge_base_only_restriction",
+                "error": detail,
+                "tool_name": tool_name,
+                "action_id": action_id,
+            },
+            "goal_action_status": "blocked",
+            "goal_status": "blocked",
+            "status": "blocked",
+            "error_code": "knowledge_base_only_restriction",
+            "goal_blocker": detail,
+            "goal_terminal_reason": "用户限定的来源范围不允许该工具",
+            "terminal_detail": detail,
+        }
     criterion_issue = _validate_goal_action_criteria(action, state)
     if criterion_issue is not None:
         detail = _short(criterion_issue.get("error"), 1_000)
@@ -1272,7 +1359,9 @@ async def _goal_execute(state: GoalState, runtime: Any) -> dict[str, Any]:
         }
 
     try:
-        _validated_arguments, validation_issue = _validate_goal_tool_action(action, context.registry)
+        _validated_arguments, validation_issue = _validate_goal_tool_action(
+            action, context.registry, context=context, tool_results=state.get("tool_results") or [],
+        )
     except Exception as exc:
         validation_issue = {"error": _safe_validation_detail(exc)}
     if validation_issue is not None:
@@ -1320,7 +1409,12 @@ async def _goal_execute(state: GoalState, runtime: Any) -> dict[str, Any]:
         }
 
     approved = False
-    effect = context.registry.effect_for(tool_name, action.get("arguments") or {})
+    with tool_execution_context(
+        conversation_id=getattr(context, "conversation_id", None), run_id=getattr(context, "run_id", None),
+        tenant_id=getattr(context, "tenant_id", None), owner_id=getattr(context, "owner_id", None),
+        knowledge_base_ids=getattr(context, "knowledge_base_ids", ()),
+    ):
+        effect = context.registry.effect_for(tool_name, action.get("arguments") or {})
     if effect == "side_effect":
         payload = _confirmation_payload(
             state,
@@ -1544,7 +1638,10 @@ def _apply_assessment(
             evidence_ids = proposed_ids
         else:
             status = "pending"
-            evidence_ids = proposed_ids
+            # Preserve eligible candidates already linked by the server. A
+            # pending model assessment must not erase collected evidence that
+            # a later assessment or corrective action may need to reconsider.
+            evidence_ids = list(dict.fromkeys([*previous_evidence_ids, *proposed_ids]))[:24]
         item["status"] = status
         item["evidence_ids"] = evidence_ids
         item["explanation"] = _short(proposal.explanation if proposal else item.get("explanation"), 1_000)
@@ -1599,12 +1696,6 @@ def _apply_assessment(
         generic_status = "blocked"
         terminal_reason = "Goal 已达到服务端迭代上限。"
         blocker = terminal_reason
-    if not all_required_satisfied and _deadline_reached(state):
-        goal_status = "blocked"
-        generic_status = "blocked"
-        terminal_reason = "Goal 已达到服务端时间上限。"
-        blocker = terminal_reason
-
     return {
         "goal_criteria": updated,
         "goal_assessment": assessment.model_dump(mode="json"),
@@ -1645,14 +1736,6 @@ def _assessment_projection_accepted(assessment: GoalAssessment, update: Mapping[
 
 async def _goal_monitor(state: GoalState, runtime: Any) -> dict[str, Any]:
     context: GoalContext = runtime.context
-    if _deadline_reached(state):
-        return {
-            "goal_status": "blocked",
-            "status": "blocked",
-            "goal_blocker": "Goal 已达到服务端时间上限。",
-            "goal_terminal_reason": "Goal 时间预算耗尽",
-            "terminal_detail": "Goal 已达到服务端时间上限，保留已有证据并停止继续调用。",
-        }
     if _model_call_limit_reached(state):
         return {
             "goal_status": "blocked",
@@ -1687,6 +1770,9 @@ async def _goal_monitor(state: GoalState, runtime: Any) -> dict[str, Any]:
                         state,
                         "你是 Goal 模式的进度监控器。逐条检查 success_criteria，只能引用当前 evidence 中存在的 evidence_id。"
                         "只有有有效证据时才能把条件标记为 satisfied；不能因为动作成功或模型自评就宣布完成。"
+                        "criteria 中的 evidence_ids 是服务端已关联到该条件的候选证据；同一条证据可以支持多个条件。"
+                        "如果一条已关联证据同时包含多个条件所需的信息，请在每个适用条件中都选择该 evidence_id 并标记 satisfied；"
+                        "不要仅因条件拆成金额、页码等多个要求，就把同一条完整证据拆成一个满足、另一个 pending。"
                         "如果需要新的动作，返回 continue 或 replan；无法自动验证时返回 waiting_for_user；"
                         "verification_method=user_confirmation 的条件必须保持 pending，直到用户明确确认；若仍未确认，返回 waiting_for_user，"
                         "并在 progress_text 中就该条件向用户提出自然、具体的问题。"
@@ -1781,11 +1867,12 @@ async def _goal_finalize(state: GoalState, runtime: Any) -> dict[str, Any]:
         for value in state.get("goal_evidence_ids") or []
         if str(value) in eligible_evidence_ids
     ]
+    requested_answer_evidence_ids: list[str] = []
     limitations: list[str] = []
     if generic_status != "completed" and fallback:
         limitations.append(fallback)
 
-    if not _model_call_limit_reached(state) and not _deadline_reached(state):
+    if not _model_call_limit_reached(state):
         final_model_calls = 1
         try:
             final = await _structured_call(
@@ -1797,6 +1884,8 @@ async def _goal_finalize(state: GoalState, runtime: Any) -> dict[str, Any]:
                             state,
                             "你是 Goal 模式的结果整理器。根据目标合同、完成条件和已存在的证据，"
                             "输出简洁、诚实的最终结果。不要声称未被证据支持的条件已经完成。"
+                            "事实结论要在 evidence_ids 字段中引用实际支持它的证据；只能选择输入中 eligible=true 的 evidence_id，"
+                            "不要在 answer 正文里写证据编号，也不要为了凑引用选择无关证据。"
                             "completed Goal 说明已满足的条件；blocked/failed Goal 明确说明未完成条件和限制。"
                             "直接回答用户的问题，承接前面的沟通；不写任务报告、内部状态标题或完成清单。"
                             "运行故障不等于数据缺失；已取得的观察仍然有效，不能抹掉或编造故障原因。"
@@ -1821,7 +1910,8 @@ async def _goal_finalize(state: GoalState, runtime: Any) -> dict[str, Any]:
                 projection_kind="GoalFinalAnswer",
                 projection_id=f"{context.run_id}:goal:finalize:{int(state.get('model_turn_count') or 0) + 1}",
             )
-            answer = _short(final.answer, 24_000)
+            answer = str(final.answer or "").strip()
+            requested_answer_evidence_ids = [str(value) for value in final.evidence_ids]
             evidence_ids = list(dict.fromkeys([
                 *evidence_ids,
                 *[
@@ -1845,6 +1935,20 @@ async def _goal_finalize(state: GoalState, runtime: Any) -> dict[str, Any]:
         answer = "Goal 已完成，所有必需完成条件均已获得有效证据。"
     if generic_status != "completed" and answer == "Goal 未能完成。" and fallback:
         answer = f"Goal 未能完成：{fallback}"
+    answer_evidence_ids = _goal_final_answer_evidence_ids(
+        criteria,
+        requested_answer_evidence_ids,
+        eligible_evidence_ids,
+    )
+    # The shared answer contract renders citations from validated evidence IDs.
+    # Remove any free-form model markers first so only the typed, run-local IDs
+    # below can become clickable references in the client.
+    answer, _ = canonicalize_evidence_markers(answer, ())
+    if answer_evidence_ids:
+        evidence_ids = list(dict.fromkeys([*evidence_ids, *answer_evidence_ids]))[:80]
+        answer = answer.rstrip() + " " + " ".join(
+            f"【证据 {evidence_id}】" for evidence_id in answer_evidence_ids
+        )
     remaining_limitations = [item for item in dict.fromkeys(limitations) if item and item not in answer]
     if remaining_limitations:
         answer = answer.rstrip() + "\n\n限制：" + "；".join(remaining_limitations)
@@ -1853,6 +1957,26 @@ async def _goal_finalize(state: GoalState, runtime: Any) -> dict[str, Any]:
         status=generic_status,
         error_code=(str(state.get("error_code")) if state.get("error_code") else None),
         detail=fallback if generic_status != "completed" else None,
+    )
+    factual_evidence = [
+        item
+        for item in state.get("evidence") or []
+        if isinstance(item, Mapping)
+        and evidence_record_is_eligible(item)
+        and str(item.get("effect") or "read") != "side_effect"
+    ]
+    claim_evidence = (
+        build_claim_evidence_ledger(
+            final_text,
+            factual_evidence,
+            [
+                item
+                for item in state.get("tool_results") or []
+                if isinstance(item, Mapping)
+            ],
+        ).get("claims")
+        if factual_evidence
+        else []
     )
     context.events.stage(
         "goal.finalize",
@@ -1874,6 +1998,7 @@ async def _goal_finalize(state: GoalState, runtime: Any) -> dict[str, Any]:
         "goal_status": goal_status,
         "goal_terminal_reason": fallback if generic_status != "completed" else "所有必需完成条件均已满足。",
         "goal_evidence_ids": evidence_ids,
+        "claim_evidence": list(claim_evidence or []),
         "pending_interrupt": None,
         "model_turn_count": final_model_calls,
     }
@@ -1905,7 +2030,6 @@ __all__ = [
     "GOAL_DEFAULT_ITERATION_LIMIT",
     "GOAL_DEFAULT_MODEL_CALL_LIMIT",
     "GOAL_DEFAULT_REPLAN_LIMIT",
-    "GOAL_DEFAULT_TIME_LIMIT_SECONDS",
     "build_goal_graph",
     "goal_runtime_limits",
     "goal_turn_defaults",

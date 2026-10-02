@@ -153,6 +153,41 @@ class RagKnowledgeBaseService:
         finally:
             session.close()
 
+    def list_searchable_knowledge_bases(
+        self,
+        *,
+        tenant_id: str,
+        owner_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return only caller-owned libraries with at least one active PDF index."""
+        candidates = [
+            item
+            for item in self.list_knowledge_bases(tenant_id=tenant_id, owner_id=owner_id)
+            if item.get("status") == "active" and int(item.get("ready_document_count") or 0) > 0
+        ]
+        if not candidates:
+            return []
+        indexed_ids = {
+            str(item.get("knowledge_base_id") or "")
+            for item in self.active_index_versions(
+                [str(item["id"]) for item in candidates],
+                tenant_id=tenant_id,
+                owner_id=owner_id,
+            )
+            if str(item.get("knowledge_base_id") or "").strip()
+        }
+        return [
+            {
+                "id": str(item["id"]),
+                "name": str(item.get("name") or "")[:160],
+                "description": str(item.get("description") or "")[:500],
+                "status": "searchable",
+                "ready_document_count": int(item.get("ready_document_count") or 0),
+            }
+            for item in candidates
+            if str(item.get("id") or "") in indexed_ids
+        ]
+
     def list_documents(
         self,
         knowledge_base_id: str,

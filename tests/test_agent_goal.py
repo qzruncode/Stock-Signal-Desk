@@ -22,6 +22,7 @@ from src.agent.langgraph_runtime.goal.graph import (
     _contract_needs_confirmation,
     _goal_action_select,
     _goal_execute,
+    _goal_final_answer_evidence_ids,
     _structured_call,
     build_goal_graph,
     goal_runtime_limits,
@@ -32,14 +33,18 @@ from src.agent.langgraph_runtime.goal.trace import goal_trace
 from src.agent.langgraph_runtime.mode_dispatch import normalize_product_mode
 from src.agent.langgraph_runtime.mode_dispatch import ProductModeRoute, resolve_product_mode
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
+from src.tools.search_knowledge_base import TOOL as SEARCH_KNOWLEDGE_BASE_TOOL
 from tests.test_langgraph_agent_runtime import FakeAtomicExecutor, _registry, _search_operation
 
 
 class _SequenceRunnable:
-    def __init__(self, responses):
+    def __init__(self, responses, calls=None):
         self.responses = responses
+        self.calls = calls
 
-    async def ainvoke(self, _messages):
+    async def ainvoke(self, messages):
+        if self.calls is not None:
+            self.calls.append(list(messages))
         if not self.responses:
             raise AssertionError("Goal model requested an unscripted response")
         return {"parsed": self.responses.pop(0), "raw": None, "parsing_error": None}
@@ -48,10 +53,11 @@ class _SequenceRunnable:
 class _SequenceStructuredModel:
     def __init__(self, responses):
         self.responses = list(responses)
+        self.calls = []
 
     def with_structured_output(self, _schema, *, include_raw=True):
         assert include_raw is True
-        return _SequenceRunnable(self.responses)
+        return _SequenceRunnable(self.responses, self.calls)
 
 
 class _Events:
@@ -75,6 +81,7 @@ def _goal_state(*, evidence=None, status="pending"):
     # unit helper supplies the equivalent materialized values directly.
     defaults["goal_evidence_ids"] = []
     defaults["goal_history"] = []
+    defaults["tool_results"] = []
     defaults["tool_call_count"] = 0
     defaults["model_turn_count"] = 0
     return {
@@ -231,6 +238,64 @@ def test_goal_completes_only_when_required_condition_references_eligible_evidenc
     assert update["goal_criteria"][0]["evidence_ids"] == ["real-evidence"]
 
 
+def test_pending_assessment_preserves_server_linked_candidate_evidence() -> None:
+    evidence_id = "ev_kb_shared_result"
+    state = _goal_state(
+        evidence=[{
+            "evidence_id": evidence_id,
+            "success": True,
+            "has_data": True,
+            "usable": True,
+            "evidence_eligible": True,
+        }]
+    )
+    state["goal_criteria"] = [
+        {
+            "criterion_id": "amount",
+            "required": True,
+            "verification_method": "tool_result",
+            "status": "pending",
+            "evidence_ids": [evidence_id],
+        },
+        {
+            "criterion_id": "page",
+            "required": True,
+            "verification_method": "tool_result",
+            "status": "pending",
+            "evidence_ids": [evidence_id],
+        },
+    ]
+    update = _apply_assessment(
+        state,
+        GoalAssessment(
+            status="continue",
+            criteria=[
+                {
+                    "criterion_id": "amount",
+                    "status": "satisfied",
+                    "evidence_ids": [evidence_id],
+                },
+                {"criterion_id": "page", "status": "pending", "evidence_ids": []},
+            ],
+        ),
+    )
+
+    assert update["goal_criteria"][0]["status"] == "satisfied"
+    assert update["goal_criteria"][1]["status"] == "pending"
+    assert update["goal_criteria"][1]["evidence_ids"] == [evidence_id]
+
+
+def test_goal_final_citations_use_model_selection_or_satisfied_criterion_evidence() -> None:
+    criteria = [
+        {"status": "satisfied", "evidence_ids": ["ev_kb_hit"]},
+        {"status": "pending", "evidence_ids": ["ev_unrelated"]},
+    ]
+    eligible = {"ev_kb_hit", "ev_selected"}
+
+    assert _goal_final_answer_evidence_ids(criteria, ["ev_invalid"], eligible) == ["ev_kb_hit"]
+    assert _goal_final_answer_evidence_ids(criteria, ["ev_selected"], eligible) == ["ev_selected"]
+
+
 def test_unlinked_eligible_evidence_cannot_satisfy_a_criterion() -> None:
     state = _goal_state(
         evidence=[
@@ -326,6 +391,7 @@ def test_goal_trace_is_bounded_and_user_verifiable() -> None:
     assert trace["last_action"]["tool_name"] == "read_source"
     assert "arguments" not in trace["last_action"]
     assert trace["blocker"] == "达到迭代上限"
+    assert "time_limit_seconds" not in trace["limits"]
 
 
 def test_goal_action_schema_failure_is_repaired_before_progress_or_execution() -> None:
@@ -349,7 +415,9 @@ def test_goal_action_schema_failure_is_repaired_before_progress_or_execution() -
             "model": model,
             "events": events,
             "registry": _registry(_search_operation()),
-            "catalog": type("Catalog", (), {"compact_catalog": lambda _self: []})(),
+            "catalog": type("Catalog", (), {
+                "compact_catalog": lambda _self: [{"operation": "search_source"}],
+            })(),
             "run_id": "goal-action-repair",
             "conversation_id": "goal-action-repair",
         })()
@@ -367,6 +435,312 @@ def test_goal_action_schema_failure_is_repaired_before_progress_or_execution() -
         assert [projection["text"] for projection in events.projections] == [
             "我先从原始发布渠道核对这条公开记录。"
         ]
+
+    asyncio.run(scenario())
+
+
+def test_goal_model_selects_a_contextual_knowledge_query_as_an_action() -> None:
+    async def scenario() -> None:
+        events = _Events()
+        query = "主营业务收入和经营风险"
+        model = _SequenceStructuredModel([
+            GoalAction(
+                kind="tool",
+                action_id="goal-kb-search",
+                tool_name="search_knowledge_base",
+                arguments={"query": query},
+                criterion_ids=["criterion-1"],
+                progress_text="我先核对报告中与经营风险相关的原文。",
+            ),
+            GoalAction(
+                kind="tool", action_id="goal-external-supplement",
+                tool_name="search_source",
+                arguments={"source_id": "primary", "query": "经营风险的外部补充资料"},
+                criterion_ids=["criterion-1"],
+                progress_text="我根据知识库返回的缺口补查公开资料。",
+            ),
+        ])
+        context = type("Context", (), {
+            "model": model,
+            "events": events,
+            "registry": _registry(SEARCH_KNOWLEDGE_BASE_TOOL, _search_operation()),
+            "catalog": type("Catalog", (), {
+                "compact_catalog": lambda _self: [{
+                    "operation": "search_knowledge_base",
+                    "description": "检索所选 PDF 知识库",
+                }, {"operation": "search_source"}]
+            })(),
+            "run_id": "goal-kb-query",
+            "conversation_id": "goal-kb-query",
+            "knowledge_base_ids": ("kb-selected",),
+        })()
+        state = {
+            **_goal_state(status="running"),
+            "user_text": "根据所选 PDF，核实主营业务和经营风险。",
+            "knowledge_base_ids": ["kb-selected"],
+            "goal_contract": {"objective": "核实报告内容"},
+            # Older checkpoints may retain this expired field. It must not
+            # impose a new wall-clock cutoff on Goal model responses.
+            "goal_deadline_epoch": 1.0,
+        }
+
+        update = await _goal_action_select(
+            state,
+            type("Runtime", (), {"context": context})(),
+        )
+
+        assert update["goal_action"]["tool_name"] == "search_knowledge_base"
+        assert update["goal_action"]["arguments"]["query"] == query
+        prompt = str(model.calls[0][0].content)
+        assert "首轮必须由你先作一次明确的来源决策" not in prompt
+        assert "命中足以回答后停止检索并作答" in prompt
+        assert '"operation":"search_source"' in prompt
+        supplemented = await _goal_action_select(
+            {**state, "tool_results": [{"tool_name": "search_knowledge_base", "success": False}]},
+            type("Runtime", (), {"context": context})(),
+        )
+        assert supplemented["goal_action"]["tool_name"] == "search_source"
+        assert '"operation":"search_source"' in str(model.calls[1][0].content)
+
+    asyncio.run(scenario())
+
+
+def test_goal_hides_knowledge_tool_when_no_knowledge_base_is_selected() -> None:
+    async def scenario() -> None:
+        events = _Events()
+        model = _SequenceStructuredModel([
+            GoalAction(
+                kind="tool",
+                action_id="public-source-search",
+                tool_name="search_source",
+                arguments={"source_id": "primary", "query": "公司经营风险"},
+                criterion_ids=["criterion-1"],
+                progress_text="我先核对公开来源中的相关披露。",
+            )
+        ])
+        context = type("Context", (), {
+            "model": model,
+            "events": events,
+            "registry": _registry(_search_operation(), SEARCH_KNOWLEDGE_BASE_TOOL),
+            "catalog": type("Catalog", (), {
+                "compact_catalog": lambda _self: [
+                    {"operation": "search_source"},
+                    {"operation": "search_knowledge_base"},
+                ]
+            })(),
+            "run_id": "goal-without-kb",
+            "conversation_id": "goal-without-kb",
+        })()
+        state = {
+            **_goal_state(status="running"),
+            "user_text": "核实公司的经营风险。",
+            "knowledge_base_ids": [],
+            "goal_contract": {"objective": "核实经营风险"},
+        }
+
+        update = await _goal_action_select(
+            state,
+            type("Runtime", (), {"context": context})(),
+        )
+
+        assert update["goal_action"]["tool_name"] == "search_source"
+        assert "search_source" in str(model.calls[0][0].content)
+        assert "search_knowledge_base" not in str(model.calls[0][0].content)
+
+    asyncio.run(scenario())
+
+
+def test_goal_cannot_choose_an_unselected_library_from_a_catalog() -> None:
+    async def scenario() -> None:
+        events = _Events()
+        model = _SequenceStructuredModel([
+            GoalAction(
+                kind="tool",
+                action_id="goal-public-source-search",
+                tool_name="search_source",
+                arguments={"source_id": "primary", "query": "年报经营风险"},
+                criterion_ids=["criterion-1"],
+                progress_text="我先从可检索的年报库核对相关披露。",
+            )
+        ])
+        context = type("Context", (), {
+            "model": model,
+            "events": events,
+            "registry": _registry(SEARCH_KNOWLEDGE_BASE_TOOL, _search_operation()),
+            "catalog": type("Catalog", (), {
+                "compact_catalog": lambda _self: [
+                    {"operation": "search_knowledge_base", "description": "检索可访问的 PDF 知识库"},
+                    {"operation": "search_source"},
+                ]
+            })(),
+            "run_id": "goal-unselected-kb",
+            "conversation_id": "goal-unselected-kb",
+            "knowledge_base_ids": (),
+            "searchable_knowledge_bases": (
+                {"id": "kb-a", "name": "年报库", "status": "searchable"},
+            ),
+        })()
+        state = {
+            **_goal_state(status="running"),
+            "user_text": "总结年报披露的经营风险。",
+            "knowledge_base_ids": [],
+            "goal_contract": {"objective": "核实经营风险"},
+        }
+
+        update = await _goal_action_select(
+            state,
+            type("Runtime", (), {"context": context})(),
+        )
+
+        prompt = str(model.calls[0][0].content)
+        assert update["goal_action"]["tool_name"] == "search_source"
+        assert update["goal_action"]["arguments"]["query"] == "年报经营风险"
+        assert '"id":"kb-a"' not in prompt
+        assert "search_knowledge_base" not in prompt
+
+    asyncio.run(scenario())
+
+
+def test_goal_pdf_only_filters_sources_without_a_first_search_gate() -> None:
+    async def scenario() -> None:
+        events = _Events()
+        model = _SequenceStructuredModel([
+            GoalAction(
+                kind="tool", action_id="external-not-allowed", tool_name="search_source",
+                arguments={"source_id": "primary", "query": "营业收入"},
+                criterion_ids=["criterion-1"],
+            ),
+            GoalAction(
+                kind="tool",
+                action_id="required-kb-search",
+                tool_name="search_knowledge_base",
+                arguments={"query": "第 7 页营业收入"},
+                criterion_ids=["criterion-1"],
+                progress_text="我先检索指定 PDF，再核实其中的数字。",
+            ),
+        ])
+        context = type("Context", (), {
+            "model": model,
+            "events": events,
+            "registry": _registry(SEARCH_KNOWLEDGE_BASE_TOOL),
+            "catalog": type("Catalog", (), {
+                "compact_catalog": lambda _self: [
+                    {"operation": "search_knowledge_base"},
+                    {"operation": "search_source"},
+                ]
+            })(),
+            "run_id": "goal-kb-only",
+            "conversation_id": "goal-kb-only",
+            "knowledge_base_ids": ("kb-selected",),
+        })()
+        state = {
+            **_goal_state(status="running"),
+            "user_text": "只依据所选 PDF，列出第 7 页营业收入。",
+            "knowledge_base_ids": ["kb-selected"],
+            "goal_contract": {"objective": "列出营业收入"},
+        }
+
+        update = await _goal_action_select(
+            state,
+            type("Runtime", (), {"context": context})(),
+        )
+
+        assert update["goal_action"]["tool_name"] == "search_knowledge_base", update
+        assert update["goal_action_status"] == "selected"
+        assert len(model.calls) == 2
+        assert "search_knowledge_base" in str(model.calls[0][0].content)
+        assert "search_source" not in str(model.calls[0][0].content)
+        assert "search_knowledge_base" in str(model.calls[1][0].content)
+        assert "search_source" not in str(model.calls[1][0].content)
+
+    asyncio.run(scenario())
+
+
+def test_goal_rejects_finish_while_required_criteria_are_pending() -> None:
+    async def scenario() -> None:
+        events = _Events()
+        model = _SequenceStructuredModel([
+            GoalAction(kind="finish", action_id="finish-for-verification"),
+            GoalAction(
+                kind="tool",
+                action_id="research-after-finish-rejected",
+                tool_name="search_knowledge_base",
+                arguments={"query": "营业收入"},
+                criterion_ids=["criterion-1"],
+            ),
+        ])
+        context = type("Context", (), {
+            "model": model,
+            "events": events,
+            "registry": _registry(SEARCH_KNOWLEDGE_BASE_TOOL),
+            "catalog": type("Catalog", (), {
+                "compact_catalog": lambda _self: [{"operation": "search_knowledge_base"}]
+            })(),
+            "run_id": "goal-kb-only-fail-closed",
+            "conversation_id": "goal-kb-only-fail-closed",
+            "knowledge_base_ids": ("kb-selected",),
+        })()
+        state = {
+            **_goal_state(status="running"),
+            "user_text": "只依据所选 PDF，列出第 7 页营业收入。",
+            "knowledge_base_ids": ["kb-selected"],
+            "tool_results": [{"tool_name": "search_knowledge_base", "success": True}],
+            "goal_contract": {"objective": "列出营业收入"},
+        }
+
+        update = await _goal_action_select(
+            state,
+            type("Runtime", (), {"context": context})(),
+        )
+
+        assert len(model.calls) == 2
+        assert update["goal_action"]["kind"] == "tool"
+        assert update["goal_action"]["tool_name"] == "search_knowledge_base"
+        assert update["goal_action_status"] == "selected"
+        assert update["goal_action_validation_repairs"] == 1
+        assert "不能结束 Goal" in str(model.calls[1][-1].content)
+
+    asyncio.run(scenario())
+
+
+def test_goal_fails_closed_when_model_repeats_finish_after_repair() -> None:
+    async def scenario() -> None:
+        events = _Events()
+        model = _SequenceStructuredModel([
+            GoalAction(kind="finish", action_id="premature-finish-one"),
+            GoalAction(kind="finish", action_id="premature-finish-two"),
+        ])
+        context = type("Context", (), {
+            "model": model,
+            "events": events,
+            "registry": _registry(SEARCH_KNOWLEDGE_BASE_TOOL),
+            "catalog": type("Catalog", (), {
+                "compact_catalog": lambda _self: [{"operation": "search_knowledge_base"}]
+            })(),
+            "run_id": "goal-kb-only-repeated-finish",
+            "conversation_id": "goal-kb-only-repeated-finish",
+            "knowledge_base_ids": ("kb-selected",),
+        })()
+        state = {
+            **_goal_state(status="running"),
+            "user_text": "只依据所选 PDF，列出第 7 页营业收入。",
+            "knowledge_base_ids": ["kb-selected"],
+            "tool_results": [{"tool_name": "search_knowledge_base", "success": True}],
+            "goal_contract": {"objective": "列出营业收入"},
+        }
+
+        update = await _goal_action_select(
+            state,
+            type("Runtime", (), {"context": context})(),
+        )
+
+        assert len(model.calls) == 2
+        assert update["goal_status"] == "failed"
+        assert update["goal_action_status"] == "failed"
+        assert update["error_code"] == "goal_action_invalid"
+        assert "不能结束 Goal" in update["goal_blocker"]
+        assert update["goal_action_validation_repairs"] == 1
+        assert not events.projections
 
     asyncio.run(scenario())
 
@@ -431,7 +805,8 @@ def test_goal_execute_revalidates_checkpointed_tool_action_before_dispatch() -> 
     asyncio.run(scenario())
 
 
-def test_goal_limits_are_server_owned_and_not_fixed_to_pdf_example() -> None:
+def test_goal_limits_are_server_owned_and_have_no_wall_clock_cap(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_GOAL_MAX_DURATION_SECONDS", "1")
     limits = goal_runtime_limits(tool_call_limit=7)
     defaults = goal_turn_defaults(tool_call_limit=7)
 
@@ -439,6 +814,8 @@ def test_goal_limits_are_server_owned_and_not_fixed_to_pdf_example() -> None:
     assert limits["goal_tool_call_limit"] == 7
     assert defaults["goal_iteration_limit"] == limits["goal_iteration_limit"]
     assert defaults["goal_model_call_limit"] == limits["goal_model_call_limit"]
+    assert "goal_time_limit_seconds" not in limits
+    assert "goal_deadline_epoch" not in defaults
 
 
 def test_goal_contract_without_criteria_or_constraints_requires_confirmation() -> None:
@@ -629,6 +1006,8 @@ def test_explicit_goal_runs_only_the_goal_graph_and_persists_goal_state() -> Non
             assert result.state["resolved_agent_mode"] == "goal"
             assert result.state["goal_status"] == "completed"
             assert result.state["goal_criteria"][0]["evidence_ids"] == ["ev_action-1"]
+            assert "【证据 ev_action-1】" in result.state["answer_final"]
+            assert result.state["claim_evidence"][0]["evidence_ids"] == ["ev_action-1"]
             assert len(executor.calls) == 1
             assert "planning_status" not in result.state
             assert "team_status" not in result.state

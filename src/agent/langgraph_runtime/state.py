@@ -161,7 +161,6 @@ class AgentState(LangChainAgentState, total=False):
     user_text: str
     system_prompt: str
     knowledge_base_ids: list[str]
-    knowledge_base_search_required: bool
     reference_time: str
     # Small, durable reference context resolved from a successful read tool.
     # Large member collections remain in the tool observation and are fetched
@@ -187,6 +186,7 @@ class AgentState(LangChainAgentState, total=False):
     planning_error: str
     planning_decision: dict[str, Any] | None
     planning_step_attempts: int
+    planning_no_progress_attempts: int
     planning_step_tool_call_ids: list[str]
     planning_feedback: str
 
@@ -218,6 +218,9 @@ class AgentState(LangChainAgentState, total=False):
     # Feedback injected into the next model turn when deterministic evidence
     # checks find a repairable issue.
     evidence_feedback: str
+    # The first rejected draft retains independently verified content if a
+    # later revision regresses. Never merge conflicting answer versions.
+    evidence_repair_answer: dict[str, Any] | None
     # A bounded recovery for one failed source, started at the native tools
     # join. While set, ModelRequest requires the owned web-search/read turn.
     fallback_feedback: str
@@ -247,14 +250,12 @@ class AgentState(LangChainAgentState, total=False):
     # terminal code consumes.
     structured_answer: dict[str, Any] | None
     # The output-tool call that produced ``structured_answer``.  LangChain's
-    # built-in ``structured_response`` channel is intentionally retained by
-    # the graph across retries; this run-local identity prevents an older
-    # structured response from being mistaken for the current model turn.
+    # supported version clears stale native structured responses across
+    # checkpointed turns; this identity binds the app projection to this turn.
     structured_answer_call_id: str
     # Whether this graph instance must finish through the configured
-    # LangChain response format.  The built-in structured_response channel is
-    # retained by the native graph for routing, so this application flag also
-    # prevents a stale response from allowing a plain-text terminal path.
+    # LangChain response format.  This application flag prevents a plain-text
+    # terminal path when the current run has not produced a structured answer.
     structured_output_required: bool
     answer_draft: str
     answer_final: str
@@ -264,6 +265,8 @@ class AgentState(LangChainAgentState, total=False):
     reflection_status: str
     reflection_feedback: str
     reflection_review: dict[str, Any] | None
+    # Previous hard-validated answer kept only when reflection flags low-severity issues.
+    reflection_fallback_answer: dict[str, Any] | None
     reflection_round: int
     reflection_call_count: int
     reflection_revision_count: int
@@ -360,7 +363,6 @@ class AgentGraphInput(TypedDict, total=False):
     user_text: str
     system_prompt: str
     knowledge_base_ids: list[str]
-    knowledge_base_search_required: bool
     reference_time: str
     conversation_context: dict[str, Any] | None
     engine: str
@@ -380,6 +382,7 @@ class AgentGraphInput(TypedDict, total=False):
     planning_error: str
     planning_decision: dict[str, Any] | None
     planning_step_attempts: int
+    planning_no_progress_attempts: int
     planning_step_tool_call_ids: list[str]
     planning_feedback: str
     tool_results: list[dict[str, Any]]
@@ -420,6 +423,7 @@ class AgentGraphInput(TypedDict, total=False):
     reflection_status: str
     reflection_feedback: str
     reflection_review: dict[str, Any] | None
+    reflection_fallback_answer: dict[str, Any] | None
     reflection_round: int
     reflection_call_count: int
     reflection_revision_count: int
@@ -513,6 +517,7 @@ class GraphContext:
     tenant_id: str
     owner_id: str
     knowledge_base_ids: tuple[str, ...] = ()
+    knowledge_base_catalog: dict[str, Any] | None = None
     # Team workers may compile the shared web tools into their child graph so
     # a recovery turn can use the native LangGraph tool path.  Middleware hides
     # these names during normal turns and allows them only when fallback state

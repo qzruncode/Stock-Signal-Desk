@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -501,6 +501,64 @@ def _stream_official_pdf(url: str, exchange: str, destination: Path) -> int:
     return total
 
 
+def existing_company_financial_report(
+    *, company_query: str, candidate_id: str, report_title: str,
+    knowledge_base_id: str, tenant_id: str, owner_id: str,
+    kb_service: RagKnowledgeBaseService | None = None,
+) -> dict[str, Any] | None:
+    """Match an owned original by its persisted official filing identity.
+
+    A filename alone is not proof of identity. Reconstruct the same candidate
+    key used by disclosure discovery; this is a local read, not a download.
+    """
+    service = kb_service or RagKnowledgeBaseService()
+    for document in service.list_documents(
+        knowledge_base_id, tenant_id=tenant_id, owner_id=owner_id,
+    ):
+        source = document.get("source") or {}
+        code = str(source.get("security_code") or "")
+        name = str(source.get("security_name") or "")
+        if _normalized_name(company_query) not in {_normalized_name(code), _normalized_name(name)}:
+            continue
+        title = str(source.get("announcement_title") or "")
+        exchange = next((key for key, label in _EXCHANGE_LABELS.items()
+                         if source.get("exchange") in {key, label}), None)
+        if not exchange or not code or not source.get("announcement_id") or not source.get("pdf_url"):
+            continue
+        identity = _candidate_id(
+            exchange=exchange, company_code=code,
+            announcement_id=str(source["announcement_id"]),
+            title=title, pdf_url=str(source["pdf_url"]),
+        )
+        if identity == candidate_id and title == report_title:
+            return document
+    return None
+
+
+def existing_report_result(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Report a read-only reuse; do not imply that PDF contents were read."""
+    source = document.get("source") or {}
+    searchable = bool(document.get("active_index_version_id"))
+    return {
+        "success": True,
+        "company": {"code": source.get("security_code"), "name": source.get("security_name")},
+        "report": {
+            "title": source.get("announcement_title"), "report_period": source.get("report_period"),
+            "exchange": source.get("exchange"), "published_at": source.get("published_at"),
+            "pdf_url": source.get("pdf_url"),
+        },
+        "document": dict(document), "downloaded_bytes": 0, "duplicate": True,
+        "read_only_reuse": True, "searchable": searchable,
+        "source_scope": "knowledge_base_document_inventory",
+        "message": (
+            "同一官方财报已存在且可检索，已复用；没有下载或修改知识库。分析内容请调用 search_knowledge_base。"
+            if searchable else
+            "同一官方财报已存在，但尚无活动索引；没有重复下载或修改，请根据文档处理状态说明内容取证缺口。"
+        ),
+        "errors": [], "warnings": [],
+    }
+
+
 def import_company_financial_report(
     *,
     company_query: str,
@@ -511,6 +569,14 @@ def import_company_financial_report(
     owner_id: str,
 ) -> dict[str, Any]:
     """Revalidate a discovered candidate, then import its exact official PDF into RAG."""
+    kb_service = RagKnowledgeBaseService()
+    existing = existing_company_financial_report(
+        company_query=company_query, candidate_id=candidate_id, report_title=report_title,
+        knowledge_base_id=knowledge_base_id, tenant_id=tenant_id, owner_id=owner_id,
+        kb_service=kb_service,
+    )
+    if existing is not None:
+        return existing_report_result(existing)
     company = _resolve_company(company_query)
     candidates = _report_candidates(company)
     candidate = next(
@@ -527,7 +593,6 @@ def import_company_financial_report(
             code="report_candidate_stale",
         )
 
-    kb_service = RagKnowledgeBaseService()
     kb_service.assert_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_id=owner_id)
     incoming = rag_storage_root() / ".incoming"
     incoming.mkdir(parents=True, exist_ok=True)

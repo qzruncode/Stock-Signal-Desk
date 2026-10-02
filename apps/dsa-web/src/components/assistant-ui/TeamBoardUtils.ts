@@ -463,6 +463,16 @@ export const buildTeamBoardModel = (
 
   const rawFailure = isRecord(team?.failure) ? team.failure : {};
   const terminalRunStatusRecord = isRecord(terminalRunStatus) ? terminalRunStatus : undefined;
+  const terminalErrorCode = normalizeText(
+    recordValue(rawFailure, 'error_code', 'errorCode')
+      || recordValue(terminalRunStatusRecord, 'error_code', 'errorCode'),
+    128,
+  );
+  const providerTerminalErrors = new Set([
+    'model_provider_timeout',
+    'model_provider_unavailable',
+    'model_context_window_exceeded',
+  ]);
   const planSource = normalizeText(recordValue(team, 'plan_source', 'planSource'), 32).toLowerCase();
   const planWasRejected = planSource === 'rejected';
   const dispatchedTaskIds = recordValue(team, 'dispatched_task_ids', 'dispatchedTaskIds');
@@ -483,16 +493,13 @@ export const buildTeamBoardModel = (
         : statusValue(recordValue(team, 'status'));
   const isTerminalFailure = failureStatus === 'failed'
     || failureStatus === 'blocked'
-    || failureStatus === 'cancelled';
+    || failureStatus === 'cancelled'
+    || (failureStatus === 'partial' && providerTerminalErrors.has(terminalErrorCode));
   const failure = isTerminalFailure
     ? {
       status: failureStatus,
-      errorCode: normalizeText(
-        recordValue(rawFailure, 'error_code', 'errorCode')
-          || (planWasRejected ? 'team_plan_rejected' : '')
-          || recordValue(terminalRunStatusRecord, 'error_code', 'errorCode'),
-        128,
-      ),
+      errorCode: terminalErrorCode
+        || (planWasRejected ? 'team_plan_rejected' : ''),
       detail: normalizeText(
         recordValue(rawFailure, 'detail', 'reason')
           || (planWasRejected ? recordValue(team, 'plan_error', 'planError') : '')

@@ -231,6 +231,57 @@ def test_isolated_runner_enforces_atomic_tool_deadline() -> None:
         execute_tool_isolated("read_market_indices_sina", {}, deadline_seconds=0.1)
 
 
+def test_knowledge_retrieval_has_no_outer_process_deadline_and_can_be_stopped():
+    from src.tools.search_knowledge_base import TOOL
+
+    assert TOOL.timeout_seconds is None
+    cancel_event = threading.Event()
+    timer = threading.Timer(0.03, cancel_event.set)
+    timer.start()
+    try:
+        with (
+            patch("src.tools.process_runner.subprocess.Popen", return_value=_BlockingProcess()),
+            patch("src.tools.process_runner.os.killpg") as kill_group,
+            pytest.raises(RuntimeError, match="已取消"),
+        ):
+            execute_tool_isolated(
+                TOOL.name, {"query": "报告经营情况"}, cancel_event=cancel_event,
+                deadline_seconds=TOOL.timeout_seconds,
+            )
+    finally:
+        timer.cancel()
+    kill_group.assert_called_once_with(4242, signal.SIGTERM)
+
+
+def test_knowledge_retrieval_dispatch_preserves_scope_without_a_deadline():
+    from src.tools.search_knowledge_base import TOOL
+
+    captured = {}
+
+    def isolated(_name, _arguments, **kwargs):
+        captured.update(kwargs)
+        return {"success": True, "no_evidence": True, "results": []}
+
+    registry = ToolRegistry()
+    assert registry.get_tool(TOOL.name).timeout_seconds is None
+    dispatcher = ToolDispatcher(
+        registry, isolated_executor=isolated, compact_result=lambda _name, result: result,
+        attach_fallback=lambda _name, _arguments, result: result,
+    )
+    cancel_event = threading.Event()
+    dispatcher.execute(ToolDispatchRequest(
+        tool_name=TOOL.name, arguments={"query": "主营构成"}, force_isolation=True,
+        idempotency_key="kb-retrieval-scope",
+        timeout_seconds=TOOL.timeout_seconds, knowledge_base_ids=("selected-library",),
+        tenant_id="tenant", owner_id="owner",
+    ), cancel_event=cancel_event, progress_observer=lambda _update: None)
+    assert captured["deadline_seconds"] is None
+    assert captured["cancel_event"] is cancel_event
+    assert captured["execution_context"]["knowledge_base_ids"] == "selected-library"
+    assert captured["execution_context"]["tenant_id"] == "tenant"
+    assert captured["execution_context"]["owner_id"] == "owner"
+
+
 def test_one_shot_worker_exits_without_thread_finalization() -> None:
     stdout = MagicMock()
     stderr = MagicMock()

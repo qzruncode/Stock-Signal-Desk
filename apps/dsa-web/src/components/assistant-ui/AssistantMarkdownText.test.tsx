@@ -18,6 +18,69 @@ describe('AssistantMarkdown evidence citations', () => {
     await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument());
   });
 
+  it('shows the accepted answer immediately when generation becomes terminal', () => {
+    const text = '根据报告，基本每股收益为0.99元/股。';
+    const view = render(<AssistantMarkdown text={text} animate />);
+
+    view.rerender(<AssistantMarkdown text={text} animate={false} />);
+
+    expect(screen.getByText(text)).toBeInTheDocument();
+  });
+
+  it('allows long first-column labels to wrap inside compact Markdown tables', () => {
+    render(
+      <AssistantMarkdown
+        text={[
+          '| 指标 | 本报告期 | 同比 |',
+          '| --- | ---: | ---: |',
+          '| 归属于上市公司股东的净利润（元） | 411,334,427.09 | 2.93% |',
+        ].join('\n')}
+      />,
+    );
+
+    const label = screen.getByRole('cell', { name: '归属于上市公司股东的净利润（元）' });
+    expect(label).toHaveClass('break-words');
+    expect(label).not.toHaveClass('whitespace-nowrap');
+    expect(label.closest('table')?.parentElement).toHaveClass('overflow-x-auto');
+  });
+
+  it('renders a table citation after the table instead of losing it in the final row', () => {
+    const table = [
+      '| 指标 | 本报告期 | 同比 |',
+      '| --- | ---: | ---: |',
+      '| 营业成本 | 14.59亿元 | -7.67% |',
+    ].join('\n');
+    render(
+      <AssistantMarkdown
+        text={`${table}\n\n【证据 ev_table_pdf】`}
+        evidence={{
+          evidence: [{
+            evidence_id: 'ev_table_pdf',
+            action_id: 'pdf-search',
+            tool_name: 'search_knowledge_base',
+            success: true,
+            evidence_eligible: true,
+            source_refs: ['/api/v1/knowledge-bases/documents/doc-42/content#page=19'],
+          }],
+          tool_results: [{
+            action_id: 'pdf-search',
+            tool_name: 'search_knowledge_base',
+            success: true,
+            result_items: [{
+              evidence_id: 'ev_table_pdf',
+              title: 'report.pdf · 第 19 页',
+              url: '/api/v1/knowledge-bases/documents/doc-42/content#page=19',
+              summary: '营业成本 1,459,100,671.48 元，上年同期 1,580,326,150.72 元。',
+            }],
+          }],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('cell', { name: '营业成本' })).toBeInTheDocument();
+    expect(screen.getByLabelText('查看证据 ①')).toBeInTheDocument();
+  });
+
   it('does not replay a completed sentence when a live projection is replaced', async () => {
     const firstText = '我会先核对证券身份，再继续读取最新行情。';
     const replacementText = '我会先核对证券身份，然后汇总最新行情。';

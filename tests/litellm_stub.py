@@ -25,4 +25,9 @@ def ensure_litellm_stub() -> None:
     litellm_stub.RateLimitError = _DummyRateLimitError
     litellm_stub.ContextWindowExceededError = _DummyContextWindowExceededError
     litellm_stub.completion = lambda **kwargs: None
+
+    async def _acompletion(**kwargs):  # pragma: no cover - patched by model tests
+        return None
+
+    litellm_stub.acompletion = _acompletion
     sys.modules["litellm"] = litellm_stub

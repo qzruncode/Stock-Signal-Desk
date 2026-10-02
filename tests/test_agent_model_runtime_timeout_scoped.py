@@ -2,22 +2,45 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
-from src.agent.model_runtime import (
-    GuardedModelRuntime,
-    ManagedModelStream,
-    ModelProviderReportedTimeoutError,
-)
+from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
+from src.agent.model_runtime import GuardedModelRuntime, ManagedModelStream
 
 
-def test_configured_request_deadline_releases_and_does_not_retry() -> None:
-    calls = 0
+def test_chat_runtime_has_no_application_model_response_deadline(monkeypatch) -> None:
+    # These settings were previously wired into every conversational model
+    # request. Keep them present to prove stale deployment variables cannot
+    # reintroduce an application-owned deadline.
+    monkeypatch.setenv("AGENT_MODEL_REQUEST_TIMEOUT_SECONDS", "0.001")
+    monkeypatch.setenv("AGENT_MODEL_STREAM_IDLE_TIMEOUT_SECONDS", "0.001")
+    monkeypatch.setenv("RAG_CHAT_MODEL_REQUEST_TIMEOUT_SECONDS", "0.001")
+    monkeypatch.setenv("RAG_CHAT_MODEL_STREAM_IDLE_TIMEOUT_SECONDS", "0.001")
 
-    async def stalled_completion(**_kwargs):
-        nonlocal calls
-        calls += 1
-        await asyncio.sleep(10)
+    context = LangGraphRuntimeManager()._context(
+        llm_config={"model": "test-model"},
+        database=None,
+        controller=None,
+        run_id="run",
+        conversation_id="conversation",
+        run_attempt=1,
+        tenant_id="tenant",
+        owner_id="owner",
+        knowledge_base_ids=("kb",),
+    )
+
+    assert not hasattr(context.model.gateway.runtime, "request_timeout_seconds")
+    assert not hasattr(context.model.gateway.runtime, "stream_idle_timeout_seconds")
+
+
+def test_model_completion_is_not_cancelled_by_a_local_deadline(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_MODEL_REQUEST_TIMEOUT_SECONDS", "0.001")
+    monkeypatch.setenv("AGENT_PROVIDER_MAX_ATTEMPTS", "1")
+    completed = False
+
+    async def completion(**_kwargs):
+        nonlocal completed
+        await asyncio.sleep(0.02)
+        completed = True
+        return {"choices": [{"message": {"content": "完整回复"}}]}
 
     runtime = GuardedModelRuntime(
         database=None,
@@ -25,37 +48,27 @@ def test_configured_request_deadline_releases_and_does_not_retry() -> None:
         worker_id="worker",
         model="test-model",
         token_estimator=lambda _messages, _model: 1,
-        request_timeout_seconds=0.01,
     )
+    response = asyncio.run(runtime.complete(completion, messages=[], max_tokens=1))
 
-    async def scenario():
-        with pytest.raises(ModelProviderReportedTimeoutError, match="request timeout"):
-            await runtime.complete(stalled_completion, messages=[], max_tokens=1)
-
-    asyncio.run(scenario())
-    assert calls == 1
+    assert completed is True
+    assert response["choices"][0]["message"]["content"] == "完整回复"
 
 
-def test_configured_stream_idle_deadline_closes_provider_lease_as_timeout() -> None:
+def test_model_stream_waits_for_a_delayed_chunk_without_idle_deadline() -> None:
     finalized: list[BaseException | None] = []
 
-    async def stalled_stream():
-        await asyncio.sleep(10)
-        yield "unreachable"
+    async def delayed_stream():
+        await asyncio.sleep(0.02)
+        yield "完整片段"
 
     async def finalize(error: BaseException | None) -> None:
         finalized.append(error)
 
-    stream = ManagedModelStream(
-        stalled_stream(),
-        on_close=finalize,
-        idle_timeout_seconds=0.01,
-    )
+    stream = ManagedModelStream(delayed_stream(), on_close=finalize)
 
-    async def scenario():
-        with pytest.raises(ModelProviderReportedTimeoutError, match="stream produced no response"):
-            await anext(stream)
+    async def collect() -> list[str]:
+        return [item async for item in stream]
 
-    asyncio.run(scenario())
-    assert len(finalized) == 1
-    assert isinstance(finalized[0], ModelProviderReportedTimeoutError)
+    assert asyncio.run(collect()) == ["完整片段"]
+    assert finalized == [None]

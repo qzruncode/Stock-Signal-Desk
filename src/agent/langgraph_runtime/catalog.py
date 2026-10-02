@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from src.tools.registry import ToolRegistry
 

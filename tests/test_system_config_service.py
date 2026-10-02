@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """Unit tests for system configuration service."""
 
+import asyncio
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, Optional
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import requests
 
@@ -54,15 +54,21 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.service = SystemConfigService(manager=self.manager)
 
     @staticmethod
-    def _mock_completion_response(
-        content: Optional[str] = "OK", tool_calls=None, reasoning_content=None
-    ):
-        message = SimpleNamespace(
+    def _mock_completion_response(content: str = "OK", thinking: str | None = None):
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(
             content=content,
-            reasoning_content=reasoning_content,
-            tool_calls=tool_calls or [],
+            additional_kwargs={"thinking": thinking} if thinking else {},
         )
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    @staticmethod
+    def _model_test_items():
+        return [
+            {"key": "ANTHROPIC_BASE_URL", "value": "https://submitted.example.com"},
+            {"key": "ANTHROPIC_AUTH_TOKEN", "value": "submitted-secret"},
+            {"key": "ANTHROPIC_MODEL", "value": "openai/configured-model"},
+        ]
 
     def test_get_config_masks_sensitive_values_server_side(self) -> None:
         payload = self.service.get_config(include_schema=True)
@@ -82,58 +88,143 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
 
     def test_model_connection_uses_submitted_values_without_persisting(self) -> None:
-        import litellm
+        calls = []
 
-        with patch.object(litellm, "completion", return_value=self._mock_completion_response("OK")) as mock_completion:
-            result = self.service.test_model_connection(
-                items=[
-                    {"key": "ANTHROPIC_BASE_URL", "value": "https://submitted.example.com"},
-                    {"key": "ANTHROPIC_AUTH_TOKEN", "value": "submitted-secret"},
-                    {"key": "ANTHROPIC_MODEL", "value": "configured/provider-model"},
-                ],
-                timeout_seconds=9,
+        async def fake_ainvoke(model, messages, **kwargs):
+            calls.append((model, messages, kwargs))
+            return self._mock_completion_response()
+
+        with patch("src.services.system_config._model_test.ChatAnthropic.ainvoke", new=fake_ainvoke):
+            result = asyncio.run(
+                self.service.test_model_connection(items=self._model_test_items())
             )
 
         self.assertTrue(result["success"])
         self.assertEqual(result["stage"], "model_response")
-        kwargs = mock_completion.call_args.kwargs
-        self.assertEqual(kwargs["api_base"], "https://submitted.example.com")
-        self.assertEqual(kwargs["api_key"], "submitted-secret")
-        self.assertEqual(kwargs["model"], "configured/provider-model")
-        self.assertEqual(kwargs["timeout"], 9.0)
+        self.assertEqual(len(calls), 1)
+        model, messages, _ = calls[0]
+        self.assertEqual(model.anthropic_api_url, "https://submitted.example.com")
+        self.assertEqual(model.anthropic_api_key.get_secret_value(), "submitted-secret")
+        self.assertEqual(model.model, "openai/configured-model")
+        self.assertEqual(model.default_headers["authorization"], "Bearer submitted-secret")
+        self.assertIsNone(model.default_request_timeout)
+        self.assertEqual(model.max_retries, 0)
+        self.assertEqual(model.max_tokens, 8)
+        self.assertEqual(model.temperature, 0.1)
+        self.assertEqual(messages[0].content, "Reply with OK.")
         self.assertNotIn("submitted-secret", self.env_path.read_text(encoding="utf-8"))
 
+    def test_model_connection_has_no_local_response_deadline(self) -> None:
+        calls = []
+
+        async def delayed_ainvoke(model, messages, **kwargs):
+            calls.append((model, messages))
+            await asyncio.sleep(0.03)
+            return self._mock_completion_response()
+
+        with patch("src.services.system_config._model_test.ChatAnthropic.ainvoke", new=delayed_ainvoke):
+            result = asyncio.run(
+                self.service.test_model_connection(items=self._model_test_items())
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(calls), 1)
+        self.assertGreaterEqual(result["latency_ms"], 30)
+
     def test_model_connection_reports_missing_required_values_without_calling_provider(self) -> None:
-        import litellm
+        async def unexpected_ainvoke(*_args, **_kwargs):
+            raise AssertionError("provider should not be called")
 
         with patch.dict(
             os.environ,
             {key: "" for key in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL")},
-        ), patch.object(litellm, "completion") as mock_completion:
-            result = self.service.test_model_connection(items=[])
+        ), patch("src.services.system_config._model_test.ChatAnthropic.ainvoke", new=unexpected_ainvoke):
+            result = asyncio.run(self.service.test_model_connection(items=[]))
 
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "config_missing")
-        mock_completion.assert_not_called()
+
+    def test_model_connection_reports_retryable_gateway_upstream_timeout(self) -> None:
+        class GatewayError(RuntimeError):
+            status_code = 502
+
+        calls = []
+        error = GatewayError("HTTPConnectionPool(host='172.17.160.233'): ConnectTimeoutError")
+
+        async def failing_ainvoke(model, messages, **kwargs):
+            calls.append((model, messages))
+            raise error
+
+        with (
+            patch("src.services.system_config._model_test.ChatAnthropic.ainvoke", new=failing_ainvoke),
+            patch("src.services.system_config._model_test.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(
+                self.service.test_model_connection(items=self._model_test_items())
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "upstream_unavailable")
+        self.assertTrue(result["retryable"])
+        self.assertIn("上游模型服务超时", result["message"])
+        self.assertNotIn("172.17.160.233", result["message"])
+        self.assertEqual(len(calls), 2)
+
+    def test_model_connection_retries_transient_failure_then_succeeds(self) -> None:
+        class GatewayError(RuntimeError):
+            status_code = 502
+
+        responses = iter([GatewayError("upstream connect timeout"), self._mock_completion_response()])
+        calls = []
+
+        async def sometimes_failing_ainvoke(model, messages, **kwargs):
+            calls.append((model, messages))
+            response = next(responses)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        with (
+            patch(
+                "src.services.system_config._model_test.ChatAnthropic.ainvoke",
+                new=sometimes_failing_ainvoke,
+            ),
+            patch("src.services.system_config._model_test.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(self.service.test_model_connection(items=self._model_test_items()))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(calls), 2)
 
     def test_model_connection_accepts_reasoning_only_response(self) -> None:
-        import litellm
+        response = self._mock_completion_response(content="", thinking="Let me think.")
 
-        with patch.object(
-            litellm,
-            "completion",
-            return_value=self._mock_completion_response(content=None, reasoning_content="OK"),
-        ):
-            result = self.service.test_model_connection(
-                items=[
-                    {"key": "ANTHROPIC_BASE_URL", "value": "https://submitted.example.com"},
-                    {"key": "ANTHROPIC_AUTH_TOKEN", "value": "submitted-secret"},
-                    {"key": "ANTHROPIC_MODEL", "value": "configured/provider-model"},
-                ]
+        async def thinking_response(*_args, **_kwargs):
+            return response
+
+        with patch("src.services.system_config._model_test.ChatAnthropic.ainvoke", new=thinking_response):
+            result = asyncio.run(
+                self.service.test_model_connection(items=self._model_test_items())
             )
 
         self.assertTrue(result["success"])
         self.assertEqual(result["stage"], "model_response")
+
+    def test_model_connection_classifies_provider_reported_timeout(self) -> None:
+        async def upstream_timeout(*_args, **_kwargs):
+            raise TimeoutError("timed out")
+
+        with (
+            patch("src.services.system_config._model_test.ChatAnthropic.ainvoke", new=upstream_timeout),
+            patch("src.services.system_config._model_test.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(
+                self.service.test_model_connection(items=self._model_test_items())
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "timeout")
+        self.assertTrue(result["retryable"])
 
     def test_rag_model_ids_are_not_exposed_as_chat_model_settings(self) -> None:
         registered = set(get_registered_field_keys())

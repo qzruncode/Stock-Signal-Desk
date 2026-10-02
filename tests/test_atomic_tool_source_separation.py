@@ -269,6 +269,44 @@ def test_valuation_quote_falls_back_to_the_latest_dated_history_snapshot() -> No
     ]
 
 
+def test_valuation_quote_falls_back_to_history_when_realtime_request_raises() -> None:
+    history = pd.DataFrame(
+        [
+            {
+                "数据日期": "2026-08-07",
+                "当日收盘价": 9.5,
+                "PE(TTM)": 18.0,
+                "PE(静)": 19.0,
+                "市净率": 2.0,
+                "总市值": 950.0,
+            }
+        ]
+    )
+    with (
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_quote",
+            side_effect=TimeoutError("quote endpoint timed out"),
+        ),
+        patch(
+            "market_data_service.providers.get_valuation_ratios._fetch_history",
+            return_value=history,
+        ) as fetch_history,
+    ):
+        result = read_valuation_quote_eastmoney("600519", use_cache=False)
+
+    fetch_history.assert_called_once_with("600519")
+    assert result["success"] is True
+    assert result["partial"] is True
+    assert result["errors"] == ["TimeoutError: quote endpoint timed out"]
+    assert result["source"] == "东方财富估值历史/AKShare"
+    assert result["source_scope"] == "dated_valuation_snapshot"
+    assert result["fallback_used"] is True
+    assert result["price"] == 9.5
+    assert result["pe_ttm"] == 18.0
+    assert result["data_time"] == "2026-08-07"
+    assert result["source_attempts"][0]["error"] == "TimeoutError: quote endpoint timed out"
+
+
 def test_market_source_reads_do_not_activate_legacy_snapshot_fallbacks() -> None:
     breadth = {
         "up_count": 3000,

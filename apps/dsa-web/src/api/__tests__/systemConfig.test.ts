@@ -116,7 +116,6 @@ describe('systemConfigApi', () => {
         { key: 'ANTHROPIC_MODEL', value: 'configured/provider-model' },
       ],
       maskToken: '******',
-      timeoutSeconds: 9,
     });
 
     expect(post).toHaveBeenCalledWith(
@@ -128,8 +127,8 @@ describe('systemConfigApi', () => {
           { key: 'ANTHROPIC_MODEL', value: 'configured/provider-model' },
         ],
         mask_token: '******',
-        timeout_seconds: 9,
       },
+      { timeout: 0 },
     );
     expect(result.latencyMs).toBe(21);
   });

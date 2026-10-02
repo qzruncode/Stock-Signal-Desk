@@ -332,8 +332,8 @@ _WEB_SEARCHERS = {
 
 
 def search_web_source(
-    source_id: str,
     query: str,
+    source_id: str = "auto",
     num_results: int = 8,
     context_max_characters: int = 12_000,
     livecrawl: str = "fallback",
@@ -600,14 +600,19 @@ TOOLS = (
         ),
         parameters=object_schema(
             {
-                "source_id": {**_SOURCE_ID, "enum": _source_enum(WEB_SEARCH_SOURCE_CATALOG)},
+                "source_id": {
+                    **_SOURCE_ID,
+                    "enum": _source_enum(WEB_SEARCH_SOURCE_CATALOG),
+                    "default": "auto",
+                    "description": "默认自动选择网页搜索来源；仅在需要诊断单一来源时指定",
+                },
                 "query": {"type": "string", "description": "原样发送给所选来源的查询"},
                 "num_results": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
                 "context_max_characters": {"type": "integer", "minimum": 1000, "maximum": 30000, "default": 12000},
                 "livecrawl": {"type": "string", "enum": ["fallback", "preferred"], "default": "fallback"},
                 "search_type": {"type": "string", "enum": ["auto", "fast", "deep"], "default": "auto"},
             },
-            ["source_id", "query"],
+            ["query"],
         ),
         executor=search_web_source,
         category="source_search",

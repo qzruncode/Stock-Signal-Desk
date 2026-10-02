@@ -5,11 +5,15 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
+
 from api.v1.endpoints.agent.conversations import _execution_trace_for_run
 from src.agent.langgraph_runtime.events import GraphEventBridge
 from src.agent.langgraph_runtime.goal.contracts import GoalAction, GoalAssessment, GoalContract, GoalFinalAnswer
 from src.agent.langgraph_runtime.goal.graph import _goal_action_select, _goal_monitor, _structured_call
-from src.agent.langgraph_runtime.model import LiteLLMChatModel, LiteLLMGateway
+from src.agent.langgraph_runtime.model import GuardedAnthropicChatModel, GuardedModelGateway
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 from src.agent.run_registry import RunBroadcaster, serialize_assistant_chunk
 from src.agent.terminal_publisher import AgentTerminalPublisher
@@ -17,38 +21,33 @@ from tests.test_agent_goal import _Events, _SequenceStructuredModel, _goal_state
 from tests.test_langgraph_agent_runtime import FakeAtomicExecutor, _registry, _search_operation
 
 
-def _streaming_model(responses, *, after_chunk=None):
+def _streaming_model(responses, *, monkeypatch, after_chunk=None):
     responses = iter(responses)
 
-    async def completion(**request):
+    async def provider_stream(self, messages, stop=None, run_manager=None, **kwargs):
         value = next(responses)
         name = type(value).__name__
-        assert request["tool_choice"]["function"]["name"] == name
+        assert kwargs["tool_choice"]["name"] == name
         payload = json.dumps(value.model_dump(mode="json"), ensure_ascii=False)
 
-        async def stream():
-            for offset in range(0, len(payload), 24):
-                yield {"choices": [{"delta": {"tool_calls": [{
-                    "index": 0,
-                    **({"id": f"call-{name}"} if offset == 0 else {}),
-                    "function": {
-                        **({"name": name} if offset == 0 else {}),
-                        "arguments": payload[offset:offset + 24],
-                    },
-                }]}}]}
-                if after_chunk:
-                    after_chunk(offset, payload)
+        for offset in range(0, len(payload), 24):
+            yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[{
+                "index": 0,
+                **({"id": f"call-{name}", "name": name} if offset == 0 else {}),
+                "args": payload[offset:offset + 24],
+            }]))
+            if after_chunk:
+                after_chunk(offset, payload)
 
-        return stream()
-
-    gateway = LiteLLMGateway(
+    monkeypatch.setattr(ChatAnthropic, "_astream", provider_stream)
+    gateway = GuardedModelGateway(
         llm_config={"model": "test-model"}, database=None,
-        run_id="goal-projection", worker_id="test", completion=completion,
+        run_id="goal-projection", worker_id="test",
     )
-    return LiteLLMChatModel(gateway=gateway, llm_config={"model": "test-model"})
+    return GuardedAnthropicChatModel(gateway=gateway, llm_config={"model": "test-model"})
 
 
-def test_goal_intake_narrates_before_structured_call_finishes():
+def test_goal_intake_narrates_before_structured_call_finishes(monkeypatch):
     async def scenario():
         contract = GoalContract(objective="核对名称", progress_text="我先帮你确认名称对应的对象，再核对它的公开信息。")
         broadcaster = RunBroadcaster()
@@ -60,7 +59,7 @@ def test_goal_intake_narrates_before_structured_call_finishes():
 
         context = SimpleNamespace(
             events=GraphEventBridge(broadcaster, run_id="goal-projection"),
-            model=_streaming_model([contract], after_chunk=after_chunk),
+            model=_streaming_model([contract], monkeypatch=monkeypatch, after_chunk=after_chunk),
         )
         await _structured_call(
             context, type(contract), [], projection_phase="test",
@@ -114,7 +113,7 @@ def test_action_progress_is_published_only_after_registry_validation():
             events=GraphEventBridge(broadcaster, run_id="goal-validated-projection"),
             model=model,
             registry=_registry(_search_operation()),
-            catalog=SimpleNamespace(compact_catalog=lambda: []),
+            catalog=SimpleNamespace(compact_catalog=lambda: [{"operation": "search_source"}]),
         )
         result = await _goal_action_select(
             _goal_state(),
@@ -129,7 +128,7 @@ def test_action_progress_is_published_only_after_registry_validation():
     asyncio.run(scenario())
 
 
-def test_goal_monitor_never_streams_a_rejected_completion_claim():
+def test_goal_monitor_never_streams_a_rejected_completion_claim(monkeypatch):
     async def scenario():
         broadcaster = RunBroadcaster()
         context = SimpleNamespace(
@@ -138,7 +137,7 @@ def test_goal_monitor_never_streams_a_rejected_completion_claim():
             model=_streaming_model([GoalAssessment(
                 status="completed", progress_text="已全部确认，可以交付了。",
                 criteria=[{"criterion_id": "criterion-1", "status": "satisfied", "evidence_ids": ["invented"]}],
-            )]),
+            )], monkeypatch=monkeypatch),
         )
         update = await _goal_monitor({**_goal_state(), "model_turn_count": 0}, SimpleNamespace(context=context))
         assert update["goal_status"] == "running"
@@ -148,7 +147,7 @@ def test_goal_monitor_never_streams_a_rejected_completion_claim():
     asyncio.run(scenario())
 
 
-def test_goal_narration_tool_failure_retry_and_answer_preserve_native_order():
+def test_goal_narration_tool_failure_retry_and_answer_preserve_native_order(monkeypatch):
     async def scenario():
         broadcaster = RunBroadcaster()
 
@@ -178,7 +177,7 @@ def test_goal_narration_tool_failure_retry_and_answer_preserve_native_order():
                 criteria=[{"criterion_id": "criterion-1", "status": "satisfied", "evidence_ids": ["ev_second"]}],
             ),
             GoalFinalAnswer(answer="已经核对，这条记录有效。"),
-        ])
+        ], monkeypatch=monkeypatch)
         manager = LangGraphRuntimeManager(registry=_registry(_search_operation()))
         await manager.start(testing=True)
         try:

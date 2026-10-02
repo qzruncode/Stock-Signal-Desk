@@ -47,6 +47,48 @@ def test_review_report_stays_typed_and_complete_in_live_and_terminal_replay(monk
     assert "已交接观察" not in answer
 
 
+def test_unmatched_structured_candidate_cannot_override_terminal_answer() -> None:
+    from src.agent.langgraph_runtime.events import GraphEventBridge
+
+    run_id = "terminal-answer-rejects-unmatched-candidate"
+    broadcaster = RunBroadcaster(run_id=run_id)
+    bridge = GraphEventBridge(broadcaster, run_id=run_id)
+    terminal_answer = "未能取得支持本次分析的有效外部数据，本轮分析已结束。"
+    candidate_table = "| 指标 | 2026H1 | 是否含营业外收支 | 是否含营业外收支 |"
+
+    bridge.commit_model_answer(
+        terminal_answer,
+        structured_answer={
+            "profile": "research",
+            "blocks": [{
+                "kind": "fact",
+                "presentation_type": "table",
+                "content": candidate_table,
+                "source_ids": [],
+            }],
+        },
+    )
+
+    assert terminal_answer in broadcaster.assistant_text_snapshot
+    assert candidate_table not in broadcaster.assistant_text_snapshot
+
+
+def test_plain_terminal_fallback_is_not_duplicated_after_progress():
+    from src.agent.langgraph_runtime.events import GraphEventBridge
+
+    broadcaster = RunBroadcaster(run_id="plain-fallback")
+    bridge = GraphEventBridge(broadcaster, run_id="plain-fallback")
+    progress = "本轮没有收到完整答案，执行详情已保留。"
+    answer = "本轮未能生成符合要求的结构化回答。"
+    bridge.stage("response_format", "failed", "empty response", user_message=progress)
+    bridge.commit_model_answer(answer)
+    bridge.commit_model_answer(answer)
+    parts = broadcaster.display_parts_snapshot(final_text=answer)
+    assert "".join(p.get("text", "") for p in parts if p.get("display_kind") == "progress").strip() == progress
+    assert "".join(p.get("text", "") for p in parts if p.get("display_kind") == "answer") == answer
+    assert sum(p.get("text", "").count(answer) for p in parts) == 1
+
+
 def test_terminal_answer_survives_trace_byte_and_item_budgets(monkeypatch) -> None:
     monkeypatch.setattr(run_registry_module, "_DISPLAY_PARTS_MAX_BYTES", 800)
     monkeypatch.setattr(run_registry_module, "_DISPLAY_PARTS_MAX_ITEMS", 3)

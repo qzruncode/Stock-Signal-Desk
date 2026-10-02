@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from src.agent.langgraph_runtime.evidence_identity import evidence_id_from_record
-from src.tools.base import evidence_record_is_eligible
+from src.tools.base import citation_scoped_evidence_records, evidence_record_is_eligible
 
 from .contracts import EvidenceMerge
 
@@ -99,7 +99,7 @@ def merge_worker_evidence(
 
     by_id: dict[str, dict[str, Any]] = {}
     duplicate_count = 0
-    for raw in evidence:
+    for raw in citation_scoped_evidence_records(evidence):
         if not isinstance(raw, Mapping):
             continue
         evidence_id = _record_key(raw)

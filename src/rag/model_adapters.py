@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from typing import Any, Sequence
 from urllib.parse import urlparse
@@ -64,13 +63,6 @@ def _endpoint_url(base_url: str, path: str) -> str:
     return f"{base}/{path.lstrip('/')}"
 
 
-def _default_timeout() -> float:
-    try:
-        return min(300.0, max(1.0, float(os.getenv("RAG_MODEL_TIMEOUT_SECONDS", "300"))))
-    except (TypeError, ValueError):
-        return 300.0
-
-
 def _http_provider_error(capability: str, status_code: int) -> RAGProviderError:
     retryable = status_code == 429 or status_code >= 500
     if status_code in {401, 403}:
@@ -96,7 +88,7 @@ def _post_json(
     endpoint: str,
     payload: dict[str, Any],
     *,
-    timeout: float,
+    timeout: float | None,
     capability: str,
 ) -> Any:
     try:
@@ -135,7 +127,7 @@ class OllamaEmbeddingAdapter(Embeddings):
         self.model = str(model or "").strip()
         self.dimension = int(dimension)
         self.endpoint = _endpoint_url(base_url, DEFAULT_EMBEDDING_PATH)
-        self.timeout = float(timeout if timeout is not None else _default_timeout())
+        self.timeout = float(timeout) if timeout is not None else None
         self.batch_size = max(1, min(128, int(batch_size)))
         if not self.model:
             raise RAGProviderError("Embedding 模型 ID 未配置。", code="config_missing")
@@ -217,7 +209,7 @@ class LocalFastEmbedAdapter(Embeddings):
         self.model = str(model or "").strip()
         self.dimension = int(dimension)
         self.endpoint = _endpoint_url(base_url, DEFAULT_EMBEDDING_PATH)
-        self.timeout = float(timeout if timeout is not None else _default_timeout())
+        self.timeout = float(timeout) if timeout is not None else None
         self.batch_size = max(1, min(64, int(batch_size)))
         if not self.model:
             raise RAGProviderError("Embedding 模型 ID 未配置。", code="config_missing")
@@ -291,7 +283,7 @@ class LocalRerankerAdapter:
     ) -> None:
         self.model = str(model or "").strip()
         self.endpoint = _endpoint_url(base_url, DEFAULT_RERANK_PATH)
-        self.timeout = float(timeout if timeout is not None else _default_timeout())
+        self.timeout = float(timeout) if timeout is not None else None
         if not self.model:
             raise RAGProviderError("Reranker 模型 ID 未配置。", code="config_missing")
         self._client = client or httpx.Client(timeout=self.timeout)

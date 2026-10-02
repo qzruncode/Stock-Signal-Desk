@@ -42,6 +42,7 @@ def test_model_service_check_runs_real_adapter_contracts_and_reports_model_revis
             "RAG_RERANK_BASE_URL": "http://reranker:80",
             "RAG_RERANK_MODEL_ID": "test/rerank",
             "RAG_RERANK_MODEL_REVISION": "revision-b",
+            "RAG_MODEL_TIMEOUT_SECONDS": "120",
         },
     )
 
@@ -51,6 +52,7 @@ def test_model_service_check_runs_real_adapter_contracts_and_reports_model_revis
     assert result["reranker"]["model"] == "test/rerank@revision-b"
     assert calls[-2:] == [("rerank", ("公司的主营业务是什么？", ["公司主营业务是工业视觉检测。", "今天的天气晴朗。"], 2)), ("reranker_close", None)]
     assert ("embedding_close", None) in calls
+    assert all(kwargs["timeout"] is None for name, kwargs in calls if name.endswith("_init"))
 
 
 def test_model_service_check_reports_one_unavailable_local_service_without_hiding_the_other():

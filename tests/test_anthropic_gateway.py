@@ -147,7 +147,7 @@ class TestResolveGatewayConfig(unittest.TestCase):
         clear=True,
     )
     def test_provider_prefix_kept(self):
-        """provider/model 前缀原样保留，custom_llm_provider 仍强制 anthropic。"""
+        """模型字符串原样保留；字段名称中的 provider 前缀不推断 API 协议。"""
         cfg = resolve_anthropic_gateway_config()
         self.assertEqual(cfg["model"], "configured/provider-model")
         self.assertEqual(cfg["custom_llm_provider"], "anthropic")

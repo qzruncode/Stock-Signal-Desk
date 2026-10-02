@@ -13,6 +13,8 @@ from typing import Any, Dict, List
 
 from fastapi import Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
 from sqlalchemy import text
 
 from api.deps import get_database_manager
@@ -50,26 +52,22 @@ async def _live_dependency_probe() -> Dict[str, Any]:
 
     checks: Dict[str, Any] = {}
     try:
-        import litellm
         from src.llm.anthropic_gateway import (
-            build_litellm_kwargs,
             resolve_anthropic_gateway_config,
         )
 
         model_config = resolve_anthropic_gateway_config()
-        kwargs = build_litellm_kwargs(
-            model_config,
-            stream=False,
-            messages=[
-                {
-                    "role": "user",
-                    "content": "Reply with OK only.",
-                }
-            ],
+        model = ChatAnthropic(
+            model_name=model_config["model"],
+            api_key=model_config["api_key"],
+            base_url=model_config["api_base"],
+            default_headers=model_config["extra_headers"],
+            max_tokens_to_sample=4,
             temperature=0,
-            max_tokens=4,
+            timeout=None,
+            max_retries=0,
         )
-        await litellm.acompletion(**kwargs)
+        await model.ainvoke([HumanMessage(content="Reply with OK only.")])
         checks["model_provider"] = {"ok": True}
     except Exception as exc:
         checks["model_provider"] = {

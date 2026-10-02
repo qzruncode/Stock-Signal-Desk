@@ -65,12 +65,21 @@ def team_synthesis_contract_issues(
     if not blocks:
         return ["综合器没有返回任何可发布区块。"]
 
+    # A single selected expert is an execution assignment, not a mandate to
+    # repeat that expert's role label in the user-facing answer. The task's
+    # objective and server-validated completion criteria already define its
+    # requested coverage; literal role-keyword checks are meaningful only
+    # when the Team plan intentionally spans multiple independent domains.
+    experts = list(dict.fromkeys(str(item).strip().lower() for item in required_experts if str(item).strip()))
+    if len(experts) < 2:
+        return []
+
     searchable = [
         f"{_text(block.get('section'), 180)}\n{_text(block.get('content'), 2_000)}".lower()
         for block in blocks
     ]
     issues: list[str] = []
-    for expert_id in required_experts:
+    for expert_id in experts:
         keywords = _ROLE_KEYWORDS.get(expert_id, (_ROLE_LABELS.get(expert_id, expert_id), expert_id.replace('_', ' ')))
         if not any(any(keyword.lower() in text for keyword in keywords) for text in searchable):
             issues.append(f"综合器没有保留{_ROLE_LABELS.get(expert_id, expert_id)}方向的实质性区块。")
@@ -135,7 +144,7 @@ def _worker_content(result: Mapping[str, Any]) -> tuple[str, str]:
         lines.append("仍待确认：\n" + "\n".join(f"- {item}" for item in open_questions))
     if status != "completed":
         lines.append("该方向存在未完成交接，以下内容只代表本轮已经取得的结果。")
-    content = "\n\n".join(lines).strip()[:12_000]
+    content = "\n\n".join(lines).strip()
     return content, status
 
 

@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from src.agent.langgraph_runtime.agent_tools import build_langchain_tools
 from src.tools.web_source_tools import (
     read_web_auto,
     read_web_firecrawl,
@@ -22,6 +23,41 @@ def test_model_visible_web_reader_defaults_to_auto_source_selection() -> None:
     assert "url" in (tool.parameters or {}).get("required", [])
     assert "source_id" not in (tool.parameters or {}).get("required", [])
     assert (tool.parameters or {}).get("properties", {}).get("source_id", {}).get("default") == "auto"
+
+
+def test_model_visible_web_search_defaults_to_auto_at_langchain_and_execution_boundaries() -> None:
+    registry = ToolRegistry()
+    spec = registry.get_tool("search_web_source")
+    assert spec is not None
+    parameters = spec.parameters or {}
+    assert parameters.get("required") == ["query"]
+    assert parameters["properties"]["source_id"]["default"] == "auto"
+
+    langchain_tool = next(
+        item for item in build_langchain_tools(registry) if item.name == "search_web_source"
+    )
+    parsed = langchain_tool.args_schema.model_validate({"query": "新强联资金流向"})
+    assert parsed.source_id == "auto"
+
+    expected = {
+        "success": True,
+        "results": [{"title": "结果", "url": "https://example.com/result"}],
+    }
+    with patch("src.tools.source_operations.websearch", return_value=expected) as websearch:
+        model_arguments = registry.validate_model_arguments(
+            "search_web_source", {"query": "新强联资金流向"}
+        )
+        result = registry.execute("search_web_source", model_arguments)
+
+    websearch.assert_called_once_with(
+        query="新强联资金流向",
+        num_results=8,
+        context_max_characters=12_000,
+        livecrawl="fallback",
+        search_type="auto",
+    )
+    assert result["success"] is True
+    assert result["results"] == expected["results"]
 
 
 def test_auto_reader_uses_fallback_result_and_exposes_content_access_contract() -> None:

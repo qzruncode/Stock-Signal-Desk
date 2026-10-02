@@ -81,6 +81,45 @@ def test_url_in_failed_arguments_is_preferred_over_search():
     assert state["source_fallback_attempts"][0]["fallback_operation"] == "read_web_source"
 
 
+def test_recovery_identity_uses_durable_error_scope_before_worker_handoff():
+    state, context, _ = _fixture()
+    record = state["tool_results"][0]
+    record.pop("task_id")
+    state["runtime_errors"][0].update(task_id="task0", agent_id="worker:attempt-1")
+    record["runtime_error"] = dict(state["runtime_errors"][0])
+    before = _source_fallback_requirements(state, context.registry)[0]
+    _apply(state, advance_source_recovery(state, context, [before], []))
+    assert state["source_fallback_attempts"][0]["task_id"] == "task0"
+    # Handoff adds metadata; it must not turn an observed failure into a new
+    # logical request, or lose its completed recovery on the next attempt.
+    state["tool_results"][0]["task_id"] = "task0"
+    after = _source_fallback_requirements(state, context.registry)[0]
+    assert after["fallback_key"] == before["fallback_key"]
+    assert after["fallback_attempted"] is True
+
+
+def test_argument_validation_returns_to_model_without_web_recovery():
+    async def scenario():
+        model = ScriptedChatModel(responses=[
+            _named_tool_call("invalid", "search_source", {}),
+            _tool_call("corrected", "primary"),
+            AIMessage(content="已核实该事实。【证据 ev_corrected】"),
+        ])
+        result, executor = await _run(
+            model=model,
+            registry=_registry(_search_operation(category="source_read"), _web_search_operation()),
+            conversation_id="correct-input-not-source",
+        )
+        assert result.status == "completed"
+        assert [item["action_id"] for item in executor.calls] == ["corrected"]
+        assert result.state.get("source_fallback_attempts", []) == []
+        assert result.state["runtime_errors"][0]["fallback_eligible"] is False
+        assert model.call_options[1].get("tool_choice") != "required"
+        assert "search_source" in {tool.name for tool in model.call_options[1]["tools"]}
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("result_key", ["items", "results"])
 def test_search_then_body_read_are_native_calls_with_one_recovery_identity(result_key):
     async def scenario():

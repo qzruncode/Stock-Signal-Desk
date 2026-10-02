@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import type { ChatConversationDetail } from '../../api/agent';
 import { ChatRuntimeBridge } from './ChatRuntimeBridge';
-import { toRuntimeMessages } from './ChatRuntimeBridgeUtils';
+import { terminalRunFailureNotice, toRuntimeMessages } from './ChatRuntimeBridgeUtils';
 
 vi.mock('@assistant-ui/react', () => ({
   useThread: vi.fn(),
@@ -75,6 +75,24 @@ describe('ChatRuntimeBridge', () => {
     vi.mocked(useThreadRuntime).mockReturnValue(
       runtime as unknown as ReturnType<typeof useThreadRuntime>,
     );
+  });
+
+  it('explains an Auto routing failure instead of leaving only its progress sentence', () => {
+    const notice = terminalRunFailureNotice(
+      { runMetadata: { execution: { status: 'failed' } } },
+      [
+        { stage: 'routing', status: 'started', summary: '正在判断本轮产品模式' },
+        { stage: 'routing', status: 'failed', summary: '产品模式路由未能完成，已停止本轮执行' },
+      ],
+      'failed',
+    );
+
+    expect(notice).toBe('本轮未能开始分析：自动判断执行模式失败。请稍后点击“重新生成”重试。');
+    expect(terminalRunFailureNotice(
+      { runMetadata: { execution: { status: 'completed' } } },
+      [{ stage: 'routing', status: 'failed' }],
+      'completed',
+    )).toBe('');
   });
 
   it('rehydrates the durable native parts in their original text/tool order', () => {
@@ -245,6 +263,67 @@ describe('ChatRuntimeBridge', () => {
     const content = messages.find((message) => message.id === 'assistant-1')!.content as unknown as Array<Record<string, unknown>>;
     expect(content.filter((part) => part.type === 'text').map((part) => part.text)).toEqual([answer]);
     expect(content[0]?.name).toBe('team-model-projection');
+  });
+
+  it('keeps citation markers from a complete Team display answer during hydration', () => {
+    const detail = makeDetail(false);
+    const answer = '# EPS 核实\n\n## 结果\n基本每股收益为0.99元/股，位于PDF第177页。';
+    const citationAnswer = '# EPS 核实\n\n## 结果\n\n基本每股收益为0.99元/股，位于PDF第177页。 【证据 ev_kb_eps_page_177】';
+    detail.messages[1]!.content = answer;
+    detail.executionTrace = {
+      team: { mode: 'team', status: 'completed' },
+      displayParts: [
+        { type: 'text', text: citationAnswer, displayKind: 'answer' },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'team-run',
+      answer,
+    );
+    const content = messages.find((message) => message.id === 'assistant-1')!.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content.filter((part) => part.type === 'text').map((part) => part.text)).toEqual([citationAnswer]);
+  });
+
+  it('keeps Team citations when a terminal warning has different line wrapping', () => {
+    const detail = makeDetail(false);
+    const warning = '[本轮结果存在未完成的核验：知识库答案含未通过校验的区块]';
+    const answer = [
+      '## 总体结论',
+      '新强联财务表现已核对。',
+      '## 核验说明',
+      `本轮只保留逐条核验通过的内容；未通过的区块已省略。\n${warning}`,
+    ].join('\n');
+    const citationAnswer = [
+      '## 总体结论',
+      '新强联财务表现已核对。 【证据 ev_kb_page_7】',
+      '## 核验说明',
+      `本轮只保留逐条核验通过的内容；未通过的区块已省略。${warning}`,
+    ].join('\n');
+    detail.messages[1]!.content = answer;
+    detail.executionTrace = {
+      team: { mode: 'team', status: 'partial' },
+      displayParts: [
+        { type: 'text', text: citationAnswer, displayKind: 'answer' },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'team-run',
+      answer,
+    );
+    const content = messages.find((message) => message.id === 'assistant-1')!.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content.filter((part) => part.type === 'text').map((part) => part.text)).toEqual([citationAnswer]);
   });
 
   it('repairs legacy joined answer headings and hides one-point quote charts', () => {

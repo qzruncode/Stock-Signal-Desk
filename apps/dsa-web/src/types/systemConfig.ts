@@ -86,7 +86,6 @@ export interface SystemConfigResponse {
 export interface TestModelConnectionRequest {
   items?: SystemConfigUpdateItem[];
   maskToken?: string;
-  timeoutSeconds?: number;
 }
 
 export interface TestModelConnectionResponse {

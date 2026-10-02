@@ -109,7 +109,10 @@ export const systemConfigApi = {
       {
         items: (payload.items || []).map((item) => ({ key: item.key, value: item.value })),
         mask_token: payload.maskToken ?? '******',
-        timeout_seconds: payload.timeoutSeconds ?? 30,
+      },
+      {
+        // A model response has no client-imposed wall-clock deadline.
+        timeout: 0,
       },
     );
     return toCamelCase<TestModelConnectionResponse>(response.data);

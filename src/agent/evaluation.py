@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from src.tools.base import evidence_record_is_eligible
+from src.tools.base import citation_scoped_evidence_records, evidence_record_is_eligible
 
 from .claim_validation import claim_checks_pass
 
@@ -93,9 +93,45 @@ def score_agent_run_snapshot(
         for item in _sequence(projection.get("tool_results"))
         if isinstance(item, Mapping)
     )
-    evidence = tuple(
+    raw_evidence = tuple(
         _mapping(item)
         for item in _sequence(projection.get("evidence"))
+        if isinstance(item, Mapping)
+    )
+    # Search tools expose one aggregate evidence record plus exact, individually
+    # addressable result hits. The terminal projection stores those hits on the
+    # matching tool observation (result_items) to keep evidence compact, so
+    # reattach them by the stable call/action identity before resolving citations.
+    observations_by_identity: dict[str, Mapping[str, Any]] = {}
+    for observation in tool_results:
+        for identity_field in ("tool_call_id", "action_id"):
+            identity = str(observation.get(identity_field) or "").strip()
+            if identity:
+                observations_by_identity.setdefault(identity, observation)
+    evidence_with_observed_hits: list[dict[str, Any]] = []
+    for item in raw_evidence:
+        enriched = dict(item)
+        existing_result = _mapping(enriched.get("result"))
+        has_embedded_hits = any(
+            isinstance(existing_result.get(key), (list, tuple))
+            for key in ("results", "result_items")
+        )
+        if not has_embedded_hits:
+            observation = next(
+                (
+                    observations_by_identity.get(str(enriched.get(identity_field) or "").strip())
+                    for identity_field in ("tool_call_id", "action_id")
+                    if observations_by_identity.get(str(enriched.get(identity_field) or "").strip())
+                ),
+                None,
+            )
+            result_items = _sequence(observation.get("result_items")) if observation else ()
+            if observation and observation.get("success") is True and result_items:
+                enriched["result"] = {**existing_result, "result_items": list(result_items)}
+        evidence_with_observed_hits.append(enriched)
+    evidence = tuple(
+        _mapping(item)
+        for item in citation_scoped_evidence_records(evidence_with_observed_hits)
         if isinstance(item, Mapping)
     )
     claim_evidence = tuple(

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -21,17 +20,30 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Overwrite, RetryPolicy, Send
 from pydantic import BaseModel
 
+from src.agent.model_runtime import (
+    ModelContextWindowExceededError,
+    ModelProviderReportedTimeoutError,
+    ModelProviderUnavailableError,
+)
 from src.agent.runtime_safety import get_agent_runtime_limits
 from src.agent.runtime_errors import emit_runtime_error
-from src.tools.base import evidence_record_is_eligible
+from src.tools.base import citation_scoped_evidence_records, evidence_record_is_eligible
 from src.tools.registry import ToolRegistry
 
-from ..answer_contract import evidence_source_catalog, finalize_terminal_answer, render_structured_answer
+from ..answer_contract import (
+    evidence_source_catalog,
+    finalize_terminal_answer,
+    render_structured_answer,
+    resolve_answer_sources,
+    structured_answer_blocks,
+    structured_answer_mapping,
+)
 from ..catalog import ToolCatalog
 from ..events import GraphEventBridge
-from ..graph import build_agent_graph
+from ..graph import DEFAULT_RESPONSE_FORMAT, build_agent_graph
 from ..model_projection import StructuredContractProjectionCallback
 from ..state import AgentState, GraphContext
+from ..knowledge_research import document_catalog_for_model
 from .contracts import (
     AgentResult,
     AgentTask,
@@ -80,6 +92,11 @@ BUILTIN_EXPERT_LABELS: dict[str, str] = {
 }
 
 _WEB_RECOVERY_TOOLS = frozenset({"search_web_source", "read_web_source"})
+_TERMINAL_MODEL_ERRORS = (
+    ModelContextWindowExceededError,
+    ModelProviderReportedTimeoutError,
+    ModelProviderUnavailableError,
+)
 
 def _team_handoff_partitions(
     expected_task_ids: Sequence[str],
@@ -165,11 +182,10 @@ async def _invoke_streaming_subgraph(
     child model's message chunks.  The parent still owns the one assistant
     stream; this helper forwards only the child bridge's safe projections and
     tool events while returning the same final update used by the worker
-    reducer.  The parent deliberately does not put a wall-clock deadline around
-    this whole stream: an active worker may spend longer than one nominal
-    request window across several model turns and tools.  Individual model,
-    tool, contract, budget, and cancellation boundaries remain responsible for
-    stopping genuinely stuck or disallowed work.
+    reducer. The parent deliberately does not put a wall-clock deadline around
+    this whole stream: an active worker may spend as long as needed across
+    model turns and tools. Model responses are not cancelled by application
+    timers; explicit tool, budget, and cancellation boundaries still apply.
     """
     last_update: Mapping[str, Any] | None = None
     async for chunk in graph.astream(
@@ -258,11 +274,11 @@ def _collaboration_update(
     return update
 
 
-def _safe_text(value: Any, limit: int = 2_400) -> str:
+def _safe_text(value: Any, limit: int | None = 2_400) -> str:
     text = str(value or "")
     text = re.sub(r"https?://[^\s)\]}>,]+", "[链接已隐藏]", text, flags=re.IGNORECASE)
     text = re.sub(r"\bev_[A-Za-z0-9_.:-]+\b", "[证据编号已隐藏]", text)
-    return text[:limit]
+    return text if limit is None else text[:limit]
 
 
 def _contract_projection_text(value: Mapping[str, Any]) -> str:
@@ -272,7 +288,7 @@ def _contract_projection_text(value: Mapping[str, Any]) -> str:
     rendered as assistant prose.  A projection exists only when the current
     contract explicitly provides ``progress_text``.
     """
-    return _safe_text(value.get("progress_text"), 1_800).strip()
+    return _safe_text(value.get("progress_text"), None).strip()
 
 
 def _contract_projection_id(context: GraphContext, action_prefix: str) -> str:
@@ -445,7 +461,6 @@ async def _invoke_contract(
     *,
     action_prefix: str,
     stage: str,
-    timeout_seconds: float | None = None,
     projection_scope: str | None = None,
     projection_collaboration_id: str = "",
     projection_agent_id: str = "",
@@ -455,8 +470,9 @@ async def _invoke_contract(
     projection_attempt: int = 0,
     contract_source: str = "multi_agent_team",
     recover_raw_tool_payload: bool = False,
+    validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], int]:
-    """Run one native structured contract with bounded repair and deadline.
+    """Run one native structured contract with bounded repair attempts.
 
     Exact structured output remains the control-plane contract, but the
     provider stream is also observed for its explicit ``progress_text`` field.
@@ -499,30 +515,18 @@ async def _invoke_contract(
         target_tool_name=schema.__name__,
     )
     model = model.with_config({"callbacks": [projection_callback]})
-    try:
-        configured_timeout = float(
-            timeout_seconds
-            if timeout_seconds is not None
-            else os.getenv("AGENT_TEAM_CONTRACT_TIMEOUT_SECONDS", "90")
-        )
-    except (TypeError, ValueError):
-        configured_timeout = 90.0
-    deadline = max(5.0, min(300.0, configured_timeout))
     for attempt in range(1, 3):
         raw_result: Any = None
         try:
             projection_callback.reset(attempt)
-            raw_result = await asyncio.wait_for(
-                model.ainvoke(
-                    working_messages,
-                    config={
-                        "metadata": {
-                            "lc_source": contract_source,
-                            "orchestration_contract": schema.__name__,
-                        }
-                    },
-                ),
-                timeout=deadline,
+            raw_result = await model.ainvoke(
+                working_messages,
+                config={
+                    "metadata": {
+                        "lc_source": contract_source,
+                        "orchestration_contract": schema.__name__,
+                    }
+                },
             )
             parsed = raw_result.get("parsed") if isinstance(raw_result, Mapping) else raw_result
             if parsed is None:
@@ -566,17 +570,17 @@ async def _invoke_contract(
                         )
                         return raw_payload, attempt
                 raise parse_error
-            return _dump(parsed), attempt
+            value = _dump(parsed)
+            return (validator(value) if validator is not None else value), attempt
         except asyncio.CancelledError:
+            raise
+        except _TERMINAL_MODEL_ERRORS:
+            # Provider availability/context failures are not malformed
+            # contracts. The runtime owns their terminal handling; retrying
+            # them here can fan one outage into many Team model calls.
             raise
         except Exception as exc:
             diagnostic = _team_contract_diagnostic(schema, exc, raw_result)
-            if isinstance(exc, asyncio.TimeoutError):
-                diagnostic = {
-                    **diagnostic,
-                    "code": "team_contract_timeout",
-                    "timeout_seconds": deadline,
-                }
             last_detail = _safe_text(str(diagnostic.get("error") or exc), 1_000)
             emit_runtime_error(
                 context.events,
@@ -660,6 +664,8 @@ def _role_capabilities(
 def _plan_capabilities(
     registry: Any,
     expert_registry: ExpertRegistry | None = None,
+    *,
+    knowledge_base_selected: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the compact capability catalog used by the TeamPlan model.
 
@@ -674,6 +680,7 @@ def _plan_capabilities(
             "agent_id": definition.agent_id,
             "display_name": definition.display_name,
             "capabilities": list(definition.capabilities),
+            "max_concurrency": definition.max_concurrency,
             "tools": [
                 {
                     "name": name,
@@ -683,6 +690,7 @@ def _plan_capabilities(
                 }
                 for name in definition.resolve_tool_names(registry)
                 if registry.get_tool(name) is not None
+                and (knowledge_base_selected or name != "search_knowledge_base")
             ],
         }
         for definition in _expert_registry_or_default(expert_registry).all()
@@ -810,7 +818,9 @@ def _fallback_team_plan(
                 "max_attempts": 1,
                 "required_evidence": list(spec["required_evidence"]),
                 "success_criteria": list(spec["success_criteria"]),
-                "max_tool_calls": min(8, max(1, len(allowed_tools))),
+                "max_tool_calls": definition.max_tool_calls or int(
+                    state.get("tool_call_limit") or get_agent_runtime_limits().max_tool_calls
+                ),
                 "parallel_group": "research",
                 "depends_on": [],
             }
@@ -830,7 +840,7 @@ def _fallback_team_plan(
             "图表只使用行情工具的可信数据；任何失败、证据缺口或正文未读取都要明确说明，不能把部分结果写成完整结论。"
         ),
     }
-    return _normalize_plan(plan, registry, active_registry)
+    return _normalize_plan(plan, registry, active_registry, state)
 
 
 def _route_messages(state: Mapping[str, Any]) -> list[Any]:
@@ -853,24 +863,52 @@ def _plan_messages(
     state: Mapping[str, Any],
     registry: Any,
     expert_registry: ExpertRegistry | None = None,
+    *, document_catalog: Mapping[str, Any] | None = None,
 ) -> list[Any]:
-    capabilities = _plan_capabilities(registry, expert_registry)
+    knowledge_selected = bool(state.get("knowledge_base_ids"))
+    capabilities = _plan_capabilities(
+        registry,
+        expert_registry,
+        knowledge_base_selected=knowledge_selected,
+    )
+    shared_read_tools: list[dict[str, Any]] = []
+    if knowledge_selected and _is_safe_knowledge_search_tool(registry):
+        shared_read_tools.append(
+            {
+                "name": "search_knowledge_base",
+                "scope": "server-injected user-selected scope",
+            }
+        )
+    capability_payload = {
+        "experts": capabilities,
+        "shared_read_only_tools": shared_read_tools,
+        **({"selected_document_catalog": document_catalog or {"status": "unavailable", "documents": []}}
+           if knowledge_selected else {}),
+    }
     return [
         SystemMessage(
             content=(
-                "你是股票研究协作的 CollaborationCoordinator。请为当前问题生成一个可并行执行的 TeamPlanDraft。"
-                "只从服务端注册表中选择与目标匹配的专家，创建 2 到 12 个有明确分工的只读任务；"
+                "你是股票研究协作的 CollaborationCoordinator。请为当前问题生成一个可执行的 TeamPlanDraft。"
+                "只从服务端注册表中选择与目标匹配的专家，创建 1 到 12 个有明确分工的只读任务；"
+                "单一领域问题可以只分配一个专家和一个任务；只有确有多个独立领域时才拆分给多个专家并行执行，禁止为了凑数拆任务；"
                 "注册表中的专家不是默认都要执行，未选中的专家不能运行；"
                 "没有依赖的任务会通过 LangGraph Send 并行执行；有依赖的任务必须填写已存在的 task_id，"
                 "服务端会按合法依赖顺序调度，不能伪造或绕过依赖。"
+                "同一专家的并行任务数不能超过目录中的 max_concurrency；需要拆分时用 depends_on 表达顺序。"
                 "每个任务只需要填写 agent_id、objective、input_refs、depends_on、success_criteria 和 activation_reason。"
-                "可以提供 tool_hints 作为取证方向提示，但工具权限、图节点、预算、超时和执行次数由服务端注册表补全，"
-                "不能自行扩大专家权限。failure_strategy 只能是 partial、retry、replan 或 abort；"
+                "tool_hints 只能填写能力目录中的精确工具名称，且只是方向提示；不能填写检索 query、自然语言指令或目录外名称。"
+                "知识库搜索是可选的共享只读能力：只有用户已选择知识库时才会出现在 worker 工具目录中，"
+                "具体是否检索以及 query 由实际执行任务的 worker Agent 工具循环决定；范围由服务端注入，"
+                "模型不能选择或扩大知识库范围。它可与同一步骤内其他独立、安全的取证工具组合；"
+                "没有必要时可完全不检索，不需要显式调用跳过动作。"
+                "selected_document_catalog 只说明已有材料及其可检索状态，不是报告内容证据；"
+                "目标材料已存在时为 worker 安排按需检索，不要把重新获取原件当成前提，也不能据清单编造财务结论。"
+                "工具权限、图节点、预算、超时和执行次数由服务端注册表补全，不能自行扩大专家权限。failure_strategy 只能是 partial、retry、replan 或 abort；"
                 "服务端会限制重试次数并只重试当前失败方向。"
-                "Team 至少需要两个独立且有意义的任务；无法形成有效分工时必须由服务端返回 team_not_applicable，不能静默降级成 Direct。"
+                "多个任务必须覆盖至少两个独立且有意义的注册专家；无法形成有效分工时由服务端拒绝计划，不能静默降级成 Direct。"
                 "在 progress_text 中说明你实际选择这些专家的原因和分工关系，使用简洁自然语言，不要输出固定套话。"
-                "只能返回 TeamPlanDraft 结构化对象。\n"
-                "服务端能力目录：" + json.dumps(capabilities, ensure_ascii=False, separators=(",", ":"))
+                + "只能返回 TeamPlanDraft 结构化对象。\n"
+                + "服务端能力目录：" + json.dumps(capability_payload, ensure_ascii=False, separators=(",", ":"))
             )
         ),
         HumanMessage(content=_safe_text(state.get("user_text"), 4_000)),
@@ -932,7 +970,7 @@ def _handoff_messages(
             content=json.dumps(
                 {
                     "user_question": _safe_text(state.get("user_text"), 3_000),
-                    "team_goal": _safe_text(plan.get("goal"), 1_600),
+                    "team_goal": _safe_text(plan.get("goal"), None),
                     "received_task_ids": list(received_task_ids)[:12],
                     "pending_task_ids": list(pending_task_ids)[:12],
                     "worker_reports": _team_results_packet(state),
@@ -1047,18 +1085,22 @@ def _team_model_packet(value: Any, state: Mapping[str, Any]) -> Any:
 
 
 def _team_evidence_packet(state: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Return bounded source slots; durable evidence ids never enter prompts."""
+    """Return complete, deduplicated source observations under stable slots."""
     packet: list[dict[str, Any]] = []
     catalog = state.get("team_evidence_catalog") or state.get("evidence") or []
     source_by_evidence_id = {
         evidence_id: source_id
         for source_id, evidence_id in _team_source_id_map(state).items()
     }
+    seen_ids: set[str] = set()
     for index, raw in enumerate(list(catalog)[:80], start=1):
         if not isinstance(raw, Mapping):
             continue
-        result = raw.get("result") if isinstance(raw.get("result"), Mapping) else raw
         evidence_id = str(raw.get("evidence_id") or raw.get("id") or "").strip()
+        if evidence_id and evidence_id in seen_ids:
+            continue
+        if evidence_id:
+            seen_ids.add(evidence_id)
         source_id = source_by_evidence_id.get(evidence_id, index)
         packet.append(
             {
@@ -1070,10 +1112,8 @@ def _team_evidence_packet(state: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "usable": raw.get("usable"),
                 "data_time": raw.get("data_time"),
                 "data_status": raw.get("data_status"),
-                "summary": _safe_text(
-                    raw.get("display_result") or result.get("summary") or result.get("message") or result,
-                    900,
-                ),
+                "title": _citation_evidence_title(raw),
+                "summary": _citation_evidence_text(raw),
             }
         )
     return packet
@@ -1090,20 +1130,20 @@ def _team_results_packet(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             "agent_node": result.get("agent_node"),
             "expert_id": result.get("expert_id") or result.get("agent_id"),
             "status": result.get("status"),
-            "summary": _safe_text(result.get("summary"), 2_400),
-            "findings": [_safe_text(item, 1_200) for item in list(result.get("findings") or [])[:8]],
+            "summary": _safe_text(result.get("summary"), None),
+            "findings": [_safe_text(item, None) for item in result.get("findings") or []],
             "finding_source_ids": [
-                _source_ids_for_evidence_ids(state, list(refs or [])[:24])
-                for refs in list(result.get("finding_evidence_refs") or [])[:8]
+                _source_ids_for_evidence_ids(state, list(refs or []))
+                for refs in result.get("finding_evidence_refs") or []
             ],
-            "limitations": [_safe_text(item, 700) for item in list(result.get("limitations") or [])[:6]],
-            "open_questions": [_safe_text(item, 700) for item in list(result.get("open_questions") or [])[:6]],
+            "limitations": [_safe_text(item, None) for item in result.get("limitations") or []],
+            "open_questions": [_safe_text(item, None) for item in result.get("open_questions") or []],
             "confidence": result.get("confidence"),
             "failure_strategy": result.get("failure_strategy"),
-            "source_ids": _source_ids_for_evidence_ids(state, list(result.get("evidence_ids") or [])[:24]),
+            "source_ids": _source_ids_for_evidence_ids(state, list(result.get("evidence_ids") or [])),
             "criteria_status": result.get("criteria_status"),
             "criteria_checks": _team_model_packet(list(result.get("criteria_checks") or [])[:8], state),
-            "unmet_criteria": [_safe_text(item, 600) for item in list(result.get("unmet_criteria") or [])[:8]],
+            "unmet_criteria": [_safe_text(item, None) for item in result.get("unmet_criteria") or []],
             "error_code": result.get("error_code"),
         }
         projected.append(item)
@@ -1146,6 +1186,7 @@ def _critic_messages(state: Mapping[str, Any]) -> list[Any]:
                 "冲突门禁和风险遗漏；不新增事实、不调用工具、不写最终答案。"
                 "没有足够证据时选择 revise 或 block，不能把缺口写成 pass。"
                 "每条 issue 必须明确 resolution：research 仅用于专家可补采的缺失证据；"
+                "research 必须在 task_ids 中填写当前计划里需要补采的精确任务编号，不能只写在说明中；"
                 "qualify 用于已确认的客观限制或最终措辞要求，由综合器说明，不重跑专家；"
                 "block 用于无法安全作出结论的矛盾。不能把尚未公开的信息、非交易日或"
                 "最终建议尚未撰写本身判成需要专家重复取证。"
@@ -1276,10 +1317,9 @@ def _normalize_conflict(value: Any, state: Mapping[str, Any]) -> dict[str, Any]:
     if not known_ids:
         status = "high_risk"
         forced_reasons.append("没有可供复核的 canonical evidence。")
-    if isinstance(merge, Mapping) and merge.get("missing_task_ids"):
-        status = "high_risk"
-        forced_reasons.append("存在没有完成证据交接的领域任务。")
-    if status == "none" and forced_reasons:
+    # Coverage gaps are already handled by criteria and CriticReviewer. They
+    # do not establish a factual contradiction or justify Bull/Bear review.
+    if forced_reasons:
         issues.append(
             {
                 "category": "coverage",
@@ -1289,14 +1329,31 @@ def _normalize_conflict(value: Any, state: Mapping[str, Any]) -> dict[str, Any]:
                 "source_ids": [],
             }
         )
-    reason = "；".join(item for item in [assessment.reason, *forced_reasons] if item)[:900]
+    reason = "；".join(item for item in [assessment.reason, *forced_reasons] if item)
     return {
         "status": status,
         "reason": reason,
+        "progress_text": assessment.progress_text,
         "issues": issues[:12],
         "risk_flags": list(dict.fromkeys(assessment.risk_flags))[:12],
         "requires_adversarial_review": bool(assessment.requires_adversarial_review or status != "none"),
     }
+
+
+def _normalize_critic(value: Any, state: Mapping[str, Any]) -> dict[str, Any]:
+    """Require executable repair targets, not task names buried in prose."""
+    review = CriticReview.model_validate(_dump(value))
+    plan = state.get("team_plan") or {}
+    known_task_ids = {
+        str(task.get("task_id") or "")
+        for task in plan.get("tasks") or []
+        if isinstance(task, Mapping)
+    }
+    for issue in review.issues:
+        unknown = set(issue.task_ids) - known_task_ids
+        if unknown:
+            raise ValueError(f"CriticReviewer cites unavailable task_ids: {sorted(unknown)}")
+    return review.model_dump(mode="json")
 
 
 def _normalize_case(value: Any, state: Mapping[str, Any], schema: type[BaseModel]) -> dict[str, Any]:
@@ -1338,70 +1395,66 @@ def _normalize_consensus(value: Any, state: Mapping[str, Any]) -> dict[str, Any]
     return projected
 
 
-def _assessment_messages(
-    state: Mapping[str, Any],
-    task: AgentTask,
-    answer: str,
-    records: Sequence[Mapping[str, Any]],
-    evidence: Sequence[Mapping[str, Any]],
-) -> list[Any]:
-    observations = [
-        {
-            key: value
-            for key, value in dict(record).items()
-            if key
-            in {
-                "tool_name",
-                "success",
-                "partial",
-                "error_code",
-                "data_time",
-                "data_status",
-                "usable",
-                "display_result",
-                "result",
-            }
-        }
-        for record in records[:24]
-        if isinstance(record, Mapping)
-    ]
-    return [
-        SystemMessage(
-            content=(
-                "你是一个领域 worker 的结构化交接器。只整理该 worker 已经实际取得的观察，"
-                "不新增事实、不补猜测、不输出 URL、本机路径、命令或隐藏思维。"
-                "没有取得的数据要写入 limitations 或 open_questions。"
-                "findings 需要按顺序使用 evidence_slots 中的 source_id 建立 finding_source_ids，"
-                "不要填写服务端 evidence hash。请在 progress_text 中概括本 worker 实际观察到的进展或限制，"
-                "不要使用固定模板或替其他 worker 发言。只能返回 WorkerAssessment。"
-            )
-        ),
-        HumanMessage(
-            content=json.dumps(
-                {
-                    "original_question": _safe_text(state.get("user_text"), 2_400),
-                    "task": task.model_dump(mode="json"),
-                    "worker_answer": _safe_text(answer, 3_000),
-                    "observations": observations,
-                    "evidence_slots": _criteria_evidence_packet(evidence),
-                },
-                ensure_ascii=False,
-                default=str,
-                separators=(",", ":"),
-            )
-        ),
-    ]
+def _worker_assessment_from_answer(
+    state: Mapping[str, Any], evidence: Sequence[Mapping[str, Any]],
+) -> WorkerAssessment:
+    """Project the worker's accepted native answer without another model call.
+
+    Keep factual/judgment blocks and non-factual limitations separate, and
+    map their canonical references back to this worker's stable source slots.
+    The independent criteria judge and root reviewers remain authoritative.
+    """
+    answer = resolve_answer_sources(structured_answer_mapping(state.get("structured_answer")), evidence)
+    blocks = structured_answer_blocks(answer)
+    if not blocks:
+        raise ValueError("worker did not return a native StructuredAgentAnswer")
+    slot_by_id: dict[str, int] = {}
+    for item in evidence_source_catalog(evidence):
+        # The criteria packet deduplicates by the first exposed source slot.
+        # Repeated searches can return the same canonical page under later
+        # slots; do not cite a slot that was removed from that packet.
+        slot_by_id.setdefault(item["evidence_id"], item["source_id"])
+    findings: list[str] = []
+    references: list[list[str]] = []
+    limitations: list[str] = []
+    context: list[str] = []
+    for block in blocks:
+        content = str(block.get("content") or "").strip()
+        if not content:
+            continue
+        kind = str(block.get("kind") or "fact")
+        if kind == "disclaimer":
+            limitations.append(content)
+        elif kind in {"context", "progress"}:
+            context.append(content)
+        else:
+            ids = list(block.get("evidence_ids") or [])
+            unknown = [value for value in ids if value not in slot_by_id]
+            if unknown:
+                raise ValueError(f"worker answer cites unavailable evidence: {unknown}")
+            findings.append(content)
+            references.append([str(slot_by_id[value]) for value in ids])
+    summary = "\n".join(value for value in [str(answer.get("title") or "").strip(), *context] if value)
+    return WorkerAssessment(
+        summary=summary or "领域结构化结果已交接。",
+        findings=findings, finding_evidence_refs=references, limitations=limitations,
+    )
 
 
 def _criteria_evidence_packet(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Expose only bounded, server-owned evidence slots to a criterion judge."""
+    """Expose complete, deduplicated evidence while retaining stable slots."""
     packet: list[dict[str, Any]] = []
-    for position, raw in enumerate(list(values)[:80], start=1):
+    seen_ids: set[str] = set()
+    for position, raw in enumerate(citation_scoped_evidence_records(values)[:80], start=1):
         if not isinstance(raw, Mapping):
             continue
         if not evidence_record_is_eligible(raw):
             continue
-        result = raw.get("result") if isinstance(raw.get("result"), Mapping) else raw
+        evidence_id = str(raw.get("evidence_id") or raw.get("id") or "")
+        if evidence_id and evidence_id in seen_ids:
+            continue
+        if evidence_id:
+            seen_ids.add(evidence_id)
         packet.append(
             {
                 "source_id": int(raw.get("_team_source_id") or position),
@@ -1411,19 +1464,47 @@ def _criteria_evidence_packet(values: Sequence[Mapping[str, Any]]) -> list[dict[
                 "usable": raw.get("usable"),
                 "data_time": raw.get("data_time"),
                 "data_status": raw.get("data_status"),
-                "observation": _safe_text(
-                    raw.get("display_result") or result.get("summary") or result.get("message") or result,
-                    1_000,
-                ),
+                "title": _citation_evidence_title(raw),
+                "observation": _citation_evidence_text(raw),
             }
         )
     return packet
 
 
+def _citation_evidence_text(raw: Mapping[str, Any], max_chars: int | None = None) -> str:
+    """Prefer the exact retrieved hit over its potentially truncated tool envelope."""
+    result = raw.get("result") if isinstance(raw.get("result"), Mapping) else {}
+    if raw.get("citation_item") is True:
+        excerpt = result.get("snippet") or result.get("text") or result.get("summary")
+        if excerpt:
+            return _safe_text(excerpt, max_chars)
+    return _safe_text(
+        raw.get("display_result") or result.get("summary") or result.get("message") or result,
+        max_chars,
+    )
+
+
+def _citation_evidence_title(raw: Mapping[str, Any]) -> str:
+    """Keep PDF page/section metadata attached to the exact citation slot."""
+    result = raw.get("result") if isinstance(raw.get("result"), Mapping) else {}
+    if raw.get("citation_item") is not True:
+        return _safe_text(raw.get("title") or "", 240)
+    filename = str(result.get("filename") or "PDF 原文").strip()
+    page_start = result.get("page_start")
+    page_end = result.get("page_end") or page_start
+    if page_start and page_start == page_end:
+        page = f"第 {page_start} 页"
+    elif page_start and page_end:
+        page = f"第 {page_start}–{page_end} 页"
+    else:
+        page = "PDF 原文"
+    section = str(result.get("section") or "").strip()
+    return _safe_text(" · ".join(value for value in (filename, page, section) if value), 240)
+
+
 def _worker_criteria_messages(
     state: Mapping[str, Any],
     task: AgentTask,
-    answer: str,
     assessment: WorkerAssessment,
     records: Sequence[Mapping[str, Any]],
     evidence: Sequence[Mapping[str, Any]],
@@ -1443,9 +1524,8 @@ def _worker_criteria_messages(
                     "scope": "worker_task",
                     "original_question": _safe_text(state.get("user_text"), 2_400),
                     "task_id": task.task_id,
-                    "task_objective": _safe_text(task.objective, 1_200),
+                    "task_objective": _safe_text(task.objective, None),
                     "criteria": list(task.success_criteria),
-                    "worker_answer": _safe_text(answer, 2_400),
                     "worker_assessment": assessment.model_dump(mode="json"),
                     "successful_operations": [
                         {
@@ -1489,7 +1569,7 @@ def _team_criteria_messages(state: Mapping[str, Any]) -> list[Any]:
                 {
                     "scope": "synthesis_readiness",
                     "original_question": _safe_text(state.get("user_text"), 3_000),
-                    "team_goal": _safe_text(plan.get("goal"), 1_200),
+                    "team_goal": _safe_text(plan.get("goal"), None),
                     "criteria": list(plan.get("completion_criteria") or [])[:8],
                     "worker_results": _team_results_packet(state),
                     "draft": _team_model_packet(state.get("team_draft"), state),
@@ -1518,9 +1598,9 @@ def _synthesis_message(state: Mapping[str, Any]) -> str:
     return json.dumps(
         {
             "original_question": _safe_text(state.get("user_text"), 4_000),
-            "team_goal": _safe_text(plan.get("goal"), 1_600),
+            "team_goal": _safe_text(plan.get("goal"), None),
             "completion_criteria": list(plan.get("completion_criteria") or [])[:8],
-            "synthesis_instructions": _safe_text(plan.get("synthesis_instructions"), 2_000),
+            "synthesis_instructions": _safe_text(plan.get("synthesis_instructions"), None),
             "required_domains": list(dict.fromkeys(required_experts)),
             "worker_results": results[:12],
             "evidence_merge": _team_model_packet(state.get("team_evidence_merge"), state),
@@ -1555,6 +1635,28 @@ def _task_id(value: Any, *, prefix: str, index: int) -> str:
     return normalized or f"{prefix}-{index}"
 
 
+def _is_safe_knowledge_search_tool(registry: Any) -> bool:
+    spec = registry.get_tool("search_knowledge_base") if registry is not None else None
+    return bool(
+        spec is not None
+        and str(getattr(spec, "effect", "read")) == "read"
+        and getattr(spec, "effect_resolver", None) is None
+    )
+
+
+def _expert_allowed_tools(
+    definition: ExpertDefinition,
+    registry: Any,
+    *,
+    knowledge_base_selected: bool,
+) -> set[str]:
+    allowed = set(definition.resolve_tool_names(registry))
+    allowed.discard("search_knowledge_base")
+    if knowledge_base_selected and _is_safe_knowledge_search_tool(registry):
+        allowed.add("search_knowledge_base")
+    return allowed
+
+
 def _materialize_team_plan(
     value: Any,
     state: Mapping[str, Any],
@@ -1571,6 +1673,7 @@ def _materialize_team_plan(
     raw = _dump(value)
     active_registry = _expert_registry_or_default(expert_registry)
     team_id = str(state.get("team_id") or "team").strip()
+    run_tool_budget = int(state.get("tool_call_limit") or get_agent_runtime_limits().max_tool_calls)
     user_text = _safe_text(state.get("user_text"), 1_200)
     raw_tasks = raw.get("tasks") if isinstance(raw.get("tasks"), list) else []
     tasks: list[dict[str, Any]] = []
@@ -1579,9 +1682,16 @@ def _materialize_team_plan(
         agent_id = str(task.get("agent_id") or "").strip().lower()
         definition = active_registry.get(agent_id)
         registered_tools = definition.resolve_tool_names(registry) if definition is not None else []
+        knowledge_base_selected = bool(state.get("knowledge_base_ids"))
+        if knowledge_base_selected and _is_safe_knowledge_search_tool(registry):
+            registered_tools = list(dict.fromkeys([*registered_tools, "search_knowledge_base"]))
+        else:
+            registered_tools = [name for name in registered_tools if name != "search_knowledge_base"]
         requested_tools = task.get("allowed_tools")
         if requested_tools is not None:
-            allowed_tools = [str(name).strip() for name in requested_tools if str(name).strip()]
+            allowed_tools = list(dict.fromkeys(
+                str(name).strip() for name in requested_tools if str(name).strip()
+            ))
         else:
             # A model hint prioritizes capabilities; only the server registry
             # grants them. Keep unknown hints for the validator to reject,
@@ -1609,7 +1719,9 @@ def _materialize_team_plan(
                 "max_attempts": int(task.get("max_attempts") or retry_policy.get("max_attempts") or 2),
                 "required_evidence": list(task.get("required_evidence") or []),
                 "success_criteria": list(task.get("success_criteria") or [f"{display_name}完成结构化交接"]),
-                "max_tool_calls": int(task.get("max_tool_calls") or getattr(definition, "max_tool_calls", 12)),
+                "max_tool_calls": int(
+                    task.get("max_tool_calls") or getattr(definition, "max_tool_calls", None) or run_tool_budget
+                ),
                 "parallel_group": task.get("parallel_group") or "research",
                 "depends_on": list(task.get("depends_on") or []),
                 "activation_reason": task.get("activation_reason") or "",
@@ -1645,6 +1757,7 @@ def _normalize_plan(
     )
     limits = get_agent_runtime_limits()
     active_registry = _expert_registry_or_default(expert_registry)
+    knowledge_base_selected = bool((state or {}).get("knowledge_base_ids"))
     normalized_tasks: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_experts: set[str] = set()
@@ -1667,7 +1780,11 @@ def _normalize_plan(
         task = raw_task
         agent_id = str(task.get("agent_id") or "").strip().lower()
         definition = active_registry.require(agent_id)
-        allowed_by_role = set(definition.resolve_tool_names(registry))
+        allowed_by_role = _expert_allowed_tools(
+            definition,
+            registry,
+            knowledge_base_selected=knowledge_base_selected,
+        )
         requested_tools = [str(name).strip() for name in task["allowed_tools"] if str(name).strip()]
         invalid = sorted(set(requested_tools) - allowed_by_role)
         if invalid:
@@ -1705,8 +1822,10 @@ def _normalize_plan(
                 "depends_on": dependencies,
             }
         )
-    if len(normalized_tasks) < 2 or len(seen_experts) < 2:
-        raise ValueError("team_not_applicable: a team plan must cover at least two independent registered experts")
+    if not normalized_tasks or (len(normalized_tasks) > 1 and len(seen_experts) < 2):
+        raise ValueError(
+            "team_not_applicable: multi-task collaboration must cover at least two independent registered experts"
+        )
     by_id = {str(task["task_id"]): task for task in normalized_tasks}
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -1838,6 +1957,7 @@ def _repair_advisory_budget_mismatch(
     detail: str,
     registry: Any,
     expert_registry: ExpertRegistry | None = None,
+    state: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str]] | None:
     """Repair only self-inconsistent model budget hints.
 
@@ -1886,7 +2006,7 @@ def _repair_advisory_budget_mismatch(
         repaired_keys.append(key)
         repaired["budget"] = repaired_budget
         try:
-            normalized = _normalize_plan(repaired, registry, expert_registry)
+            normalized = _normalize_plan(repaired, registry, expert_registry, state)
             return normalized, repaired_keys
         except ValueError as exc:
             # Continue only when the next failure is another known advisory
@@ -2042,7 +2162,7 @@ def _normalize_finding_evidence(
     """Resolve worker source slots while retaining every valid reference."""
     source_by_slot = {
         position: str(item.get("evidence_id") or item.get("id") or "").strip()
-        for position, item in enumerate(evidence, start=1)
+        for position, item in enumerate(citation_scoped_evidence_records(evidence), start=1)
         if isinstance(item, Mapping)
         and evidence_record_is_eligible(item)
         and str(item.get("evidence_id") or item.get("id") or "").strip()
@@ -2172,8 +2292,10 @@ async def _run_worker(
     worker_prompt = (
         f"\n你当前是 {display_name}（{task_agent_id}）专家，任务编号为 {task.task_id}。"
         "只完成当前任务，不替其他领域下结论；只调用已绑定的只读工具。"
-        "用简洁普通文本总结已核验观察、限制和仍待确认问题，不提交最终 StructuredAgentAnswer，"
-        "也不要执行任何外部操作。\n"
+        "完成取证后调用原生 StructuredAgentAnswer 交接；这不是用户的最终答案。"
+        "已核验事实使用 fact，基于事实的判断使用 inference/risk，并引用当前有效 source_ids；"
+        "未取得的数据、未披露事项和取证限制单独使用 disclaimer，不能写成已确认事实；"
+        "不要把修复过程或协议说明混入事实区块，也不要执行任何外部操作。\n"
         f"输入引用：{json.dumps(task.input_refs, ensure_ascii=False)}\n"
         f"当前 worker 目标：{task.objective}\n"
         f"输出格式：{task.output_format}\n"
@@ -2211,7 +2333,10 @@ async def _run_worker(
                 "交接时综合保留的观察和新增证据，明确仍未解决的限制。",
             ],
         }, ensure_ascii=False, default=str)))
-    worker_prompt += f"\n本次最多可新增 {task.max_tool_calls} 次工具调用；已有证据可直接复用，不消耗本次额度。"
+    run_tool_limit = int(state.get("tool_call_limit") or get_agent_runtime_limits().max_tool_calls)
+    remaining_tool_calls = max(0, run_tool_limit - int(state.get("tool_call_count") or 0))
+    worker_tool_limit = min(task.max_tool_calls, remaining_tool_calls)
+    worker_prompt += f"\n本次共享预算最多可新增 {worker_tool_limit} 次工具调用；已有证据可直接复用。"
     child_state = _child_state(
         state,
         messages=worker_messages,
@@ -2219,8 +2344,8 @@ async def _run_worker(
         system_prompt=str(state.get("system_prompt") or "") + worker_prompt,
         tool_results=prior_records,
         evidence=prior_evidence,
-        tool_call_limit=task.max_tool_calls,
-        structured_output_required=False,
+        tool_call_limit=worker_tool_limit,
+        structured_output_required=True,
         orchestrator_mode="multi_agent_worker",
     )
     child_state["source_fallback_attempts"] = list(state.get("source_fallback_attempts") or [])
@@ -2229,13 +2354,13 @@ async def _run_worker(
         child_graph = expert.graph_factory(
             checkpointer=None,
             registry=scoped_registry,
-            response_format=None,
+            response_format=DEFAULT_RESPONSE_FORMAT,
         )
     else:
         child_graph = build_agent_graph(
             checkpointer=None,
             registry=scoped_registry,
-            response_format=None,
+            response_format=DEFAULT_RESPONSE_FORMAT,
         )
     child_output: Mapping[str, Any] = {}
     child_progress: dict[str, Any] = {}
@@ -2265,10 +2390,12 @@ async def _run_worker(
             child_graph,
             child_state,
             context=child_context,
-            recursion_limit=max(64, task.max_tool_calls * 4 + 32),
+            recursion_limit=max(64, worker_tool_limit * 4 + 32),
             progress_sink=child_progress,
         )
     except asyncio.CancelledError:
+        raise
+    except _TERMINAL_MODEL_ERRORS:
         raise
     except asyncio.TimeoutError as exc:
         # A timeout raised by the child is a provider/tool/model boundary
@@ -2328,6 +2455,8 @@ async def _run_worker(
                 "timeout_scope": "child_call",
             },
         )
+    except _TERMINAL_MODEL_ERRORS:
+        raise
     except Exception as exc:
         child_error_code = "team_worker_failed"
         if child_progress:
@@ -2404,7 +2533,6 @@ async def _run_worker(
     answer = "" if worker_child_timed_out else str(
         worker_state.get("answer_final") or worker_state.get("answer_draft") or ""
     ).strip()
-    assessment_calls = 0
     assessment_status = "fallback" if worker_child_timed_out else "typed"
     assessment_error = ""
     if worker_child_timed_out:
@@ -2423,34 +2551,10 @@ async def _run_worker(
         )
     else:
         try:
-            assessment_value, assessment_calls = await _invoke_contract(
-                context,
-                WorkerAssessment,
-                _assessment_messages(state, task, answer, records, evidence),
-                action_prefix=f"{agent_id}:assessment",
-                stage="planning",
-                projection_scope="expert",
-                projection_collaboration_id=team_id,
-                projection_agent_id=agent_id,
-                projection_task_id=task.task_id,
-                projection_phase="worker",
-                projection_kind="report",
-                projection_attempt=attempt,
-            )
-            assessment = WorkerAssessment.model_validate(assessment_value)
-            _publish_contract_projection(
-                context,
-                assessment.model_dump(mode="json"),
-                scope="expert",
-                collaboration_id=team_id,
-                agent_id=agent_id,
-                task_id=task.task_id,
-                phase="worker",
-                kind="report",
-                attempt=attempt,
-                projection_id=_contract_projection_id(context, f"{agent_id}:assessment"),
-            )
+            assessment = _worker_assessment_from_answer(worker_state, evidence)
         except asyncio.CancelledError:
+            raise
+        except _TERMINAL_MODEL_ERRORS:
             raise
         except Exception as exc:
             assessment_status = "fallback"
@@ -2496,7 +2600,7 @@ async def _run_worker(
             criteria_value, criteria_calls = await _invoke_contract(
                 context,
                 CriteriaAssessment,
-                _worker_criteria_messages(state, task, answer, assessment, records, evidence),
+                _worker_criteria_messages(state, task, assessment, records, evidence),
                 action_prefix=f"{agent_id}:criteria",
                 stage="planning",
                 projection_scope="expert",
@@ -2514,6 +2618,8 @@ async def _run_worker(
                 records=records,
             )
         except asyncio.CancelledError:
+            raise
+        except _TERMINAL_MODEL_ERRORS:
             raise
         except Exception as exc:
             criteria_error = _safe_text(f"{type(exc).__name__}: {exc}", 600)
@@ -2546,7 +2652,7 @@ async def _run_worker(
 
     evidence_ids = [
         str(item.get("evidence_id") or item.get("id") or "")
-        for item in evidence
+        for item in citation_scoped_evidence_records(evidence)
         if str(item.get("evidence_id") or item.get("id") or "")
     ]
     finding_evidence_refs: list[list[str]] = []
@@ -2558,7 +2664,7 @@ async def _run_worker(
                     "limitations": [
                         *assessment.limitations,
                         "部分领域结论引用了不可用的 source_id，服务端已保留可解析的有效证据引用。",
-                    ][:8]
+                    ]
                 }
             )
     child_status = str(worker_state.get("status") or "failed")
@@ -2580,14 +2686,11 @@ async def _run_worker(
                     "limitations": [
                         *assessment.limitations,
                         "本轮以下工具未成功返回：" + "、".join(failed_tool_names[:6]) + "。",
-                    ][:8]
+                    ]
                 }
             )
-    # Worker output is an internal handoff, not the client publication
-    # boundary.  The existing application loop may mark a plain worker answer
-    # partial solely because it omitted an internal evidence marker; successful
-    # evidence is still usable because the parent synthesizer performs the
-    # authoritative StructuredAgentAnswer/ledger validation.
+    # A failed optional operation does not invalidate the native handoff when
+    # independent task criteria and canonical evidence still support it.
     result_status = _worker_handoff_status(
         child_status=child_status,
         assessment_status=assessment_status,
@@ -2604,11 +2707,7 @@ async def _run_worker(
         else None
     )
     criteria_checks = [
-        {
-            key: value
-            for key, value in check.items()
-            if key != "evidence_ids"
-        }
+        dict(check)
         for check in criteria_evaluation["checks"]
         if isinstance(check, Mapping)
     ]
@@ -2680,7 +2779,7 @@ async def _run_worker(
         "evidence": evidence,
         "tool_call_count": result.tool_call_count,
         "model_turn_count": result.model_turn_count,
-        "team_contract_call_count": assessment_calls + criteria_calls,
+        "team_contract_call_count": criteria_calls,
         "team_task_attempts": {task.task_id: attempt},
         "runtime_errors": worker_runtime_errors,
         "source_fallback_attempts": [
@@ -2835,6 +2934,7 @@ def _send_team_tasks(state: Mapping[str, Any], task_ids: Sequence[str]) -> list[
                             "run_id", "conversation_id", "user_text", "system_prompt",
                             "response_repair_limit", "content_access_repair_limit",
                             "evidence_repair_limit", "fallback_repair_limit",
+                            "tool_call_limit", "tool_call_count",
                         )
                         if key in state
                     },
@@ -2964,11 +3064,11 @@ def _draft_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
         section_status = status if status in {"completed", "partial", "failed"} else "partial"
         if result is None or section_status != "completed":
             unresolved_task_ids.append(task_id)
-        summary = _safe_text((result or {}).get("summary") or "该专家尚未完成结构化交接。", 2_400)
+        summary = _safe_text((result or {}).get("summary") or "该专家尚未完成结构化交接。", None)
         findings = [
-            _safe_text(item, 1_000)
-            for item in list((result or {}).get("findings") or [])[:8]
-            if _safe_text(item, 1_000)
+            _safe_text(item, None)
+            for item in (result or {}).get("findings") or []
+            if _safe_text(item, None)
         ]
         content = summary
         if findings:
@@ -2979,14 +3079,14 @@ def _draft_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
             if str(item).strip() and (not canonical_ids or str(item).strip() in canonical_ids)
         ]
         section_limitations = [
-            _safe_text(item, 600)
-            for item in list((result or {}).get("limitations") or [])[:8]
-            if _safe_text(item, 600)
+            _safe_text(item, None)
+            for item in (result or {}).get("limitations") or []
+            if _safe_text(item, None)
         ]
         unresolved_questions.extend(
-            _safe_text(item, 600)
-            for item in list((result or {}).get("open_questions") or [])[:8]
-            if _safe_text(item, 600)
+            _safe_text(item, None)
+            for item in (result or {}).get("open_questions") or []
+            if _safe_text(item, None)
         )
         limitations.extend(section_limitations)
         sections.append(
@@ -2994,7 +3094,7 @@ def _draft_from_state(state: Mapping[str, Any]) -> dict[str, Any]:
                 task_id=task_id,
                 agent_id=agent_id,
                 title=title,
-                content=content[:4_000],
+                content=content,
                 status=section_status,
                 evidence_ids=list(dict.fromkeys(evidence_ids))[:80],
                 limitations=section_limitations,
@@ -3161,6 +3261,8 @@ async def resolve_orchestrator_route(
             reason = route_value.reason
         except asyncio.CancelledError:
             raise
+        except _TERMINAL_MODEL_ERRORS:
+            raise
         except Exception as exc:
             detail = _safe_text(f"{type(exc).__name__}: {exc}", 600)
             context.events.stage(
@@ -3242,6 +3344,7 @@ def build_team_graph(
 
     async def plan(state: AgentState, runtime: Any) -> dict[str, Any]:
         context: GraphContext = runtime.context
+        policy_state = dict(state)
         team_id = str(state.get("team_id") or "team")
         context.events.stage(
             "planning",
@@ -3262,7 +3365,12 @@ def build_team_graph(
             value, calls = await _invoke_contract(
                 context,
                 TeamPlanDraft,
-                _plan_messages(state, context.registry, active_expert_registry),
+                _plan_messages(
+                    state,
+                    context.registry,
+                    active_expert_registry,
+                    document_catalog=document_catalog_for_model(context),
+                ),
                 action_prefix=f"{team_id}:plan",
                 stage="planning",
                 projection_scope="coordinator",
@@ -3275,7 +3383,7 @@ def build_team_graph(
                 value,
                 context.registry,
                 active_expert_registry,
-                state,
+                policy_state,
             )
             _publish_contract_projection(
                 context,
@@ -3306,6 +3414,7 @@ def build_team_graph(
                     detail,
                     context.registry,
                     active_expert_registry,
+                    policy_state,
                 )
             except Exception as repair_exc:
                 repaired_budget = None
@@ -3338,7 +3447,7 @@ def build_team_graph(
                     action_id=f"{team_id}:plan",
                     error_code=error_code,
                     user_message=(
-                        "当前问题无法形成至少两个独立且有意义的 Team 任务，我不会静默降级成 Direct。"
+                        "当前问题无法形成有效的多专家协作分工，我不会静默降级成 Direct。"
                         if error_code == "team_not_applicable"
                         else "模型生成的 Team 计划没有通过服务端校验，本轮不会执行未授权任务。"
                     ),
@@ -3365,7 +3474,7 @@ def build_team_graph(
         except Exception as exc:
             detail = _safe_text(f"{type(exc).__name__}: {exc}", 800)
             try:
-                normalized = _fallback_team_plan(state, context.registry, active_expert_registry)
+                normalized = _fallback_team_plan(policy_state, context.registry, active_expert_registry)
             except Exception as fallback_exc:
                 fallback_detail = _safe_text(f"{type(fallback_exc).__name__}: {fallback_exc}", 800)
                 context.events.stage(
@@ -3824,6 +3933,8 @@ def build_team_graph(
             narration_status = "completed"
         except asyncio.CancelledError:
             raise
+        except _TERMINAL_MODEL_ERRORS:
+            raise
         except Exception as exc:
             narration_error = _safe_text(f"{type(exc).__name__}: {exc}", 600)
             context.events.stage(
@@ -4079,6 +4190,8 @@ def build_team_graph(
             conflict_error = ""
         except asyncio.CancelledError:
             raise
+        except _TERMINAL_MODEL_ERRORS:
+            raise
         except Exception as exc:
             calls = 2
             conflict_error = _safe_text(f"{type(exc).__name__}: {exc}", 600)
@@ -4158,8 +4271,9 @@ def build_team_graph(
                 projection_collaboration_id=team_id,
                 projection_phase="critic",
                 projection_kind="critic",
+                validator=lambda value: _normalize_critic(value, state),
             )
-            critic_value = CriticReview.model_validate(value).model_dump(mode="json")
+            critic_value = _normalize_critic(value, state)
             _publish_contract_projection(
                 context,
                 critic_value,
@@ -4172,6 +4286,8 @@ def build_team_graph(
             critic_status = "completed"
             critic_error = ""
         except asyncio.CancelledError:
+            raise
+        except _TERMINAL_MODEL_ERRORS:
             raise
         except Exception as exc:
             calls = 2
@@ -4186,6 +4302,7 @@ def build_team_graph(
                         "reason": "CriticReviewer 结构化复核未通过校验。",
                         "task_ids": [],
                         "repair_instruction": "重新执行独立复核后再确认完整结论。",
+                        "resolution": "block",
                     }
                 ],
             }
@@ -4323,6 +4440,8 @@ def build_team_graph(
                     "limitations": guard_reasons,
                 }
         except asyncio.CancelledError:
+            raise
+        except _TERMINAL_MODEL_ERRORS:
             raise
         except Exception as exc:
             criteria_error = _safe_text(f"{type(exc).__name__}: {exc}", 600)
@@ -4463,7 +4582,7 @@ def build_team_graph(
                 continue
             if issue.get("resolution") in {"qualify", "block"}:
                 continue
-            reason = _safe_text(issue.get("repair_instruction") or issue.get("reason") or "复核发现缺口", 600)
+            reason = _safe_text(issue.get("repair_instruction") or issue.get("reason") or "复核发现缺口", None)
             for task_id in issue.get("task_ids") or []:
                 add_task(task_id, reason, explicit_review=True)
         unmet = list(criteria.get("unmet_criteria") or [])
@@ -4473,7 +4592,7 @@ def build_team_graph(
             # than replaying every successful branch.
             for task_id, result in results.items():
                 if str(result.get("status") or "") != "completed":
-                    add_task(task_id, "总完成条件未满足：" + _safe_text(unmet[0], 400))
+                    add_task(task_id, "总完成条件未满足：" + _safe_text(unmet[0], None))
         if bool(consensus.get("needs_replan")) and not candidate_ids:
             for task_id, result in results.items():
                 if str(result.get("status") or "") != "completed":
@@ -4648,6 +4767,8 @@ def build_team_graph(
             case_error = ""
         except asyncio.CancelledError:
             raise
+        except _TERMINAL_MODEL_ERRORS:
+            raise
         except Exception as exc:
             calls = 2
             case_error = _safe_text(f"{type(exc).__name__}: {exc}", 600)
@@ -4728,6 +4849,8 @@ def build_team_graph(
             consensus_status = "completed"
             consensus_error = ""
         except asyncio.CancelledError:
+            raise
+        except _TERMINAL_MODEL_ERRORS:
             raise
         except Exception as exc:
             calls = 2
@@ -4880,8 +5003,8 @@ def build_team_graph(
             }
         try:
             # The finalizer may perform several bounded model/validation
-            # rounds. A whole-agent stopwatch must not discard active work.
-            # Individual provider calls retain their existing timeout policy.
+            # rounds. A whole-agent stopwatch or per-call application timer
+            # must not discard active model work.
             child_output = await finalizer.ainvoke(
                 child_state,
                 config=_nested_graph_config(recursion_limit=1_000),

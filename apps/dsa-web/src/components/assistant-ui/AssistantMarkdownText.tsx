@@ -416,12 +416,12 @@ export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({
                 </tr>
               ),
               th: ({ children }) => (
-                <th className="border-b border-border bg-muted px-2 py-2 font-semibold break-words text-foreground first:min-w-20 first:w-20 first:whitespace-nowrap sm:px-3.5">
+                <th className="border-b border-border bg-muted px-2 py-2 font-semibold break-words text-foreground first:min-w-20 first:w-20 sm:px-3.5">
                   {children}
                 </th>
               ),
               td: ({ children }) => (
-                <td className="border-b border-border px-2 py-2 align-top leading-6 break-words first:min-w-20 first:w-20 first:whitespace-nowrap sm:px-3.5">
+                <td className="border-b border-border px-2 py-2 align-top leading-6 break-words first:min-w-20 first:w-20 sm:px-3.5">
                   {children}
                 </td>
               ),

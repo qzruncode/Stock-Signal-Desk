@@ -294,6 +294,13 @@ def _merge_message_slices(first: AnyMessage, second: AnyMessage) -> AnyMessage:
 
 class ConversationMemoryMiddleware(AgentMiddleware):
     async def abefore_model(self, state, runtime):
+        if state.get("planning_enabled"):
+            # Planning resolves follow-up context into its goal/report ledger
+            # and projects only the current request plus the active step's
+            # tool-call pairs before each model call. Summarizing the full
+            # checkpoint first is redundant and can add a slow model call over
+            # large prior answers or PDF observations.
+            return None
         model = getattr(getattr(runtime, "context", None), "model", None)
         if model is None:
             logging.getLogger(__name__).warning("Summary middleware has no run-scoped model; leaving messages intact")
@@ -325,7 +332,18 @@ class ConversationMemoryMiddleware(AgentMiddleware):
             summary_prompt=_SUMMARY_PROMPT,
             trim_tokens_to_summarize=summary_limit,
         )
-        update = await middleware.abefore_model(state, runtime)
+        try:
+            update = await middleware.abefore_model(state, runtime)
+        except Exception as exc:
+            # Older LangChain versions may propagate a failed summary call,
+            # while newer versions skip it. In either case, summarization is
+            # optional: keep the original history and let the primary model
+            # answer this turn. Do not log provider exception text or payloads.
+            logging.getLogger(__name__).warning(
+                "Conversation summary failed; leaving messages intact (%s)",
+                type(exc).__name__,
+            )
+            return None
         # Native summarization catches provider errors. Never apply its history
         # replacement when no successful summary was generated.
         return None if observer.failed or not observer.generated else update

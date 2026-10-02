@@ -187,7 +187,6 @@ class TestModelConnectionRequest(BaseModel):
 
     items: List[SystemConfigUpdateItem] = Field(default_factory=list)
     mask_token: str = "******"
-    timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
 
 
 class TestModelConnectionResponse(BaseModel):

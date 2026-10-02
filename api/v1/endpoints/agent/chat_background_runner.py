@@ -308,8 +308,6 @@ async def _execute_background_agent_run(
                 state = await _checkpoint_state(conversation_id)
             partial = str(
                 state.get("answer_final")
-                or state.get("answer_draft")
-                or controller.assistant_text_snapshot
                 or ""
             ).strip()
             partial = partial + "\n\n[已停止]" if partial else "[已停止]"
@@ -378,8 +376,6 @@ async def _execute_background_agent_run(
             state = await _checkpoint_state(conversation_id)
         partial = str(
             state.get("answer_final")
-            or state.get("answer_draft")
-            or controller.assistant_text_snapshot
             or ""
         ).strip()
         if not partial:

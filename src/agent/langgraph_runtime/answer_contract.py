@@ -14,7 +14,7 @@ import math
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import TypedDict
 
 from src.tools.base import evidence_record_is_eligible
@@ -70,9 +70,8 @@ class StructuredAnswerBlock(TypedDict):
     kind: Annotated[
         AnswerBlockKind,
         Field(
-            default="fact",
             description=(
-                "Block semantics: answer is a general response; context/disclaimer may be used "
+                "Required explicit block semantics: answer is a general response; context/disclaimer may be used "
                 "without external evidence; fact/inference/recommendation/risk are material claims "
                 "and require supporting source_ids under the applicable answer profile. "
                 "action_result reports only an observed action's execution status and must reference "
@@ -132,14 +131,44 @@ class StructuredAnswerBlock(TypedDict):
             ),
         ),
     ]
+    table_columns: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=120)]],
+        Field(
+            default_factory=list,
+            min_length=2,
+            max_length=24,
+            description=(
+                "Structured table headers for presentation_type=table. Prefer this field with table_rows; "
+                "the server constructs the Markdown table so line breaks and columns cannot be flattened."
+            ),
+        ),
+    ]
+    table_rows: Annotated[
+        list[
+            Annotated[
+                list[Annotated[str, Field(max_length=2000)]],
+                Field(min_length=2, max_length=24),
+            ]
+        ],
+        Field(
+            default_factory=list,
+            max_length=200,
+            description=(
+                "Structured table data rows matching table_columns exactly. Include every requested item; "
+                "the server renders them as a Markdown table."
+            ),
+        ),
+    ]
     content: Annotated[
         str,
         Field(
-            min_length=1,
-            max_length=24_000,
+            default="",
             description=(
-                "Markdown body for this block. Keep one coherent evidence scope per block; "
-                "put source references in source_ids instead of embedding evidence markers here."
+                "Visible body for this block. Required for non-table blocks. For presentation_type=table, "
+                "prefer table_columns and table_rows and leave content empty; the server constructs the "
+                "complete Markdown table. Existing complete Markdown tables in content remain supported. "
+                "Keep one coherent evidence scope per block and put source references in source_ids "
+                "instead of embedding evidence markers."
             ),
         ),
     ]
@@ -183,24 +212,24 @@ class StructuredAnswerBlock(TypedDict):
             default_factory=list,
             max_length=8,
             description=(
-                "Integer ids from the current run's observed action catalog. These are read-only audit/display "
-                "references and never request a new tool call or execute an action."
-            ),
+            "Integer ids from the current run's observed action catalog. These are read-only audit/display "
+            "references and never request a new tool call. Final answers may reference only actual "
+            "side-effect operations; ordinary read/search tools are not answer actions."
+        ),
         ),
     ]
 
 
-class StructuredAgentAnswer(TypedDict):
+class StructuredAgentAnswer(BaseModel):
     """The only model-owned payload accepted as a new run's final answer."""
 
-    __pydantic_config__ = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
     progress_text: Annotated[
         str,
         Field(
             default="",
             min_length=4,
-            max_length=1_800,
             description=(
                 "Optional short user-facing progress sentence streamed while this typed answer is being built. "
                 "New model responses should always provide it; the empty default preserves compatibility with "
@@ -234,7 +263,6 @@ class StructuredAgentAnswer(TypedDict):
         list[StructuredAnswerBlock],
         Field(
             min_length=1,
-            max_length=80,
             description=(
                 "Complete ordered answer blocks. Include every material fact, conclusion, "
                 "risk, and recommendation here; do not leave material content only in title text."
@@ -242,6 +270,54 @@ class StructuredAgentAnswer(TypedDict):
         ),
     ]
 
+    @model_validator(mode="after")
+    def normalize_and_validate_blocks(self) -> "StructuredAgentAnswer":
+        """Render typed tables and route malformed blocks through structured retry.
+
+        ToolStrategy can return a Pydantic validation error to the model as a
+        ToolMessage. Keeping this shape check here lets that existing retry
+        path repair an incomplete table before the answer reaches the separate
+        evidence and publication contract checks.
+        """
+        seen_blocks: set[str] = set()
+        for index, block in enumerate(self.blocks, start=1):
+            content = str(block.get("content") or "").strip()
+            presentation = _presentation_type(block.get("presentation_type"))
+            columns = block.get("table_columns") or []
+            rows = block.get("table_rows") or []
+            if columns or rows:
+                if presentation != "table":
+                    raise ValueError(
+                        f"第 {index} 个回答区块提供了表格行列，但 presentation_type 不是 table"
+                    )
+                if len(columns) < 2 or not rows:
+                    raise ValueError(
+                        f"第 {index} 个表格必须至少有两列表头和一条数据行"
+                    )
+                if any(len(row) != len(columns) for row in rows):
+                    raise ValueError(
+                        f"第 {index} 个表格的每条数据行必须与表头列数一致"
+                    )
+                content = _markdown_table_from_data(columns, rows)
+                block["content"] = content
+            elif not content:
+                raise ValueError(f"第 {index} 个回答区块缺少可见正文")
+
+            block_key = json.dumps(block, ensure_ascii=False, sort_keys=True, default=str)
+            if block_key in seen_blocks:
+                raise ValueError(f"第 {index} 个回答区块重复；只保留一次，不要重复填充说明或结论")
+            seen_blocks.add(block_key)
+
+            if self.profile != "research":
+                continue
+            if (
+                presentation == "table" or _looks_like_markdown_table(content)
+            ) and not _markdown_table_has_data_rows(content):
+                raise ValueError(
+                    f"第 {index} 个回答区块包含不完整的 Markdown 表格；"
+                    "必须有表头、分隔行和至少一行数据"
+                )
+        return self
 
 # ``ToolStrategy`` registers this typed schema as a normal model tool.  Keep
 # the name derived from the schema rather than duplicating a string in the
@@ -263,7 +339,6 @@ _MACHINE_CHART_TITLE_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{2,120}数据")
 _SECTION_NUMBER_PREFIX_PATTERN = re.compile(
     r"^(?P<number>[0-9]+|[一二三四五六七八九十百千万零〇两]+)[、.．:：)）\-][ \t]*"
 )
-_STRUCTURED_ANSWER_CLIENT_TEXT_LIMIT = 12_000
 _STRUCTURED_ANSWER_REFERENCE_TEXT_LIMIT = 160
 _STRUCTURED_ANSWER_CHART_ROW_LIMIT = 120
 
@@ -271,6 +346,70 @@ _STRUCTURED_ANSWER_CHART_ROW_LIMIT = 120
 def _presentation_type(value: Any) -> str:
     normalized = str(value or "markdown").strip().lower()
     return normalized if normalized in _ANSWER_BLOCK_PRESENTATIONS else "markdown"
+
+
+def _markdown_table_has_data_rows(content: Any) -> bool:
+    rows = [line.strip() for line in str(content or "").splitlines() if "|" in line]
+    separator_index = next(
+        (
+            index
+            for index, row in enumerate(rows)
+            if len([cell for cell in row.strip("|").split("|")]) >= 2
+            and all(
+                re.fullmatch(r"\s*:?-{3,}:?\s*", cell)
+                for cell in row.strip("|").split("|")
+            )
+        ),
+        None,
+    )
+    if separator_index is None:
+        return False
+    for row in rows[separator_index + 1 :]:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if len(cells) >= 2 and any(cells) and not all(
+            re.fullmatch(r":?-{3,}:?", cell) for cell in cells
+        ):
+            return True
+    return False
+
+
+def _markdown_table_from_data(columns: Sequence[Any], rows: Sequence[Sequence[Any]]) -> str:
+    """Render validated cell data into stable Markdown instead of model-authored layout."""
+    def cell(value: Any) -> str:
+        normalized = re.sub(r"\s*[\r\n]+\s*", " ", str(value or "")).strip()
+        return normalized.replace("\\", "\\\\").replace("|", r"\|")
+
+    header = "| " + " | ".join(cell(value) for value in columns) + " |"
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    data_rows = [
+        "| " + " | ".join(cell(value) for value in row) + " |"
+        for row in rows
+    ]
+    return "\n".join((header, separator, *data_rows))
+
+
+def _looks_like_markdown_table(content: Any) -> bool:
+    """Recognize pipe-delimited table attempts, including malformed one-line headers."""
+    return any(
+        line.strip().startswith("|") and line.strip().count("|") >= 2
+        for line in str(content or "").splitlines()
+    )
+
+
+def _user_requests_markdown_table(user_text: Any) -> bool:
+    """Detect explicit table-output requests without matching source-table questions."""
+    text = str(user_text or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"(?:最终|最后|输出|整理|呈现|给出|提供|返回|生成|做成|列出).{0,28}(?:markdown\s*)?(?:表格|table)"
+            r"|(?:用|以)(?:markdown\s*)?(?:表格|table)(?:形式|回答|呈现)?"
+            r"|markdown\s*table",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
 
 
 def _code_language(value: Any) -> str:
@@ -388,7 +527,7 @@ def structured_answer_profile(value: Any) -> str:
     return profile if profile in {"general", "research"} else "research"
 
 
-def structured_answer_contract_issues(value: Any) -> list[str]:
+def structured_answer_contract_issues(value: Any, *, user_text: Any = None) -> list[str]:
     """Validate cross-field rules that a TypedDict cannot express."""
     answer = structured_answer_mapping(value)
     if not answer:
@@ -398,7 +537,8 @@ def structured_answer_contract_issues(value: Any) -> list[str]:
     issues: list[str] = []
     if raw_profile not in {"general", "research"}:
         issues.append("结构化回答的 profile 必须是 general 或 research")
-    for index, block in enumerate(structured_answer_blocks(answer), start=1):
+    blocks = structured_answer_blocks(answer)
+    for index, block in enumerate(blocks, start=1):
         if "presentation_type" in block:
             raw_presentation = str(block.get("presentation_type") or "").strip().lower()
             if raw_presentation not in _ANSWER_BLOCK_PRESENTATIONS:
@@ -407,6 +547,17 @@ def structured_answer_contract_issues(value: Any) -> list[str]:
                     "markdown、table、code、json、list 或 quote"
                 )
         presentation = _presentation_type(block.get("presentation_type"))
+        block_kind = str(block.get("kind") or "fact").strip().lower()
+        if (
+            profile == "research"
+            and (presentation == "table" or _looks_like_markdown_table(block.get("content")))
+            and block_kind in {"answer", "fact", "inference", "recommendation", "risk"}
+            and not _markdown_table_has_data_rows(block.get("content"))
+        ):
+            issues.append(
+                f"第 {index} 个回答区块包含不完整的 Markdown 表格；"
+                "必须有表头、分隔行和至少一行数据，或明确说明缺失项"
+            )
         if presentation == "code" and block.get("language") and not _code_language(block.get("language")):
             issues.append(f"第 {index} 个 code 区块的 language 不是安全的语言标识")
         if block.get("chart_type") and str(block.get("chart_type")).strip().lower() not in _ANSWER_CHART_TYPES:
@@ -416,6 +567,13 @@ def structured_answer_contract_issues(value: Any) -> list[str]:
                 json.loads(str(block.get("content") or ""))
             except (TypeError, ValueError):
                 issues.append(f"第 {index} 个 json 区块的 content 必须是有效 JSON")
+    if _user_requests_markdown_table(user_text) and not any(
+        _markdown_table_has_data_rows(block.get("content"))
+        for block in blocks
+    ):
+        issues.append(
+            "用户明确要求 Markdown 表格，但最终回答没有包含带分隔行和数据行的有效表格"
+        )
     return issues
 
 
@@ -895,6 +1053,7 @@ def output_reference_catalog_for_model(
                 )
             }
             for item in catalogs["actions"]
+            if item.get("effect") == "side_effect"
         ],
     }
 
@@ -1125,7 +1284,7 @@ def project_structured_answer(
             "language": _code_language(block.get("language"))
             if _presentation_type(block.get("presentation_type")) == "code"
             else "",
-            "content": str(block.get("content") or "").strip()[:_STRUCTURED_ANSWER_CLIENT_TEXT_LIMIT],
+            "content": str(block.get("content") or "").strip(),
             "evidence_ids": evidence_ids,
         }
         for reference_key, sanitizer in (
@@ -1208,6 +1367,16 @@ def _render_block_content(block: Mapping[str, Any], content: str) -> str:
     if presentation == "quote":
         return "\n".join(f"> {line}" if line else ">" for line in content.splitlines())
     return content
+
+
+def _citation_separator(block: Mapping[str, Any], content: str) -> str:
+    """Keep table citations outside the final GFM row so Markdown can render them."""
+    if (
+        _presentation_type(block.get("presentation_type")) == "table"
+        or _looks_like_markdown_table(content)
+    ):
+        return "\n\n"
+    return " "
 
 
 def _markdown_label(value: Any) -> str:
@@ -1314,7 +1483,11 @@ def render_structured_answer(
         ]
         rendered = _render_block_content(block, normalized)
         if missing_markers:
-            rendered = rendered.rstrip() + " " + " ".join(missing_markers)
+            rendered = (
+                rendered.rstrip()
+                + _citation_separator(block, normalized)
+                + " ".join(missing_markers)
+            )
         if lines and lines[-1] and not lines[-1].startswith("## "):
             lines.append("")
         if content:
@@ -1400,8 +1573,10 @@ def structured_answer_display_parts(
             ids = _resolved_ids(raw_ids, available)
             rendered = _render_block_content(block, normalized)
             if ids:
-                rendered = rendered.rstrip() + " " + " ".join(
-                    f"【证据 {evidence_id}】" for evidence_id in ids
+                rendered = (
+                    rendered.rstrip()
+                    + _citation_separator(block, normalized)
+                    + " ".join(f"【证据 {evidence_id}】" for evidence_id in ids)
                 )
             if lines and lines[-1]:
                 lines.append("")

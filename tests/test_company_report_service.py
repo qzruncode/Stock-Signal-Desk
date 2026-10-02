@@ -215,6 +215,9 @@ def test_import_revalidates_candidate_and_persists_source_metadata(tmp_path, mon
         "source_provider": "RSSHub/深交所",
     }
     class FakeRagService:
+        def list_documents(self, *_args, **_kwargs):
+            return []
+
         def assert_knowledge_base(self, *_args, **_kwargs):
             return {"id": "kb-1", "name": "研究资料"}
 
@@ -263,6 +266,7 @@ def test_import_revalidates_candidate_and_persists_source_metadata(tmp_path, mon
 
 def test_import_rejects_forged_or_stale_candidate_before_downloading(monkeypatch) -> None:
     company = _company()
+    monkeypatch.setattr(reports, "existing_company_financial_report", lambda **_kwargs: None)
     monkeypatch.setattr(reports, "_resolve_company", lambda _query: company)
     monkeypatch.setattr(reports, "_report_candidates", lambda _company: [])
     with pytest.raises(reports.CompanyReportError) as error:

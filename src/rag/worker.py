@@ -130,7 +130,6 @@ def _runtime_model_config() -> dict[str, str]:
         "RAG_EMBEDDING_MODEL_ID",
         "RAG_EMBEDDING_MODEL_REVISION",
         "RAG_VECTOR_DIMENSION",
-        "RAG_MODEL_TIMEOUT_SECONDS",
     ):
         if key in os.environ:
             values[key] = str(os.environ[key])
@@ -618,7 +617,7 @@ def _process_ingest(payload: dict[str, Any], task_id: str) -> None:
             base_url=str(config.get("RAG_EMBEDDING_BASE_URL") or DEFAULT_EMBEDDING_BASE_URL),
             model=model,
             dimension=dimension,
-            timeout=float(config.get("RAG_MODEL_TIMEOUT_SECONDS") or 300),
+            timeout=None,
         )
         _update_task(task_id, stage="embedding", progress=35)
         vectors: list[list[float]] = []

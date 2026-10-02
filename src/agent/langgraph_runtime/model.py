@@ -1,4 +1,4 @@
-"""LangChain chat-model adapter over the application's guarded LiteLLM client.
+"""LangChain Anthropic chat adapter over the application's guarded runtime.
 
 The application keeps its existing provider accounting, retry, circuit-breaker,
 and lease logic.  This adapter only translates the standard LangChain message
@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Sequence
 from operator import itemgetter
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, ClassVar, Mapping
 
-from langchain_core.language_models.chat_models import BaseChatModel, agenerate_from_stream
-from langchain_core.messages import AIMessageChunk, BaseMessage, convert_to_openai_messages
+from anthropic import omit
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models.chat_models import agenerate_from_stream
+from langchain_core.messages import BaseMessage, convert_to_openai_messages
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.output_parsers.openai_tools import (
     JsonOutputKeyToolsParser,
@@ -25,136 +27,13 @@ from langchain_core.runnables import RunnableMap, RunnablePassthrough
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_core.utils.pydantic import is_basemodel_subclass
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from src.agent.model_runtime import GuardedModelRuntime
-from src.llm.anthropic_gateway import build_litellm_kwargs
 
 
-def _field(value: Any, name: str) -> Any:
-    return value.get(name) if isinstance(value, Mapping) else getattr(value, name, None)
-
-
-def _content(value: Any) -> str | list[dict[str, Any]]:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return [dict(item) if isinstance(item, Mapping) else {"type": "text", "text": str(item)} for item in value]
-    if value is None:
-        return ""
-    return str(value)
-
-
-def _response_metadata(response: Any) -> dict[str, Any]:
-    choice = next(iter(_field(response, "choices") or []), None)
-    usage = _field(response, "usage") or {}
-    return {
-        "model": str(_field(response, "model") or ""),
-        "model_name": str(_field(response, "model") or ""),
-        "finish_reason": str(_field(choice, "finish_reason") or ""),
-        "usage": {
-            key: _field(usage, key)
-            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-            if _field(usage, key) is not None
-        },
-    }
-
-
-def _usage_metadata(response: Any) -> dict[str, Any] | None:
-    usage = _field(response, "usage")
-    if usage is None or _field(usage, "prompt_tokens") is None or _field(usage, "completion_tokens") is None:
-        return None
-    try:
-        inputs, outputs = int(_field(usage, "prompt_tokens")), int(_field(usage, "completion_tokens"))
-        total = int(_field(usage, "total_tokens") or inputs + outputs)
-    except (TypeError, ValueError):
-        return None
-    if min(inputs, outputs, total) < 0:
-        return None
-    result: dict[str, Any] = {
-        "input_tokens": inputs, "output_tokens": outputs,
-        "total_tokens": total,
-    }
-    details = _field(usage, "prompt_tokens_details") or {}
-    cached = _field(details, "cached_tokens")
-    if isinstance(cached, int) and cached >= 0:
-        result["input_token_details"] = {"cache_read": cached}
-    reasoning = _field(_field(usage, "completion_tokens_details") or {}, "reasoning_tokens")
-    if isinstance(reasoning, int) and reasoning >= 0:
-        result["output_token_details"] = {"reasoning": reasoning}
-    return result
-
-
-def _tool_call_chunks(value: Any) -> list[dict[str, Any]]:
-    """Translate provider tool-call deltas to LangChain's standard chunks."""
-    chunks: list[dict[str, Any]] = []
-    for position, raw_call in enumerate(value or []):
-        function = _field(raw_call, "function") or {}
-        name = _field(function, "name") or _field(raw_call, "name")
-        arguments = _field(function, "arguments")
-        if arguments is None:
-            arguments = _field(raw_call, "arguments")
-        if isinstance(arguments, Mapping):
-            arguments = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
-        raw_index = _field(raw_call, "index")
-        try:
-            index = int(raw_index) if raw_index is not None else position
-        except (TypeError, ValueError):
-            index = position
-        chunks.append(
-            {
-                "name": str(name) if name else None,
-                "args": str(arguments) if arguments is not None else "",
-                "id": str(_field(raw_call, "id")) if _field(raw_call, "id") else None,
-                "index": index,
-            }
-        )
-    return chunks
-
-
-def _generation_chunk(response: Any) -> ChatGenerationChunk:
-    """Map one LiteLLM/OpenAI stream item to a native LangChain chunk.
-
-    LiteLLM returns OpenAI-compatible objects, but different providers expose
-    them as dictionaries or pydantic objects and may put reasoning in either
-    ``reasoning_content`` or ``reasoning``.  Keeping this translation at the
-    model adapter boundary lets LangGraph and LangChain use their normal
-    streaming/callback machinery without an application-specific stream
-    protocol.
-    """
-    choices = _field(response, "choices") or []
-    choice = next(iter(choices), None)
-    delta = _field(choice, "delta")
-    message = _field(choice, "message") if delta is None else None
-    payload = delta if delta is not None else (message or {})
-    reasoning = _field(payload, "reasoning_content") or _field(payload, "reasoning")
-    additional_kwargs: dict[str, Any] = {}
-    if reasoning:
-        additional_kwargs["reasoning_content"] = str(reasoning)
-
-    raw_calls = _field(payload, "tool_calls")
-    tool_call_chunks = _tool_call_chunks(raw_calls)
-    # A non-stream response can still be returned by a proxy that ignores
-    # ``stream=true``.  Convert its complete tool calls to the same chunk
-    # representation so the standard LangChain merge path remains valid.
-    if not tool_call_chunks and message is not None:
-        tool_call_chunks = _tool_call_chunks(_field(message, "tool_calls"))
-
-    metadata = _response_metadata(response)
-    chunk_id = _field(response, "id") or _field(payload, "id")
-    ai_chunk = AIMessageChunk(
-        content=_content(_field(payload, "content")),
-        additional_kwargs=additional_kwargs,
-        response_metadata=metadata,
-        id=str(chunk_id) if chunk_id else None,
-        tool_call_chunks=tool_call_chunks,
-        usage_metadata=_usage_metadata(response),
-    )
-    return ChatGenerationChunk(message=ai_chunk)
-
-
-class LiteLLMGateway:
-    """Run-scoped access to LiteLLM through the existing safety boundary."""
+class GuardedModelGateway:
+    """Run-scoped provider capacity and accounting for chat model calls."""
 
     def __init__(
         self,
@@ -163,12 +42,8 @@ class LiteLLMGateway:
         database: Any | None,
         run_id: str,
         worker_id: str,
-        completion: Callable[..., Awaitable[Any]] | None = None,
-        request_timeout_seconds: float | None = None,
-        stream_idle_timeout_seconds: float | None = None,
     ) -> None:
         self.llm_config = dict(llm_config)
-        self._completion = completion
         configured_model = str(self.llm_config.get("model") or "").strip()
         if not configured_model:
             raise ValueError("model must be provided by the configured model settings")
@@ -188,46 +63,119 @@ class LiteLLMGateway:
             worker_id=worker_id,
             model=configured_model,
             token_estimator=estimate,
-            request_timeout_seconds=request_timeout_seconds,
-            stream_idle_timeout_seconds=stream_idle_timeout_seconds,
         )
 
-    async def complete(self, **kwargs: Any) -> Any:
-        completion = self._completion
-        if completion is None:
-            import litellm
-
-            completion = litellm.acompletion
+    async def complete(
+        self,
+        completion: Callable[..., Awaitable[Any]],
+        **kwargs: Any,
+    ) -> Any:
         return await self.runtime.complete(completion, **kwargs)
 
 
-class LiteLLMChatModel(BaseChatModel):
-    """A native async chat model that speaks LangChain's tool protocol."""
+_NO_CHUNK = object()
 
-    gateway: LiteLLMGateway = Field(exclude=True)
+
+class _PrefetchedAsyncIterator:
+    """Replay the first provider chunk after starting a guarded stream."""
+
+    def __init__(self, iterator: AsyncIterator[Any], first: Any = _NO_CHUNK) -> None:
+        self._iterator = iterator
+        self._first = first
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._first is not _NO_CHUNK:
+            first, self._first = self._first, _NO_CHUNK
+            return first
+        return await anext(self._iterator)
+
+    async def aclose(self) -> None:
+        closer = getattr(self._iterator, "aclose", None)
+        if callable(closer):
+            await closer()
+
+
+class GuardedAnthropicChatModel(ChatAnthropic):
+    """LangChain's Anthropic adapter with explicit no-timeout transport."""
+
+    gateway: GuardedModelGateway = Field(exclude=True)
     llm_config: dict[str, Any] = Field(default_factory=dict, exclude=True)
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
 
     # Planning needs a provider-independent function-call contract.  The
     # standard BaseChatModel implementation only accepts ``method`` and
     # ``strict`` as extra arguments, so expose the small extension used by the
     # coordinator without making the rest of the LangChain model API custom.
-    supports_exact_structured_output: bool = Field(default=True, exclude=True)
+    supports_exact_structured_output: ClassVar[bool] = True
 
-    @property
-    def _llm_type(self) -> str:
-        return "application_litellm"
+    @model_validator(mode="before")
+    @classmethod
+    def set_default_max_tokens(cls, values: Any) -> Any:
+        """Do not inherit LangChain's fallback generation cap for our gateway.
 
-    @property
-    def _identifying_params(self) -> dict[str, Any]:
-        return {"model": str(self.llm_config.get("model") or "")}
+        The configured Anthropic-compatible gateway accepts an omitted output
+        limit. An explicitly supplied limit remains opt-in; neither the input
+        headroom estimate nor an unknown model profile sets a generation cap.
+        """
+        return values
+
+    def __init__(
+        self,
+        *,
+        gateway: GuardedModelGateway,
+        llm_config: Mapping[str, Any],
+        **kwargs: Any,
+    ) -> None:
+        config = dict(llm_config)
+        model_name = str(config.get("model") or "").strip()
+        if not model_name:
+            raise ValueError("model must be provided by the configured model settings")
+        super().__init__(
+            gateway=gateway,
+            llm_config=config,
+            model_name=model_name,
+            api_key=str(config.get("api_key") or ""),
+            base_url=str(config.get("api_base") or ""),
+            default_headers=dict(config.get("extra_headers") or {}),
+            max_tokens=config.get("max_tokens"),
+            temperature=config.get("temperature", 0.1),
+            output_config=config.get("output_config"),
+            # Explicit None disables the Anthropic SDK's transport timeout.
+            # Retry behavior stays in GuardedModelRuntime.
+            timeout=None,
+            max_retries=0,
+            **kwargs,
+        )
+
+    def _get_request_payload(self, input_: Any, *, stop: list[str] | None = None, **kwargs: Any) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # The SDK requires the Python keyword even when the compatible
+        # gateway permits omission in JSON. Its native sentinel removes the
+        # field on the wire, rather than replacing it with another fixed cap.
+        payload.setdefault("max_tokens", omit)
+        return payload
+
+    def _runtime_request(
+        self,
+        messages: Sequence[BaseMessage],
+        kwargs: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        allowance = kwargs.get("max_tokens", self.max_tokens)
+        max_tokens = int(allowance) if allowance else None
+        return {
+            "messages": convert_to_openai_messages(list(messages)),
+            "max_tokens": max_tokens,
+        }
 
     def get_num_tokens_from_messages(
         self,
         messages: Sequence[BaseMessage],
         tools: Sequence[Any] | None = None,
     ) -> int:
-        """Count the same OpenAI-compatible payload used by the gateway."""
+        """Use LiteLLM token accounting with a LangChain approximation fallback."""
         payload = convert_to_openai_messages(messages)
         tool_payload = None
         if tools:
@@ -258,20 +206,18 @@ class LiteLLMChatModel(BaseChatModel):
         tool_choice: Any | None = None,
         **kwargs: Any,
     ) -> Any:
-        formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
-        # Match LangChain's OpenAI-compatible adapter contract: ToolStrategy
-        # uses "any", whereas the provider API uses "required". Passing "any"
-        # through makes required structured output provider-dependent.
-        if tool_choice is True or tool_choice == "any":
-            tool_choice = "required"
+        if tool_choice is True or (
+            isinstance(tool_choice, str) and tool_choice in {"any", "required"}
+        ):
+            tool_choice = "any"
         elif tool_choice is False:
             tool_choice = None
-        elif isinstance(tool_choice, str) and tool_choice in {
-            tool.get("function", {}).get("name") for tool in formatted_tools
-        }:
-            tool_choice = {"type": "function", "function": {"name": tool_choice}}
-        return self.bind(
-            tools=formatted_tools,
+        elif isinstance(tool_choice, Mapping) and tool_choice.get("type") == "function":
+            function = tool_choice.get("function")
+            if isinstance(function, Mapping) and function.get("name"):
+                tool_choice = {"type": "tool", "name": str(function["name"])}
+        return super().bind_tools(
+            tools,
             tool_choice=tool_choice,
             **kwargs,
         )
@@ -283,37 +229,43 @@ class LiteLLMChatModel(BaseChatModel):
         include_raw: bool = False,
         **kwargs: Any,
     ) -> Any:
-        """Use LangChain's native tool parser with an exact tool contract.
-
-        The application gateway is OpenAI-compatible, but it is not listed in
-        LiteLLM's static capability table.  We therefore keep the standard
-        LangChain parser and make the transport explicit at this adapter
-        boundary: callers may select the exact schema tool and request a
-        non-streaming response.  ``include_raw`` is important for Planning so
-        a missing tool call is diagnosable instead of becoming ``None``.
-        """
-        _ = kwargs.pop("method", None)
-        _ = kwargs.pop("strict", None)
-        tool_choice = kwargs.pop("tool_choice", "any")
+        """Use LangChain's tool parser with the native Anthropic request shape."""
+        method = kwargs.pop("method", None)
+        strict = kwargs.pop("strict", None)
+        tool_choice = kwargs.pop("tool_choice", None)
         stream = kwargs.pop("stream", None)
+        if method not in {None, "function_calling"}:
+            raise ValueError("the configured Anthropic-compatible gateway uses function calling")
         if kwargs:
             raise ValueError(f"Received unsupported arguments {kwargs}")
 
         tool_schema = convert_to_openai_tool(schema)
         tool_name = tool_schema["function"]["name"]
         bound_kwargs: dict[str, Any] = {
-            "tool_choice": tool_choice,
+            "tool_choice": tool_choice or tool_name,
             "parallel_tool_calls": False,
             "ls_structured_output_format": {
                 "kwargs": {"method": "function_calling"},
                 "schema": schema,
             },
         }
+        if strict is not None:
+            # Use the installed Anthropic adapter's schema conversion. It
+            # marks every tool field required instead of silently accepting
+            # provider omissions through Pydantic defaults.
+            bound_kwargs["strict"] = strict
         if stream is not None:
             # This private kwarg is consumed by _agenerate/_astream and never
             # leaks into the provider payload as an unknown option.
             bound_kwargs["_stream"] = bool(stream)
-        llm = self.bind_tools([schema], **bound_kwargs)
+        contract_model = self
+        if stream is False:
+            # LangGraph's message callback can implicitly select _astream
+            # before _agenerate sees our private _stream flag. The native
+            # hard opt-out applies to both callback protocols; copying keeps
+            # ordinary chat streaming enabled on the run-scoped model.
+            contract_model = self.model_copy(update={"disable_streaming": True})
+        llm = contract_model.bind_tools([schema], **bound_kwargs)
 
         if isinstance(schema, type) and is_basemodel_subclass(schema):
             output_parser = PydanticToolsParser(tools=[schema], first_tool_only=True)
@@ -341,32 +293,7 @@ class LiteLLMChatModel(BaseChatModel):
         run_manager: Any | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        raise NotImplementedError("LiteLLMChatModel is async-only")
-
-    def _request(
-        self,
-        messages: list[BaseMessage],
-        *,
-        stream: bool,
-        stop: list[str] | None,
-        kwargs: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        """Build the provider request once for both invoke and stream paths."""
-        options = dict(kwargs)
-        request: dict[str, Any] = {
-            "stream": stream,
-            "messages": convert_to_openai_messages(messages),
-            "temperature": options.pop("temperature", self.llm_config.get("temperature", 0.1)),
-            "max_tokens": int(options.pop("max_tokens", self.llm_config.get("max_tokens", 8_000))),
-        }
-        if stream:
-            request["stream_options"] = {"include_usage": True}
-        if stop:
-            request["stop"] = stop
-        for field in ("tools", "tool_choice", "parallel_tool_calls", "response_format"):
-            if field in options and options[field] is not None:
-                request[field] = options[field]
-        return request
+        raise NotImplementedError("GuardedAnthropicChatModel is async-only")
 
     async def _astream(
         self,
@@ -375,51 +302,40 @@ class LiteLLMChatModel(BaseChatModel):
         run_manager: Any | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        """Use LangChain's standard async stream contract over LiteLLM.
-
-        ``BaseChatModel.astream`` owns callback dispatch.  ``_agenerate``
-        below dispatches the same callbacks for LangGraph's native
-        ``model.ainvoke`` path, which is why graph ``messages`` streaming and
-        ordinary LangChain streaming observe the same chunks.
-        """
+        """Stream with no application or HTTP-client response deadline."""
         del run_manager
-        stream = bool(kwargs.pop("_stream", True))
-        request = self._request(messages, stream=stream, stop=stop, kwargs=kwargs)
-        response = await self.gateway.complete(
-            **build_litellm_kwargs(self.llm_config, **request)
-        )
-        if hasattr(response, "__aiter__"):
-            reported_usage = None
-            model_name = str(self.llm_config.get("model") or "")
-            model_emitted = False
-            try:
-                async for item in response:
-                    if item is not None:
-                        chunk = _generation_chunk(item)
-                        if chunk.message.usage_metadata is not None:
-                            reported_usage = chunk.message.usage_metadata
-                            chunk.message.usage_metadata = None
-                        model_name = str(_field(item, "model") or model_name)
-                        if model_emitted:
-                            chunk.message.response_metadata.pop("model_name", None)
-                        else:
-                            chunk.message.response_metadata["model_name"] = model_name
-                            model_emitted = True
-                        yield chunk
-                if reported_usage is not None:
-                    yield ChatGenerationChunk(message=AIMessageChunk(
-                        content="", usage_metadata=reported_usage,
-                    ))
-            finally:
-                closer = getattr(response, "aclose", None)
-                if callable(closer):
-                    await closer()
-            return
-        if response is not None:
-            chunk = _generation_chunk(response)
-            chunk.message.response_metadata["model_name"] = str(
-                _field(response, "model") or self.llm_config.get("model") or ""
+        options = dict(kwargs)
+        options.pop("_stream", None)
+        options.pop("stream", None)
+        options.pop("timeout", None)
+        provider_stream = super()._astream
+
+        async def start_stream(**_runtime_kwargs: Any) -> AsyncIterator[Any]:
+            iterator = provider_stream(
+                messages,
+                stop=stop,
+                run_manager=None,
+                **options,
             )
+            try:
+                first = await anext(iterator)
+            except StopAsyncIteration:
+                return _PrefetchedAsyncIterator(iterator)
+            return _PrefetchedAsyncIterator(iterator, first)
+
+        response = await self.gateway.complete(
+            start_stream,
+            **self._runtime_request(messages, options),
+        )
+        model_name_emitted = False
+        async for chunk in response:
+            metadata = getattr(chunk.message, "response_metadata", None)
+            if isinstance(metadata, dict):
+                if model_name_emitted:
+                    metadata.pop("model_name", None)
+                else:
+                    metadata.setdefault("model_name", self.model)
+                    model_name_emitted = True
             yield chunk
 
     async def _agenerate(
@@ -430,9 +346,32 @@ class LiteLLMChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         stream = bool(kwargs.pop("_stream", True))
+        kwargs.pop("stream", None)
+        kwargs.pop("timeout", None)
+
+        if not stream:
+            provider_call = super()._agenerate
+
+            async def complete(**_runtime_kwargs: Any) -> ChatResult:
+                result = await provider_call(
+                    messages,
+                    stop=stop,
+                    run_manager=run_manager,
+                    **kwargs,
+                )
+                for generation in result.generations:
+                    metadata = getattr(generation.message, "response_metadata", None)
+                    if isinstance(metadata, dict):
+                        metadata.setdefault("model_name", self.model)
+                return result
+
+            return await self.gateway.complete(
+                complete,
+                **self._runtime_request(messages, kwargs),
+            )
 
         async def callback_stream() -> AsyncIterator[ChatGenerationChunk]:
-            async for chunk in self._astream(messages, stop=stop, _stream=stream, **kwargs):
+            async for chunk in self._astream(messages, stop=stop, **kwargs):
                 if run_manager is not None:
                     await run_manager.on_llm_new_token(
                         chunk.message.content,
@@ -443,4 +382,4 @@ class LiteLLMChatModel(BaseChatModel):
         return await agenerate_from_stream(callback_stream())
 
 
-__all__ = ["LiteLLMChatModel", "LiteLLMGateway"]
+__all__ = ["GuardedAnthropicChatModel", "GuardedModelGateway"]

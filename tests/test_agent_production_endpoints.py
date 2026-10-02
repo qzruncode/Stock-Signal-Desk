@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import tool_registry_meta
+from api.v1.endpoints.agent import health
 import src.auth as auth
 
 
@@ -77,6 +79,39 @@ def test_deep_readiness_probe_is_explicit() -> None:
     assert "dependencies" not in shallow.json()["checks"]
     assert deep.json()["checks"]["dependencies"]["ok"] is True
     live_probe.assert_awaited_once_with()
+
+
+def test_live_model_health_probe_uses_anthropic_sdk_without_deadline() -> None:
+    observed = []
+
+    async def fake_ainvoke(model, messages, **kwargs):
+        observed.append((model, messages))
+        return object()
+
+    with (
+        patch.object(
+            health,
+            "_dependency_probe_cache",
+            {"checked_at": 0.0, "value": None},
+        ),
+        patch(
+            "src.llm.anthropic_gateway.resolve_anthropic_gateway_config",
+            return_value={
+                "model": "verified-model",
+                "api_key": "test-token",
+                "api_base": "https://gateway.example.test",
+                "extra_headers": {"authorization": "Bearer test-token"},
+            },
+        ),
+        patch("api.v1.endpoints.agent.health.ChatAnthropic.ainvoke", new=fake_ainvoke),
+    ):
+        result = asyncio.run(health._live_dependency_probe())
+
+    assert result["checks"]["model_provider"]["ok"] is True
+    model, messages = observed[0]
+    assert model.default_request_timeout is None
+    assert model.max_retries == 0
+    assert messages[0].content == "Reply with OK only."
 
 
 def test_tool_registry_is_read_only_and_exposes_execution_policy_metadata() -> None:

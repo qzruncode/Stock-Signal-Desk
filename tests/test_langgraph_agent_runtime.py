@@ -17,14 +17,17 @@ from pydantic import ConfigDict, Field
 from src.agent.langgraph_runtime.answer_contract import STRUCTURED_OUTPUT_TOOL_NAME
 from src.agent.langgraph_runtime.catalog import ToolCatalog
 from src.agent.langgraph_runtime.executor import action_fingerprint
+from src.agent.langgraph_runtime.events import GraphEventBridge
 from src.agent.langgraph_runtime.graph import DEFAULT_RESPONSE_FORMAT
 from src.agent.langgraph_runtime.middleware import (
+    OperationPolicyMiddleware,
     _failed_read_tool_call_keys,
     _source_fallback_reason,
     _tool_call_key,
     _user_requests_knowledge_base_only,
 )
 from src.agent.langgraph_runtime.reflection import ReflectionReview
+from src.agent.run_registry import RunBroadcaster
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 from src.tools.base import ToolSpec, object_schema
 from src.tools.registry import ToolRegistry
@@ -37,6 +40,7 @@ class ScriptedChatModel(BaseChatModel):
     responses: list[AIMessage] = Field(default_factory=list)
     calls: list[list[BaseMessage]] = Field(default_factory=list, exclude=True)
     call_options: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    structured_output_streams: list[bool | None] = Field(default_factory=list, exclude=True)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
@@ -45,6 +49,16 @@ class ScriptedChatModel(BaseChatModel):
 
     def bind_tools(self, tools: list[Any], *, tool_choice: Any | None = None, **kwargs: Any) -> Any:
         return self.bind(tools=tools, tool_choice=tool_choice, **kwargs)
+
+    def with_structured_output(
+        self,
+        schema: Any,
+        *,
+        stream: bool | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        self.structured_output_streams.append(stream)
+        return super().with_structured_output(schema, **kwargs)
 
     def _generate(self, *_args: Any, **_kwargs: Any) -> ChatResult:
         raise NotImplementedError("test model is async-only")
@@ -451,6 +465,157 @@ def test_native_general_answer_can_publish_without_external_evidence() -> None:
     asyncio.run(scenario())
 
 
+def test_direct_model_selects_a_contextual_pdf_query_without_entry_preretrieval() -> None:
+    async def scenario() -> None:
+        hit = {
+            "evidence_id": "ev_kb_level_0_page_14",
+            "filename": "Agentic_Design_Patterns_Complete.pdf",
+            "page_start": 14,
+            "page_end": 14,
+            "snippet": "Level 0 has a complete lack of current-event awareness.",
+            "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=14",
+        }
+        search_outcome = {
+            "success": True,
+            "data_time": None,
+            "source_refs": [hit["url"]],
+            "result": {"success": True, "results": [hit], "result_items": []},
+        }
+        question = "根据所选 PDF，解释 Level 0 缺少什么能力。"
+        model = ScriptedChatModel(responses=[
+            _named_tool_call(
+                "model-selected-pdf-search",
+                "search_knowledge_base",
+                {"query": "Level 0 current-event awareness limitation"},
+            ),
+            _structured_output_call(
+                "pdf-grounded-answer",
+                [{
+                    "kind": "fact",
+                    "content": "PDF指出，Level 0 缺乏对当前事件的感知。",
+                    "source_ids": [1],
+                }],
+                profile="general",
+            ),
+            _reflection_output_call("pdf-grounded-reflection"),
+        ])
+        result, executor = await _run(
+            model=model,
+            registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL),
+            executor=FakeAtomicExecutor({"search_knowledge_base": [search_outcome]}),
+            conversation_id="model-led-pdf-search",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            knowledge_base_ids=("kb-test",),
+            user_text=question,
+        )
+
+        assert result.status == "completed", (
+            result.error_code, result.final_text, result.state.get("terminal_detail")
+        )
+        assert len(executor.calls) == 1
+        assert executor.calls[0]["tool_name"] == "search_knowledge_base"
+        assert executor.calls[0]["arguments"]["query"] != question
+        assert executor.calls[0]["arguments"]["query"] == "Level 0 current-event awareness limitation"
+        assert "ev_kb_level_0_page_14" in result.final_text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("knowledge_base_ids", [(), ("kb-test",)])
+def test_greeting_does_not_create_a_knowledge_search(knowledge_base_ids) -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(responses=[
+            _structured_output_call("greeting", [{"kind": "answer", "content": "你好！"}], profile="general"),
+        ])
+        result, executor = await _run(
+            model=model,
+            registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL, _search_operation()),
+            conversation_id="greeting-with-tool-priority",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            knowledge_base_ids=knowledge_base_ids,
+            user_text="你好",
+        )
+        assert result.status == "completed"
+        assert result.final_text == "你好！"
+        assert executor.calls == []
+        names = {tool.name for tool in model.call_options[0]["tools"]}
+        assert ("search_knowledge_base" in names) is bool(knowledge_base_ids)
+        assert "search_source" in names
+        assert "首轮必须由你先作一次明确的来源决策" not in str(model.calls[0][0].content)
+
+    asyncio.run(scenario())
+
+
+def test_knowledge_selection_updates_model_source_decision_across_checkpoint_continuation() -> None:
+    async def scenario() -> None:
+        executor = FakeAtomicExecutor()
+        manager = LangGraphRuntimeManager(
+            registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL, _search_operation()), response_format=None,
+        )
+        await manager.start(testing=True)
+        try:
+            for turn, ids in enumerate([("kb-test",), (), ("kb-other",)], 1):
+                question = "你好" if turn == 1 else "谢谢"
+                model = ScriptedChatModel(responses=[AIMessage(content="你好！" if turn == 1 else "不客气。")])
+                result = await manager.run_new(
+                    messages=[{"role": "user", "content": question}], user_text=question,
+                    system_prompt="", llm_config={}, database=None, controller=None,
+                    run_id=f"kb-selection-{turn}", conversation_id="kb-selection-continuation",
+                    run_attempt=1, tenant_id="tenant", owner_id="owner",
+                    model=model, executor=executor, agent_mode="direct", history_mode="continue",
+                    knowledge_base_ids=ids,
+                )
+                assert result.status == "completed"
+                assert result.state["knowledge_base_ids"] == list(ids)
+                assert "首轮必须由你先作一次明确的来源决策" not in str(model.calls[0][0].content)
+                assert ("search_knowledge_base" in {t.name for t in model.call_options[0]["tools"]}) is bool(ids)
+            assert executor.calls == []
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("retrieval_success", [True, False])
+def test_knowledge_observation_returns_to_native_loop_for_model_selected_supplement(retrieval_success) -> None:
+    async def scenario() -> None:
+        retrieval = {
+            "success": retrieval_success,
+            "error_code": None if retrieval_success else "retrieval_timeout",
+            "errors": [] if retrieval_success else ["知识库检索超时"],
+            "result": {
+                "success": retrieval_success, "results": [], "no_evidence": True,
+                "error_code": None if retrieval_success else "retrieval_timeout",
+            },
+        }
+        model = ScriptedChatModel(responses=[
+            _named_tool_call("kb-probe", "search_knowledge_base", {"query": "新强联 经营风险"}),
+            _named_tool_call("external-probe", "search_source", {"source_id": "primary", "query": "新强联 风险披露"}),
+            AIMessage(content="已取得外部补充资料。【证据 ev_external-probe】"),
+        ])
+        result, executor = await _run(
+            model=model,
+            registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL, _search_operation()),
+            executor=FakeAtomicExecutor({"search_knowledge_base": [retrieval]}),
+            conversation_id=f"kb-supplement-{retrieval_success}",
+            knowledge_base_ids=("kb-test",),
+            user_text="看下新强联的财报",
+        )
+        assert result.status == "completed", result.final_text
+        assert [call["tool_name"] for call in executor.calls] == ["search_knowledge_base", "search_source"]
+        assert result.state["tool_results"][0]["success"] is retrieval_success
+        assert result.state["tool_results"][0]["error_code"] == retrieval["error_code"]
+        assert {tool.name for tool in model.call_options[0]["tools"]} == {
+            "search_knowledge_base", "search_source"
+        }
+        for options in model.call_options[1:]:
+            assert {tool.name for tool in options["tools"]} == {"search_knowledge_base", "search_source"}
+            assert options["tool_choice"] != "required"
+        assert any(isinstance(message, ToolMessage) for message in model.calls[1])
+
+    asyncio.run(scenario())
+
+
 def test_unresolved_source_failure_cannot_end_without_a_bounded_web_fallback() -> None:
     async def scenario() -> None:
         model = ScriptedChatModel(
@@ -758,6 +923,42 @@ def test_structured_terminal_candidate_cannot_bypass_source_fallback_gate() -> N
     asyncio.run(scenario())
 
 
+def test_source_fallback_does_not_stream_an_unverified_structured_candidate() -> None:
+    run_id = "source-fallback-rejects-structured-candidate"
+    broadcaster = RunBroadcaster(run_id=run_id)
+    events = GraphEventBridge(broadcaster, run_id=run_id)
+    malformed_table = "| 指标 | 2026H1 | 同比变化 | 是否含营业外收支 | 是否含营业外收支 |"
+    candidate = {
+        "profile": "research",
+        "title": "新强联运营分析",
+        "blocks": [
+            {
+                "kind": "fact",
+                "presentation_type": "table",
+                "content": malformed_table,
+                "source_ids": [],
+            }
+        ],
+    }
+
+    update = OperationPolicyMiddleware._source_fallback_partial(
+        state={"evidence": [], "tool_results": []},
+        context=SimpleNamespace(events=events),
+        last=AIMessage(content=""),
+        requirements=[{
+            "tool_name": "read_core_financial_indicators_ths",
+            "reason": "主来源调用失败",
+        }],
+        candidate=candidate,
+    )
+
+    assert update["status"] == "partial"
+    assert update["structured_answer"] is None
+    assert "未能取得支持本次分析的有效外部数据" in update["answer_final"]
+    assert "是否含营业外收支" not in broadcaster.assistant_text_snapshot
+    assert "未能取得支持本次分析的有效外部数据" in broadcaster.assistant_text_snapshot
+
+
 def test_partial_source_result_requires_web_fallback_when_no_declared_fallback_was_used() -> None:
     spec = _search_operation(category="source_read")
 
@@ -871,7 +1072,10 @@ def test_research_judgment_runs_reflection_after_hard_evidence_checks() -> None:
             response_format=DEFAULT_RESPONSE_FORMAT,
         )
 
-        assert result.status == "completed"
+        assert result.status == "completed", (
+            f"error_code={result.error_code!r}, reflection={result.state.get('reflection_review')!r}, "
+            f"reflection_status={result.state.get('reflection_status')!r}"
+        )
         assert result.error_code is None
         assert result.state["reflection_status"] == "passed"
         assert result.state["reflection_call_count"] == 1
@@ -881,6 +1085,7 @@ def test_research_judgment_runs_reflection_after_hard_evidence_checks() -> None:
             item for item in result.stage_history or [] if item["stage"] == "reflection"
         ]
         assert reflection[-1]["details"]["verdict"] == "pass"
+        assert model.structured_output_streams[-1] is False
 
     asyncio.run(scenario())
 
@@ -959,6 +1164,205 @@ def test_reflection_revision_is_one_no_tool_structured_rewrite_then_rechecked() 
             and item.get("details", {}).get("reflection_status") == "revision_requested"
             for item in result.stage_history or []
         )
+
+    asyncio.run(scenario())
+
+
+def test_failed_reflection_rewrite_keeps_previous_low_risk_validated_answer() -> None:
+    async def scenario() -> None:
+        complete_content = (
+            "新强联2026年半年度报告（第7页）：营业收入本期 2,073,339,945.39 元，"
+            "同比 -6.17%；归母净利润本期 411,334,427.09 元，同比 +2.93%。"
+        )
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("reflection-fallback-read", "primary"),
+                _structured_output_call(
+                    "reflection-fallback-candidate",
+                    [{"kind": "inference", "content": complete_content, "source_ids": [1]}],
+                    profile="research",
+                ),
+                _reflection_output_call(
+                    "reflection-fallback-request",
+                    verdict="revise",
+                    summary="仅有一处低严重度表述需要收窄。",
+                    issues=[
+                        {
+                            "block_index": 1,
+                            "category": "evidence_scope",
+                            "severity": "low",
+                            "reason": "页内表格标题未在命中内容中明确出现。",
+                            "repair_instruction": "改称第7页表格，保留已核验数据。",
+                        }
+                    ],
+                ),
+                _structured_output_call(
+                    "reflection-fallback-incomplete-rewrite",
+                    [{"kind": "inference", "content": "| 指标 | 本报告期 | 同比 |", "source_ids": [1]}],
+                    profile="research",
+                ),
+                _reflection_output_call(
+                    "reflection-fallback-reject-incomplete",
+                    verdict="revise",
+                    summary="改写稿只剩表头，遗漏用户所问数据。",
+                    issues=[
+                        {
+                            "block_index": 1,
+                            "category": "completeness",
+                            "severity": "high",
+                            "reason": "没有数据行。",
+                            "repair_instruction": "补回完整数据。",
+                        }
+                    ],
+                ),
+            ]
+        )
+
+        result, _executor = await _run(
+            model=model,
+            conversation_id="reflection-low-risk-fallback",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "partial", (
+            f"reflection_status={result.state.get('reflection_status')!r}, "
+            f"revision_count={result.state.get('reflection_revision_count')!r}, "
+            f"review={result.state.get('reflection_review')!r}, "
+            f"model_calls={len(model.calls)}"
+        )
+        assert result.error_code == "reflection_revision_exhausted"
+        assert result.state["structured_answer"]["blocks"][0]["content"] == complete_content
+        assert "2,073,339,945.39" in result.final_text
+        assert "411,334,427.09" in result.final_text
+        assert "| 指标 | 本报告期 | 同比 |" not in result.final_text
+        assert "回退到修订前通过格式与证据硬校验的完整答复" in result.final_text
+
+    asyncio.run(scenario())
+
+
+def test_low_severity_quoted_phrase_repair_preserves_the_validated_answer() -> None:
+    async def scenario() -> None:
+        complete_content = (
+            "营业收入本期 2,073,339,945.39 元，同比 -6.17%；"
+            "归母净利润本期 411,334,427.09 元，同比 +2.93%。"
+            "口径为合并报表归属于上市公司股东的净利润，数据见第7页。"
+        )
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("reflection-local-repair-read", "primary"),
+                _structured_output_call(
+                    "reflection-local-repair-candidate",
+                    [{"kind": "inference", "content": complete_content, "source_ids": [1]}],
+                    profile="research",
+                ),
+                _reflection_output_call(
+                    "reflection-local-repair-request",
+                    verdict="revise",
+                    summary="仅一个低严重度短语超出原文。",
+                    issues=[
+                        {
+                            "block_index": 1,
+                            "category": "evidence_scope",
+                            "severity": "low",
+                            "reason": "证据未说明合并口径。",
+                            "repair_instruction": "删除“合并报表”字样，保留其余内容。",
+                        }
+                    ],
+                ),
+                _reflection_output_call("reflection-local-repair-pass"),
+            ]
+        )
+
+        result, _executor = await _run(
+            model=model,
+            conversation_id="reflection-exact-local-repair",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            user_text="查询新强联2026年半年度报告营业收入和归母净利润",
+        )
+
+        assert result.status == "completed"
+        assert result.state["reflection_status"] == "passed"
+        assert result.state["reflection_call_count"] == 2
+        assert result.state["reflection_revision_count"] == 1
+        assert len(model.calls) == 4
+        assert model.structured_output_streams == [False, False]
+        assert "2,073,339,945.39" in result.final_text
+        assert "411,334,427.09" in result.final_text
+        assert "合并报表" not in result.final_text
+        assert "归属于上市公司股东的净利润" in result.final_text
+
+    asyncio.run(scenario())
+
+
+def test_low_severity_exact_literal_repair_preserves_complete_research_answer() -> None:
+    async def scenario() -> None:
+        table = (
+            "| 项目 | 本报告期 | 同比 | 页码 |\n|---|---:|---:|---|\n"
+            "| 营业收入 | 2,073,339,945.39 元 | -6.17% | 第7页 |\n"
+            "| 归母净利润 | 411,334,427.09 元 | +2.93% | 第7页 |\n"
+            "| 经营现金流 | 363,763,010.34 元 | +275.77% | 第7页 |"
+        )
+        note = (
+            "口径说明：第55/56页现金流量表中的母公司经营活动现金流量净额为 "
+            "271,351,507.32 元，属母公司口径、未采用。"
+        )
+        complete_content = f"{table}\n\n{note}"
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("reflection-page-repair-read", "primary"),
+                _structured_output_call(
+                    "reflection-page-repair-candidate",
+                    [
+                        {
+                            "kind": "inference",
+                            "content": complete_content,
+                            "source_ids": [1],
+                        }
+                    ],
+                    profile="research",
+                ),
+                _reflection_output_call(
+                    "reflection-page-repair-request",
+                    verdict="revise",
+                    summary="数值与页码准确，仅一处口径说明页码不够精确。",
+                    issues=[
+                        {
+                            "block_index": 1,
+                            "category": "evidence_scope",
+                            "severity": "low",
+                            "reason": "第55页为合并表，第56页才是母公司现金流量表。",
+                            "repair_instruction": (
+                                "将口径说明中的“第55/56页现金流量表”改为“第56页母公司现金流量表”，"
+                                "保留 271,351,507.32 元及母公司口径说明。"
+                            ),
+                        }
+                    ],
+                ),
+                _reflection_output_call("reflection-page-repair-pass"),
+            ]
+        )
+
+        result, _executor = await _run(
+            model=model,
+            conversation_id="reflection-exact-page-repair",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            user_text="核对新强联半年报经营现金流数据及页码",
+        )
+
+        expected_content = complete_content.replace(
+            "第55/56页现金流量表", "第56页母公司现金流量表"
+        )
+        assert result.status == "completed"
+        assert result.state["reflection_status"] == "passed"
+        assert result.state["reflection_revision_count"] == 1
+        assert len(model.calls) == 4
+        assert result.state["structured_answer"]["blocks"][0]["content"] == expected_content
+        assert "2,073,339,945.39 元" in result.final_text
+        assert "411,334,427.09 元" in result.final_text
+        assert "363,763,010.34 元" in result.final_text
+        assert "第56页母公司现金流量表" in result.final_text
+        assert "第55/56页现金流量表" not in result.final_text
+        assert "271,351,507.32 元，属母公司口径、未采用" in result.final_text
 
     asyncio.run(scenario())
 
@@ -1111,8 +1515,8 @@ def test_exhausted_pdf_page_citation_repair_does_not_publish_mismatched_answer()
             }
         ]
         model = ScriptedChatModel(responses=[
+            _named_tool_call("rag-search-1", "search_knowledge_base", {"query": "Level 0 current events"}),
             _structured_output_call("rag-answer-1", invalid_answer, profile="general"),
-            _named_tool_call("rag-search-2", "search_knowledge_base", {"query": "Level 0 current events"}),
             _structured_output_call("rag-answer-2", invalid_answer, profile="general"),
             _structured_output_call("rag-answer-3", invalid_answer, profile="general"),
         ])
@@ -1134,7 +1538,81 @@ def test_exhausted_pdf_page_citation_repair_does_not_publish_mismatched_answer()
         assert len(final_blocks) == 1
         assert final_blocks[0]["kind"] == "disclaimer"
         assert final_blocks[0]["evidence_ids"] == []
-        assert sum(call["tool_name"] == "search_knowledge_base" for call in executor.calls) == 2
+        assert sum(call["tool_name"] == "search_knowledge_base" for call in executor.calls) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("presentation_type", ["markdown", "table"])
+def test_exhausted_pdf_repair_keeps_verified_block_and_omits_unverified_history(
+    monkeypatch: pytest.MonkeyPatch, presentation_type: str,
+) -> None:
+    monkeypatch.setenv("AGENT_EVIDENCE_REPAIR_LIMIT", "1")
+
+    async def scenario() -> None:
+        hit = {
+            "evidence_id": "ev_kb_cover_page",
+            "page_start": 1,
+            "page_end": 1,
+            "filename": "新强联2026年半年度报告.pdf",
+            "snippet": "公司全称：洛阳新强联回转支承股份有限公司。本报告期为2026年半年度。",
+            "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=1",
+        }
+        search_outcome = {
+            "success": True,
+            "data_time": None,
+            "source_refs": [hit["url"]],
+            "result": {"success": True, "results": [hit], "result_items": []},
+        }
+        mixed_blocks = [
+            {
+                "section": "报告封面",
+                "kind": "fact",
+                "content": "公司全称为洛阳新强联回转支承股份有限公司，见 PDF 第 1 页。",
+                "source_ids": [1],
+            },
+            {
+                "section": "补充说明",
+                "kind": "fact",
+                "content": "光合作用是植物将光能转化为化学能的过程。",
+                "source_ids": [],
+            },
+        ]
+        if presentation_type == "table":
+            mixed_blocks[0].update({
+                "presentation_type": "table",
+                "content": "| 指标 | 内容 |\n| --- | --- |\n| 公司全称 | 洛阳新强联回转支承股份有限公司，PDF 第 1 页 |",
+            })
+        model = ScriptedChatModel(responses=[
+            _named_tool_call("pdf-search", "search_knowledge_base", {"query": "报告封面 公司全称"}),
+            _structured_output_call("mixed-pdf-answer", mixed_blocks, profile="general", title="报告分析"),
+            # A regressed repair must not erase a previously verified block.
+            _structured_output_call("mixed-pdf-answer-repair", [mixed_blocks[1]], profile="general"),
+        ])
+        result, executor = await _run(
+            model=model,
+            registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL),
+            executor=FakeAtomicExecutor({"search_knowledge_base": [search_outcome]}),
+            conversation_id="rag-retain-verified-block",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            knowledge_base_ids=("kb-test",),
+            user_text="根据所选 PDF，报告封面上的公司全称是什么？请给出页码。",
+        )
+        assert result.status == "partial"
+        assert result.error_code == "evidence_link_incomplete"
+        assert "洛阳新强联回转支承股份有限公司" in result.final_text
+        assert "PDF 第 1 页" in result.final_text
+        assert "【证据 ev_kb_cover_page】" in result.final_text
+        assert "光合作用" not in result.final_text
+        assert "未通过校验的回答区块已省略" in result.final_text
+        final_blocks = result.state["structured_answer"]["blocks"]
+        assert result.state["structured_answer"]["title"] == "报告分析"
+        assert [block["kind"] for block in final_blocks] == ["fact", "disclaimer"]
+        final_claims = result.state["claim_evidence"]
+        assert all("光合作用" not in claim["text"] for claim in final_claims)
+        verified_claim = next(claim for claim in final_claims if "公司全称" in claim["text"])
+        assert all(value is True for value in verified_claim["checks"].values())
+        assert sum(call["tool_name"] == "search_knowledge_base" for call in executor.calls) == 1
 
     asyncio.run(scenario())
 
@@ -1209,10 +1687,7 @@ def test_pdf_absence_disclaimer_drops_unrelated_lexical_hit_citation() -> None:
         final_block = result.state["structured_answer"]["blocks"][0]
         assert final_block["source_ids"] == []
         assert final_block["evidence_ids"] == []
-        assert [call["tool_name"] for call in executor.calls] == [
-            "search_knowledge_base",
-            "search_knowledge_base",
-        ]
+        assert [call["tool_name"] for call in executor.calls] == ["search_knowledge_base"]
         assert all(
             {tool.name for tool in call["tools"]}.issubset({"search_knowledge_base", STRUCTURED_OUTPUT_TOOL_NAME})
             for call in model.call_options
@@ -1224,17 +1699,29 @@ def test_pdf_absence_disclaimer_drops_unrelated_lexical_hit_citation() -> None:
 @pytest.mark.parametrize(
     ("user_text", "expected"),
     [
-        ("根据所选 PDF 第 7 页，列出营业收入并引用页码。", True),
-        ("所选 PDF 中是否提及今天上海的天气？", True),
+        ("只依据所选 PDF 第 7 页，列出营业收入并引用页码。", True),
+        ("所选 PDF 中是否提及今天上海的天气？只依据该 PDF。", True),
         ("根据所选 PDF 第 7 页的营业收入，与今天股价进行比较。", False),
         ("根据 PDF 数据，结合当前市场估值分析。", False),
     ],
 )
-def test_pdf_grounded_question_filters_other_tools_unless_external_data_is_requested(
+def test_only_pdf_scope_requires_an_explicit_exclusive_instruction(
     user_text: str,
     expected: bool,
 ) -> None:
     assert _user_requests_knowledge_base_only(user_text) is expected
+
+
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        "根据所选 PDF 第 7 页，列出营业收入并引用页码。",
+        "所选 PDF 中是否提及今天上海的天气？",
+        "根据 PDF 数据，结合当前市场估值分析。",
+    ],
+)
+def test_document_grounding_does_not_imply_pdf_only_source_scope(user_text: str) -> None:
+    assert _user_requests_knowledge_base_only(user_text) is False
 
 
 def test_pdf_answer_rebinds_exact_quote_to_matching_hit_from_this_run() -> None:
@@ -1303,7 +1790,7 @@ def test_pdf_answer_rebinds_exact_quote_to_matching_hit_from_this_run() -> None:
             model=model,
             registry=_registry(SEARCH_KNOWLEDGE_BASE_TOOL),
             executor=FakeAtomicExecutor({
-                "search_knowledge_base": [search_result(page_340), search_result(page_14)],
+                "search_knowledge_base": [search_result(page_14)],
             }),
             conversation_id="rag-exact-quote-rebind",
             response_format=DEFAULT_RESPONSE_FORMAT,
@@ -1319,7 +1806,7 @@ def test_pdf_answer_rebinds_exact_quote_to_matching_hit_from_this_run() -> None:
         assert "#page=14" not in result.final_text
         assert "【证据 ev_kb_page_14】" in result.final_text
         assert result.state["claim_evidence"][0]["evidence"][0]["source_refs"] == [page_14["url"]]
-        assert sum(call["tool_name"] == "search_knowledge_base" for call in executor.calls) == 2
+        assert sum(call["tool_name"] == "search_knowledge_base" for call in executor.calls) == 1
 
     asyncio.run(scenario())
 
@@ -1353,6 +1840,52 @@ def test_tool_strategy_retries_schema_errors_without_reusing_a_previous_structur
         assert len(model.calls) == 3
         assert result.final_text.endswith("【证据 ev_structured-validation-read】")
         assert result.state["structured_answer_call_id"] == "valid-structured"
+
+    asyncio.run(scenario())
+
+
+def test_publication_contract_repairs_header_only_research_table_once() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("table-validation-read", "primary"),
+                _structured_output_call(
+                    "header-only-table",
+                    [{
+                        "kind": "fact",
+                        "presentation_type": "markdown",
+                        "content": "| 指标 | 数值 | 页码 |",
+                        "source_ids": [1],
+                    }],
+                ),
+                _structured_output_call(
+                    "complete-table",
+                    [{
+                        "kind": "fact",
+                        "presentation_type": "markdown",
+                        "content": "| 指标 | 数值 | 页码 |\n|---|---|---|\n| 营业收入 | 100 元 | 第 7 页 |",
+                        "source_ids": [1],
+                    }],
+                ),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            conversation_id="structured-answer-table-publication-retry",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+            user_text="最终只输出一个完整 Markdown 表格。",
+        )
+
+        assert result.status == "completed"
+        assert len(model.calls) == 3
+        repair_context = "\n".join(
+            str(getattr(message, "content", "")) for message in model.calls[-1]
+        )
+        assert "不完整的 Markdown 表格" in repair_context
+        assert "填写表格数据行" in repair_context
+        assert "已核验步骤中的金额" in repair_context
+        assert "营业收入 | 100 元 | 第 7 页" in result.final_text
+        assert result.final_text.endswith("【证据 ev_table-validation-read】")
 
     asyncio.run(scenario())
 
@@ -1583,6 +2116,34 @@ def test_structured_output_plain_repair_is_bounded_and_publishes_one_partial_ans
     asyncio.run(scenario())
 
 
+def test_structured_output_reports_provider_token_limit_instead_of_plain_text() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                AIMessage(content="", response_metadata={"finish_reason": "length"}),
+                AIMessage(content="", response_metadata={"finish_reason": "length"}),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(),
+            conversation_id="structured-output-length-repair-bound",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "structured_output_incomplete"
+        failed = [
+            item for item in result.stage_history or []
+            if item["stage"] == "response_format" and item["status"] == "failed"
+        ]
+        assert failed
+        assert "max_tokens" in failed[-1]["details"]["reason"]
+        assert "普通文本" not in failed[-1]["details"]["reason"]
+
+    asyncio.run(scenario())
+
+
 def test_invalid_structured_output_repair_is_bounded() -> None:
     async def scenario() -> None:
         model = ScriptedChatModel(
@@ -1759,6 +2320,83 @@ def test_structured_response_channel_cannot_end_a_later_turn_with_plain_text() -
     asyncio.run(scenario())
 
 
+def test_stale_structured_response_does_not_end_a_turn_after_a_rejected_tool_call() -> None:
+    async def scenario() -> None:
+        conversation_id = "structured-response-rejected-tool-cross-turn"
+        manager = LangGraphRuntimeManager(
+            registry=_registry(_search_operation()),
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+        await manager.start(testing=True)
+        try:
+            first = await manager.run_new(
+                messages=[{"role": "user", "content": "第一轮"}],
+                user_text="第一轮",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="structured-rejected-tool-cross-turn-1",
+                conversation_id=conversation_id,
+                agent_mode="direct",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=ScriptedChatModel(responses=[
+                    _tool_call("first-turn-read", "primary"),
+                    _structured_output_call(
+                        "first-turn-answer",
+                        [{"kind": "fact", "content": "第一轮结果。", "source_ids": [1]}],
+                    ),
+                ]),
+                executor=FakeAtomicExecutor(),
+            )
+            assert first.status == "completed"
+
+            second_model = ScriptedChatModel(responses=[
+                _named_tool_call("rejected-unknown-operation", "not_in_registry", {}),
+                _structured_output_call(
+                    "second-turn-answer",
+                    [{"kind": "context", "content": "第二轮已重新回答。", "source_ids": []}],
+                ),
+            ])
+            second = await manager.run_new(
+                messages=[{"role": "user", "content": "第二轮"}],
+                user_text="第二轮",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="structured-rejected-tool-cross-turn-2",
+                conversation_id=conversation_id,
+                agent_mode="direct",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=second_model,
+                executor=FakeAtomicExecutor(),
+            )
+
+            assert second.status == "completed", (
+                second.error_code,
+                second.final_text,
+                second.state.get("terminal_detail"),
+                second.state.get("structured_response"),
+                len(second_model.calls),
+            )
+            assert second.final_text == "第二轮已重新回答。"
+            assert len(second_model.calls) == 2
+            assert any(
+                isinstance(message, ToolMessage)
+                and message.tool_call_id == "rejected-unknown-operation"
+                for message in second_model.calls[-1]
+            )
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
 def test_partial_provider_status_is_not_promoted_to_an_assistant_answer() -> None:
     class Graph:
         def __init__(self) -> None:
@@ -1805,6 +2443,76 @@ def test_partial_provider_status_is_not_promoted_to_an_assistant_answer() -> Non
         }
         assert events.texts == []
         assert events.stages[-1] == ("publish", "failed", "上游模型服务返回超时；已保留已有工具观察和证据。")
+
+    asyncio.run(scenario())
+
+
+def test_provider_timeout_does_not_publish_unaccepted_header_only_table() -> None:
+    class Graph:
+        def __init__(self) -> None:
+            self.update: dict[str, Any] | None = None
+
+        async def aget_state(self, _config: Mapping[str, Any]) -> Any:
+            return SimpleNamespace(
+                values={
+                    "answer_final": "",
+                    "answer_draft": "| 指标 | 数值 | 页码 |",
+                    "user_text": "最终只输出一个完整 Markdown 表格，不要只给表头。",
+                    "structured_answer": {
+                        "profile": "research",
+                        "blocks": [
+                            {
+                                "kind": "fact",
+                                "presentation_type": "table",
+                                "content": "| 指标 | 数值 | 页码 |",
+                                "source_ids": [1],
+                            }
+                        ],
+                    },
+                    "evidence": [],
+                    "tool_results": [],
+                }
+            )
+
+        async def aupdate_state(
+            self,
+            _config: Mapping[str, Any],
+            update: Mapping[str, Any],
+        ) -> None:
+            self.update = dict(update)
+
+    class Events:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        def close_open_stages(self, **_kwargs: Any) -> None:
+            return None
+
+        def stage(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def text(self, value: str) -> None:
+            self.texts.append(value)
+
+    async def scenario() -> None:
+        graph = Graph()
+        events = Events()
+        manager = LangGraphRuntimeManager(registry=_registry())
+        result = await manager._terminate_partial(
+            graph,
+            config={},
+            context=SimpleNamespace(events=events),
+            error_code="model_provider_timeout",
+            message="上游模型服务返回超时；已保留已有工具观察和证据。",
+        )
+
+        assert result["status"] == "partial"
+        assert "| 指标 | 数值 | 页码 |" not in result["answer_final"]
+        assert "未发布不完整内容" in result["answer_final"]
+        assert graph.update is not None
+        assert graph.update["structured_answer"] is None
+        assert graph.update["answer_draft"] == result["answer_final"]
+        assert events.texts == [result["answer_final"]]
 
     asyncio.run(scenario())
 

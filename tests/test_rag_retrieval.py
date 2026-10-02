@@ -14,13 +14,14 @@ from src.rag.model_adapters import (
     model_version_tag,
 )
 from src.rag.retrieval import RagSearchError, RagSearchService
-from src.rag.retrieval import _explicit_pdf_page_ranges
+from src.rag.retrieval import _explicit_pdf_page_ranges, _fuse_hybrid_and_reranker_rankings
 from src.services.rag_knowledge_base_service import RagKnowledgeBaseService
 from src.storage.models import Base, RagChunk, RagDocument, RagIndexVersion, RagKnowledgeBase
 
 
 class FakeEmbedder:
     def __init__(self, **kwargs):
+        assert kwargs["timeout"] is None
         self.kwargs = kwargs
         self.queries = []
 
@@ -33,8 +34,8 @@ class FakeEmbedder:
 
 
 class FakeReranker:
-    def __init__(self, **_kwargs):
-        pass
+    def __init__(self, **kwargs):
+        assert kwargs["timeout"] is None
 
     def rerank(self, _query, documents, *, top_n=None):
         assert documents and "主营业务" in documents[0]
@@ -45,7 +46,8 @@ class FakeReranker:
 
 
 class FakeStore:
-    def __init__(self):
+    def __init__(self, text="公司主营业务包括工业视觉检测和智能装备。"):
+        self.text = text
         self.search_kwargs = None
         self.search_calls = []
 
@@ -63,7 +65,7 @@ class FakeStore:
                     "page_start": 3,
                     "page_end": 3,
                     "section": "公司概况",
-                    "text": "公司主营业务包括工业视觉检测和智能装备。",
+                    "text": self.text,
                 }
             )
         ]
@@ -72,7 +74,11 @@ class FakeStore:
         pass
 
 
-def test_hybrid_retrieval_scopes_search_and_projects_verified_pdf_citation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("chunk_text", [
+    "公司主营业务包括工业视觉检测和智能装备。",
+    "公司主营业务包括工业视觉检测和智能装备。\n" + "| 财报项目 | 完整原文 |\n" * 300 + "| 净资产 | 7,291,847,177.43 |",
+], ids=["short", "full-table"])
+def test_hybrid_retrieval_scopes_search_and_projects_verified_pdf_citation(tmp_path, monkeypatch, chunk_text):
     engine = create_engine(f"sqlite:///{tmp_path / 'rag-search.db'}")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -114,16 +120,20 @@ def test_hybrid_retrieval_scopes_search_and_projects_verified_pdf_citation(tmp_p
                 page_start=3,
                 page_end=3,
                 section="公司概况",
-                text_content="公司主营业务包括工业视觉检测和智能装备。",
+                text_content=chunk_text,
                 content_hash="b" * 64,
             )
         )
+        session.add(RagChunk(
+            id="next-page", document_id="doc-1", index_version_id="index-1", chunk_index=1,
+            page_start=4, page_end=4, section="另一页", text_content="另一页未引用的信息。", content_hash="c" * 64,
+        ))
         session.commit()
 
     stores = []
 
     def store_factory():
-        item = FakeStore()
+        item = FakeStore(text=chunk_text)
         stores.append(item)
         return item
 
@@ -138,6 +148,7 @@ def test_hybrid_retrieval_scopes_search_and_projects_verified_pdf_citation(tmp_p
             "RAG_RERANK_MODEL_ID": DEFAULT_RERANK_MODEL,
             "RAG_RERANK_MODEL_REVISION": DEFAULT_RERANK_REVISION,
             "RAG_RERANK_CANDIDATE_LIMIT": "12",
+            "RAG_MODEL_TIMEOUT_SECONDS": "120",
         },
     )
     service = RagSearchService(
@@ -158,8 +169,12 @@ def test_hybrid_retrieval_scopes_search_and_projects_verified_pdf_citation(tmp_p
     assert result["success"] is True
     assert result["no_evidence"] is False
     assert result["data_time_applicable"] is False
+    assert result["retrieval"]["rerank_fusion"] == "rrf"
     assert result["results"][0]["filename"] == "annual.pdf"
     assert result["results"][0]["page_start"] == 3
+    assert result["results"][0]["snippet"] == chunk_text
+    assert result["results"][0]["text"] == chunk_text
+    assert "另一页未引用" not in result["results"][0]["text"]
     assert result["results"][0]["evidence_id"].startswith("ev_kb_")
     assert result["results"][0]["url"] == "/api/v1/knowledge-bases/documents/doc-1/content#page=3"
     assert result["result_items"][0]["evidence_id"] == result["results"][0]["evidence_id"]
@@ -209,3 +224,18 @@ def test_hybrid_retrieval_scopes_search_and_projects_verified_pdf_citation(tmp_p
 )
 def test_explicit_pdf_page_references_become_bounded_filter_ranges(query, expected):
     assert _explicit_pdf_page_ranges(query) == expected
+
+
+def test_rank_fusion_preserves_a_financial_table_demoted_by_the_reranker():
+    candidates = [
+        {"chunk_id": f"chunk-{index}", "page_start": index + 1, "rrf_score": 1 / (60 + index)}
+        for index in range(12)
+    ]
+    relevant_table_index = 2  # Hybrid RRF rank 3; the live BGE run placed it at reranker rank 7.
+    reranker_order = [0, 1, 3, 4, 5, 6, relevant_table_index, 7, 8, 9, 10, 11]
+    reranked = [SimpleNamespace(index=index, score=1.0 - rank / 20) for rank, index in enumerate(reranker_order)]
+
+    selected = _fuse_hybrid_and_reranker_rankings(candidates, reranked, top_k=5)
+
+    assert candidates[relevant_table_index]["chunk_id"] in {item["chunk_id"] for item in selected}
+    assert selected[0]["chunk_id"] == "chunk-0"

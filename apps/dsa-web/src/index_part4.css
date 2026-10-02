@@ -197,6 +197,12 @@
    Chat Page Markdown Styles (.chat-prose)
    ========================================= */
 
+.assistant-markdown {
+  font-family: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 0.875rem;
+  letter-spacing: 0;
+}
+
 .chat-prose {
   --chat-prose-fg: hsl(var(--foreground) / 0.86);
   --chat-prose-link: hsl(var(--primary));

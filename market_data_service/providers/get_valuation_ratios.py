@@ -278,16 +278,25 @@ def read_valuation_quote_eastmoney(
 ) -> dict[str, Any]:
     """Read one dated Eastmoney valuation snapshot, with history fallback."""
     code = _validated_symbol(symbol)
-    quote, cached = (
-        cached_call(
-            f"valuation:quote:atomic:v1:{code}",
-            lambda: _fetch_quote(code),
-            ttl_seconds=60,
-            attempts=2,
+    quote_error = ""
+    try:
+        quote, cached = (
+            cached_call(
+                f"valuation:quote:atomic:v1:{code}",
+                lambda: _fetch_quote(code),
+                ttl_seconds=60,
+                attempts=2,
+            )
+            if use_cache
+            else (_fetch_quote(code), False)
         )
-        if use_cache
-        else (_fetch_quote(code), False)
-    )
+    except Exception as exc:
+        # The quote endpoint can fail before returning an empty snapshot. Keep
+        # that attempt visible, then use the same explicitly supported dated
+        # history fallback as the no-quote_time path below.
+        quote = {}
+        cached = False
+        quote_error = f"{type(exc).__name__}: {exc}"
     now = datetime.now().astimezone()
     quote = quote if isinstance(quote, dict) else {}
     success = any(
@@ -310,7 +319,11 @@ def read_valuation_quote_eastmoney(
             "label": "东方财富估值实时快照",
             "status": "success" if success else "failed",
             "data_time": data_time,
-            **({} if success else {"error": "no_valuation_fields"}),
+            **(
+                {}
+                if success
+                else {"error": quote_error or "no_valuation_fields"}
+            ),
         }
     ]
     warnings: list[str] = []
@@ -359,7 +372,9 @@ def read_valuation_quote_eastmoney(
                 }
             )
             warnings.append(
-                "实时估值快照未返回 quote_time，已使用最近一条带日期的估值历史快照。"
+                f"实时估值快照请求失败（{quote_error}），已使用最近一条带日期的估值历史快照。"
+                if quote_error
+                else "实时估值快照未返回 quote_time，已使用最近一条带日期的估值历史快照。"
             )
         else:
             source_attempts.append(
@@ -378,7 +393,9 @@ def read_valuation_quote_eastmoney(
                 }
             )
             warnings.append(
-                "实时估值快照未返回 quote_time，且估值历史没有可用日期；时效性无法确认。"
+                f"实时估值快照请求失败（{quote_error}），且估值历史没有可用日期；时效性无法确认。"
+                if quote_error
+                else "实时估值快照未返回 quote_time，且估值历史没有可用日期；时效性无法确认。"
             )
     snapshot_success = any(
         (
@@ -393,23 +410,30 @@ def read_valuation_quote_eastmoney(
             )
         )
     )
+    errors = [quote_error] if quote_error else []
+    if not snapshot_success:
+        errors.append("东方财富没有返回可用估值快照字段")
     return {
         "symbol": code,
         **snapshot,
         "price_unit": "人民币元",
         "market_cap_unit": "元",
         "ratio_unit": "倍",
-        "source": "东方财富实时估值快照",
+        "source": fallback_provider or "东方财富实时估值快照",
         "source_scope": source_scope,
         "success": snapshot_success,
-        "partial": False,
-        "errors": [] if snapshot_success else ["东方财富没有返回可用估值快照字段"],
+        "partial": bool(quote_error and snapshot_success),
+        "errors": errors,
         "warnings": warnings,
         "data_time": data_time,
         "data_time_provenance": "source" if data_time else "unavailable",
         "data_time_note": None
         if data_time
-        else "东方财富实时估值快照未返回 quote_time，且估值历史均未返回可验证时间；_fetched_at 仅表示本服务获取时间。",
+        else (
+            f"实时估值快照请求失败（{quote_error}），且估值历史均未返回可验证时间；_fetched_at 仅表示本服务获取时间。"
+            if quote_error
+            else "东方财富实时估值快照未返回 quote_time，且估值历史均未返回可验证时间；_fetched_at 仅表示本服务获取时间。"
+        ),
         "is_stale": history_result.get("is_stale")
         if fallback_used
         else datetime.fromisoformat(str(data_time)[:10]).date()

@@ -60,8 +60,9 @@ canonical evidence ID。`WorkerFailurePolicy` 是 worker 层的唯一失败决�
 
 每个节点都有独立 Pydantic 交接契约。worker/reviewer 子图使用 per-invocation 模式
 （`checkpointer=None`），继承根 Team 图的数据库 checkpoint；根图保存任务、尝试、证据交接、
-审查、共识和再执行决定。结构化合约、专家任务和工具调用均有独立 deadline，取消、超时、
-模型失败和工具失败都写入终态事件，父 Team 不得永久保持 `running`。
+审查、共识和再执行决定。模型失败、工具失败、超时和取消都会写入终态事件，父 Team 不得
+永久保持 `running`。单次模型回复不设置应用层 wall-clock deadline；结构化交接仍按校验结果
+有限重试，工具自身 deadline、工作预算及显式取消仍按各自策略生效。
 
 代码中的 `completion_criteria_validator`、`team_synthesizer` 是唯一规范节点名；Team
 不再注册或读取其他历史节点名。

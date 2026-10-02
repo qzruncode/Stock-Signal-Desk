@@ -8,12 +8,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.types import Overwrite
 from pydantic import Field
 
+from src.agent.model_runtime import (
+    ModelContextWindowExceededError,
+    ModelProviderReportedTimeoutError,
+    ModelProviderUnavailableError,
+)
 from src.agent.langgraph_runtime.answer_contract import STRUCTURED_OUTPUT_TOOL_NAME
 from src.agent.langgraph_runtime.events import GraphEventBridge
+from src.agent.runtime_safety import get_agent_runtime_limits
 from src.agent.langgraph_runtime.executor import AtomicToolExecutor
 from src.agent.langgraph_runtime.runtime import (
     LangGraphRuntimeManager,
@@ -30,11 +36,15 @@ from src.agent.langgraph_runtime.team.graph import (
     _dispatch_team_tasks,
     _fallback_team_plan,
     _materialize_team_plan,
+    _criteria_evidence_packet,
+    _normalize_finding_evidence,
+    _team_evidence_packet,
     _normalize_case,
     _normalize_consensus,
     _normalize_conflict,
     _normalize_plan,
     _repair_advisory_budget_mismatch,
+    _plan_messages,
     _worker_handoff_status,
     _team_handoff_partitions,
     _team_plan_next,
@@ -45,7 +55,14 @@ from src.agent.langgraph_runtime.team.graph import (
     _run_worker,
     _team_contract_diagnostic,
 )
-from src.agent.langgraph_runtime.team.contracts import AgentResult, BullCaseReview, TeamPlanDraft, TeamReviewIssue
+from src.agent.langgraph_runtime.team.contracts import (
+    AgentResult,
+    AgentTaskDraft,
+    BullCaseReview,
+    TeamPlanDraft,
+    TeamReviewIssue,
+    WorkerAssessment,
+)
 from src.agent.langgraph_runtime.team.registry import (
     ExpertDefinition,
     ExpertRegistry,
@@ -304,6 +321,10 @@ def test_active_worker_is_not_wrapped_in_task_wall_clock_timeout(
             child_state = {
                 "status": "completed",
                 "answer_final": "行情取证已完成。",
+                "structured_answer": {
+                    "profile": "general", "title": "行情取证",
+                    "blocks": [{"kind": "answer", "content": "行情取证已完成。", "evidence_ids": ["ev-market-1"]}],
+                },
                 "tool_results": [{
                     "id": "market-tool-1",
                     "tool_name": "market_probe",
@@ -327,14 +348,7 @@ def test_active_worker_is_not_wrapped_in_task_wall_clock_timeout(
                 return child_state
 
             async def contract_result(_context, schema, *_args, **_kwargs):
-                if schema.__name__ == "WorkerAssessment":
-                    return ({
-                        "summary": "行情取证已完成。",
-                        "findings": [],
-                        "limitations": [],
-                        "open_questions": [],
-                        "confidence": "medium",
-                    }, 1)
+                assert schema.__name__ == "CriteriaAssessment"
                 return ({
                     "checks": [{
                         "criterion_index": 1,
@@ -542,10 +556,135 @@ def test_team_plan_draft_is_materialized_with_server_owned_tools_and_limits() ->
     assert all(task["allowed_tools"] for task in materialized["tasks"])
     # Tool identities are a permission list, not an invocation budget. The
     # same indicator/source tool may be required several times by one task.
-    assert all(task["max_tool_calls"] == 12 for task in materialized["tasks"])
+    assert all(task["max_tool_calls"] == get_agent_runtime_limits().max_tool_calls for task in materialized["tasks"])
     assert all(task["max_tool_calls"] > len(task["allowed_tools"]) for task in materialized["tasks"])
     assert normalized["tasks"][0]["agent_node"] == "MarketAgent"
     assert normalized["tasks"][1]["agent_node"] == "FundamentalAgent"
+
+
+def test_team_plan_accepts_one_expert_for_a_single_domain_question() -> None:
+    registry = ToolRegistry.from_tools([_probe("fundamental_probe", "financials")])
+    draft = {
+        "progress_text": "单一财务事实由基本面专家核验。",
+        "goal": "确认半年报经营现金流同比变化",
+        "completion_criteria": ["确认同比变化并给出报告页码"],
+        "tasks": [
+            {
+                "agent_id": "fundamental",
+                "objective": "在已选半年报中检索经营活动现金流净额及其同比变化",
+                "success_criteria": ["返回报告数值、同比变化和页码"],
+            }
+        ],
+    }
+
+    normalized = _normalize_plan(
+        TeamPlanDraft.model_validate(draft),
+        registry,
+        state={"team_id": "single-domain-team", "user_text": "经营活动现金流净额同比变化是多少？"},
+    )
+
+    assert len(normalized["tasks"]) == 1
+    assert normalized["tasks"][0]["agent_id"] == "fundamental"
+    assert normalized["tasks"][0]["agent_node"] == "FundamentalAgent"
+
+
+def test_team_can_share_selected_knowledge_tool_without_changing_task_scheduling() -> None:
+    registry = ToolRegistry.from_tools([
+        _probe("market_probe", "market"),
+        _probe("fundamental_probe", "financials"),
+        _probe("search_knowledge_base", "research"),
+    ])
+    state = {
+        "team_id": "team-kb-research",
+        "user_text": "根据所选 PDF，核实报告对经营风险的说明。",
+        "knowledge_base_ids": ["kb-selected"],
+    }
+    plan = _team_plan()
+    plan["tasks"][1]["allowed_tools"].append("search_knowledge_base")
+
+    normalized = _normalize_plan(plan, registry, state=state)
+
+    assert "search_knowledge_base" in normalized["tasks"][1]["allowed_tools"]
+    assert "search_knowledge_base" not in normalized["tasks"][0]["allowed_tools"]
+    assert "skip_knowledge_base" not in normalized["tasks"][1]["allowed_tools"]
+    assert "skip_knowledge_base" not in normalized["tasks"][0]["allowed_tools"]
+
+    duplicate = _team_plan()
+    duplicate["tasks"][0]["allowed_tools"].append("search_knowledge_base")
+    duplicate["tasks"][1]["allowed_tools"].append("search_knowledge_base")
+    shared = _normalize_plan(duplicate, registry, state=state)
+    assert all("search_knowledge_base" in task["allowed_tools"] for task in shared["tasks"])
+    assert all("skip_knowledge_base" not in task["allowed_tools"] for task in shared["tasks"])
+    assert all(task["depends_on"] == [] for task in shared["tasks"])
+
+    # A selected knowledge base is available even when the coordinator gives
+    # only domain-tool hints. No extra worker or sequential stage is inserted.
+    draft = _team_plan_draft(_team_plan())
+    materialized = _normalize_plan(draft, registry, state=state)
+    assert len(materialized["tasks"]) == 2
+    assert all("search_knowledge_base" in task["allowed_tools"] for task in materialized["tasks"])
+    assert all("skip_knowledge_base" not in task["allowed_tools"] for task in materialized["tasks"])
+    assert all(task["depends_on"] == [] for task in materialized["tasks"])
+
+    with pytest.raises(ValueError, match="outside the fundamental capability scope"):
+        _normalize_plan(plan, registry, state={"team_id": "team-kb-research"})
+
+
+def test_team_planner_passes_knowledge_objective_to_workers_without_retrieval_query_policy() -> None:
+    registry = ToolRegistry.from_tools([
+        _probe("market_probe", "market"),
+        _probe("fundamental_probe", "financials"),
+        _probe("search_knowledge_base", "research"),
+    ])
+    messages = _plan_messages(
+        {
+            "user_text": "根据所选 PDF，核实报告中的经营风险。",
+            "knowledge_base_ids": ["kb-selected"],
+        },
+        registry,
+    )
+
+    prompt = str(messages[0].content)
+    assert '"name":"search_knowledge_base"' in prompt
+    assert '"max_concurrency":1' in prompt
+    # The coordinator sees expert capabilities, but does not receive a global
+    # tool-priority instruction. A selected library is only a shared capability.
+    assert '"name":"market_probe","category":"market"' in prompt
+    assert '"name":"fundamental_probe","category":"financials"' in prompt
+    assert '"shared_read_only_tools":[{"name":"search_knowledge_base"' in prompt
+    assert "最多只分配给一个任务" not in prompt
+    assert "具体是否检索以及 query 由实际执行任务的 worker Agent 工具循环决定" in prompt
+    assert "tool_hints 只能填写能力目录中的精确工具名称" in prompt
+    assert "首轮必须由你先作一次明确的来源决策" not in prompt
+    assert "不要把原问题不加分析地直接当作 query" not in prompt
+    assert "只填写能力目录中精确的工具名称" in AgentTaskDraft.model_json_schema()["properties"]["tool_hints"]["description"]
+    observed_prompt = str(_plan_messages({
+        "knowledge_base_ids": ["kb-selected"],
+        "tool_results": [{"tool_name": "search_knowledge_base", "success": False}],
+    }, registry)[0].content)
+    assert '"name":"market_probe"' in observed_prompt
+
+    no_kb_messages = _plan_messages(
+        {
+            "user_text": "请基于公开来源核实公司的经营风险。",
+            "knowledge_base_ids": [],
+        },
+        registry,
+    )
+    no_kb_prompt = str(no_kb_messages[0].content)
+    assert '"name":"search_knowledge_base"' not in no_kb_prompt
+    assert "所选知识库" not in no_kb_prompt
+
+    unselected_catalog_prompt = str(_plan_messages(
+        {
+            "user_text": "请基于年报核实公司的经营风险。",
+            "knowledge_base_ids": [],
+            "searchable_knowledge_bases": [{"id": "kb-a", "name": "年报库", "status": "searchable"}],
+        },
+        registry,
+    )[0].content)
+    assert '"name":"search_knowledge_base"' not in unselected_catalog_prompt
+    assert '"id":"kb-a"' not in unselected_catalog_prompt
 
 
 def test_team_contract_diagnostic_keeps_parser_reason_and_call_shape() -> None:
@@ -643,6 +782,53 @@ def test_active_finalizer_has_no_whole_graph_wall_clock_timeout(monkeypatch: pyt
             assert result.error_code is None
         finally:
             await manager.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure_mode", ["timeout", "unavailable", "context_window"])
+def test_team_terminal_model_failure_uses_server_plan_fallback(failure_mode: str) -> None:
+    async def scenario() -> None:
+        model = ProviderFailureTeamModel(failure_mode=failure_mode)
+        executor = FakeAtomicExecutor()
+        manager = LangGraphRuntimeManager(
+            registry=ToolRegistry.from_tools(
+                [_probe("market_probe", "market"), _probe("fundamental_probe", "financials")]
+            )
+        )
+        await manager.start(testing=True)
+        try:
+            result = await manager.run_new(
+                messages=[{"role": "user", "content": "请综合行情与基本面"}],
+                user_text="请综合行情与基本面",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="team-provider-timeout",
+                conversation_id="team-provider-timeout",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=model,
+                executor=executor,
+                agent_mode="team",
+            )
+        finally:
+            await manager.close()
+
+        assert result.status == "completed"
+        assert result.error_code is None
+        assert result.state["team_plan_source"] == "server_fallback"
+        assert result.state["team_plan_error"]
+        assert model.provider_failures == 1
+        assert executor.calls
+        assert result.state["team_dispatched_task_ids"]
+        assert result.state["tool_results"]
+        assert any(
+            event.get("error_code") == "team_plan_recovered"
+            for event in result.stage_history
+        )
+
     asyncio.run(scenario())
 
 
@@ -975,12 +1161,28 @@ class RoleAwareTeamModel(ScriptedChatModel):
 
     async def _agenerate(self, messages, **kwargs):
         names = _bound_tool_names(kwargs.get("tools"))
-        if "OrchestratorRoute" in names:
+        worker_tools = [name for name in names if name in {"market_probe", "fundamental_probe", "news_probe"}]
+        worker_scope = any(
+            isinstance(message, SystemMessage)
+            and "任务编号为" in str(message.content)
+            for message in messages
+        )
+        if STRUCTURED_OUTPUT_TOOL_NAME in names and worker_scope:
+            if worker_tools and not any(isinstance(message, ToolMessage) for message in messages):
+                tool_name = worker_tools[0]
+                output = _call(tool_name, f"{tool_name}-call", {"query": tool_name})
+            else:
+                output = _call(STRUCTURED_OUTPUT_TOOL_NAME, "worker-answer", {
+                    "profile": "general", "title": "领域观察",
+                    "blocks": [{"kind": "answer", "content": "观察已返回", "source_ids": [1]}],
+                })
+        elif "ProductModeRoute" in names or "OrchestratorRoute" in names:
+            route_contract = "ProductModeRoute" if "ProductModeRoute" in names else "OrchestratorRoute"
             output = _call(
-                "OrchestratorRoute",
+                route_contract,
                 "route-call",
                 {
-                    "mode": "plan",
+                    "mode": "team" if self.force_team_route else "plan",
                     "reason": "测试验证模型选择 Team 执行策略",
                     "progress_text": "模型判断当前问题需要并行核验。",
                     "execution_strategy": "team" if self.force_team_route else "single_agent",
@@ -1203,24 +1405,50 @@ class RoleAwareTeamModel(ScriptedChatModel):
         return await super()._agenerate(messages, **kwargs)
 
 
+class ProviderFailureTeamModel(RoleAwareTeamModel):
+    """Model double that reports a terminal model failure while planning Team."""
+
+    provider_failures: int = 0
+    failure_mode: str = "timeout"
+
+    async def _agenerate(self, messages, **kwargs):
+        if "TeamPlanDraft" in _bound_tool_names(kwargs.get("tools")):
+            self.provider_failures += 1
+            if self.failure_mode == "unavailable":
+                raise ModelProviderUnavailableError("model provider circuit is open")
+            if self.failure_mode == "context_window":
+                raise ModelContextWindowExceededError(
+                    context_window=1,
+                    estimated_input_tokens=2,
+                    message_count=2,
+                )
+            raise ModelProviderReportedTimeoutError("upstream model provider reported timeout")
+        return await super()._agenerate(messages, **kwargs)
+
+
 class RecoverableTeamModel(RoleAwareTeamModel):
     """Model double whose market worker has two durable super-steps."""
 
     async def _agenerate(self, messages, **kwargs):
         names = _bound_tool_names(kwargs.get("tools"))
+        tool_names = {
+            str(getattr(message, "name", ""))
+            for message in messages if isinstance(message, ToolMessage)
+        }
         if "TeamPlanDraft" in names or "TeamPlan" in names:
             schema_name = "TeamPlanDraft" if "TeamPlanDraft" in names else "TeamPlan"
             plan = _recoverable_team_plan()
             payload = _team_plan_draft(plan) if schema_name == "TeamPlanDraft" else plan
             output = _call(schema_name, "plan-call", payload)
+        elif "market_probe_b" in tool_names and STRUCTURED_OUTPUT_TOOL_NAME in names:
+            output = _call(STRUCTURED_OUTPUT_TOOL_NAME, "market-answer", {
+                "profile": "general", "blocks": [{
+                    "kind": "answer", "content": "market 两步观察已完成", "source_ids": [1, 2],
+                }],
+            })
         elif {"market_probe_a", "market_probe_b"}.issubset(set(names)):
-            tool_names = {
-                str(getattr(message, "name", ""))
-                for message in messages
-                if isinstance(message, ToolMessage)
-            }
             if "market_probe_b" in tool_names:
-                output = AIMessage(content="market 两步观察已完成")
+                raise AssertionError("native worker must hand off a StructuredAgentAnswer")
             elif "market_probe_a" in tool_names:
                 output = _call("market_probe_b", "market-b-call", {"query": "market_probe_b"})
             else:
@@ -1308,6 +1536,82 @@ def test_evidence_merger_rejects_worker_forged_ids() -> None:
     assert merge.evidence_ids == ["ev_canonical"]
     assert merge.worker_evidence == {"market-task": ["ev_canonical"]}
     assert merge.invalid_evidence_ids == ["ev_forged"]
+
+
+def test_team_evidence_handoff_keeps_retrieved_pdf_hit_ids_and_page_text() -> None:
+    parent = {
+        "id": "ev_search_action",
+        "evidence_id": "ev_search_action",
+        "tool_name": "search_knowledge_base",
+        "success": True,
+        "effect": "read",
+        "partial": False,
+        "has_data": True,
+        "data_status": "usable",
+        "usable": True,
+        "evidence_eligible": True,
+        "display_result": "TRUNCATED AGGREGATE WITHOUT THE CASH-FLOW ROW",
+        "result": {
+            "success": True,
+            "results": [
+                {
+                    "citation_id": "kb_cashflow_page_55",
+                    "evidence_id": "ev_kb_cashflow_page_55",
+                    "url": "/documents/report/content#page=55",
+                    "filename": "report.pdf",
+                    "page_start": 55,
+                    "page_end": 55,
+                    "section": "合并现金流量表",
+                    "text": "经营活动产生的现金流量净额 | 363,763,010.34 | 96,805,794.84",
+                    "snippet": "前文" * 500 + "经营活动产生的现金流量净额：本期363,763,010.34元，上期96,805,794.84元",
+                },
+                {
+                    "citation_id": "kb_cashflow_page_148",
+                    "evidence_id": "ev_kb_cashflow_page_148",
+                    "url": "/documents/report/content#page=148",
+                    "filename": "report.pdf",
+                    "page_start": 148,
+                    "page_end": 148,
+                    "section": "现金流量表补充资料",
+                    "text": "经营活动产生的现金流量净额 | 363,763,010.34 | 96,805,794.84",
+                    "snippet": "补充资料交叉核验：本期363,763,010.34元，上期96,805,794.84元",
+                },
+            ],
+        },
+    }
+
+    slots = _criteria_evidence_packet([parent])
+    assert [item["source_id"] for item in slots] == [1, 2]
+    assert "第 55 页" in slots[0]["title"]
+    assert "363,763,010.34" in slots[0]["observation"]
+    assert "经营活动产生的现金流量净额" in slots[0]["observation"]
+    assert "TRUNCATED AGGREGATE" not in slots[0]["observation"]
+
+    assessment = WorkerAssessment(
+        summary="现金流量表已核验。",
+        findings=["经营活动现金流净额同比增加。"],
+        finding_evidence_refs=[["1"]],
+    )
+    finding_refs, invalid = _normalize_finding_evidence(assessment, [parent])
+    assert finding_refs == [["ev_kb_cashflow_page_55"]]
+    assert invalid == []
+
+    _, canonical = merge_worker_evidence(
+        [parent],
+        [
+            {
+                "task_id": "fund_cashflow",
+                "status": "completed",
+                "evidence_ids": ["ev_kb_cashflow_page_55", "ev_kb_cashflow_page_148"],
+                "finding_evidence_refs": finding_refs,
+            }
+        ],
+    )
+    team_slots = _team_evidence_packet({"evidence": [parent], "team_evidence_catalog": canonical})
+    assert [item["source_id"] for item in team_slots] == [1, 2]
+    assert "第 55 页" in team_slots[0]["title"]
+    assert "363,763,010.34" in team_slots[0]["summary"]
+    assert "TRUNCATED AGGREGATE" not in team_slots[0]["summary"]
 
 
 def test_reviewers_reject_unknown_evidence_instead_of_silently_dropping_it() -> None:
@@ -1628,7 +1932,7 @@ def test_team_path_runs_workers_review_and_existing_answer_contract() -> None:
             options.get("tool_choice") != "required"
             for options in model.structured_output_options
         )
-        assert any(
+        assert not any(
             options.get("tool_choice") == "WorkerAssessment"
             for options in model.structured_output_options
         )
@@ -1755,6 +2059,23 @@ def test_team_synthesis_rejects_chart_only_answer_for_required_domains() -> None
 
     assert "综合器没有保留基本面方向的实质性区块。" in issues
     assert "综合器没有保留新闻方向的实质性区块。" in issues
+
+
+def test_team_synthesis_does_not_require_role_label_for_one_completed_task() -> None:
+    issues = team_synthesis_contract_issues(
+        {
+            "blocks": [
+                {
+                    "section": "新强联 2026 年半年度财务数据",
+                    "kind": "fact",
+                    "content": "营业收入、归母净利润和经营活动现金流净额均按任务要求列出当期值、同比口径和 PDF 页码。",
+                }
+            ]
+        },
+        required_experts=["news"],
+    )
+
+    assert issues == []
 
 
 def test_team_review_report_keeps_worker_domains_without_becoming_an_answer() -> None:
@@ -1960,6 +2281,78 @@ def test_server_criteria_validation_canonicalizes_criteria_and_fails_closed() ->
             evidence=evidence,
             records=records,
         )
+
+
+def test_worker_criteria_source_ids_resolve_expanded_rag_hits() -> None:
+    evidence = [
+        {
+                        "evidence_id": "ev_search_1",
+            "tool_name": "search_knowledge_base",
+            "success": True,
+            "effect": "read",
+            "result": {
+                "results": [
+                    {
+                        "evidence_id": "ev_kb_hit_1",
+                        "source_url": "/api/v1/knowledge-bases/documents/doc-1/content#page=7",
+                        "filename": "report.pdf",
+                        "page_start": 7,
+                        "snippet": "基本每股收益为0.99元/股。",
+                    },
+                    {
+                        "evidence_id": "ev_kb_hit_2",
+                        "source_url": "/api/v1/knowledge-bases/documents/doc-1/content#page=53",
+                        "filename": "report.pdf",
+                        "page_start": 53,
+                        "snippet": "基本每股收益为0.99元/股。",
+                    },
+                ]
+            },
+        },
+        {
+                        "evidence_id": "ev_search_2",
+            "tool_name": "search_knowledge_base",
+            "success": True,
+            "effect": "read",
+            "result": {
+                "results": [
+                    {
+                        "evidence_id": "ev_kb_hit_3",
+                        "source_url": "/api/v1/knowledge-bases/documents/doc-1/content#page=177",
+                        "filename": "report.pdf",
+                        "page_start": 177,
+                        "snippet": "归属于公司普通股股东净利润口径基本每股收益为0.99元/股。",
+                    },
+                    {
+                        "evidence_id": "ev_kb_hit_4",
+                        "source_url": "/api/v1/knowledge-bases/documents/doc-1/content#page=177",
+                        "filename": "report.pdf",
+                        "page_start": 177,
+                        "snippet": "扣除非经常性损益后基本每股收益为0.89元/股。",
+                    },
+                ]
+            },
+        },
+    ]
+
+    result = validate_criteria_assessment(
+        {
+            "checks": [
+                {
+                    "criterion_index": 1,
+                    "verdict": "pass",
+                    "explanation": "报告第177页直接列示了归母口径基本每股收益。",
+                    "source_ids": [3],
+                }
+            ]
+        },
+        criteria=["回答必须给出基本每股收益并附PDF页码"],
+        evidence=evidence,
+        records=[],
+    )
+
+    assert result["status"] == "passed"
+    assert result["checks"][0]["evidence_ids"] == ["ev_kb_hit_3"]
 
 
 def test_review_contract_accepts_catalog_sized_evidence_not_provider_annotations() -> None:
@@ -2987,7 +3380,7 @@ def test_auto_route_can_keep_simple_request_on_direct_agent_path() -> None:
         model = ScriptedChatModel(
             responses=[
                 _call(
-                    "OrchestratorRoute",
+                    "ProductModeRoute",
                     "route-call",
                     {"mode": "direct", "reason": "不需要多领域外部取证"},
                 ),
@@ -3061,9 +3454,9 @@ def test_auto_route_failure_stops_before_any_product_graph_executes() -> None:
         assert result.status == "failed"
         assert result.error_code == "orchestrator_route_failed"
         assert result.state["resolved_agent_mode"] == ""
-        # The model was only used for the bounded route contract repair; the
-        # generic Direct/Plan loop never started after route failure.
-        assert len(model.calls) == 2
+        # Product-mode routing makes one bounded structured-output request;
+        # the generic Direct/Plan loop never starts after route failure.
+        assert len(model.calls) == 1
 
     asyncio.run(scenario())
 
@@ -3073,7 +3466,7 @@ def test_auto_route_selects_the_plan_product_path() -> None:
         model = ScriptedChatModel(
             responses=[
                 _call(
-                    "OrchestratorRoute",
+                    "ProductModeRoute",
                     "team-route-call",
                     {"mode": "plan", "reason": "需要按依赖顺序逐步核验"},
                 ),
@@ -3130,7 +3523,7 @@ def test_auto_route_selects_the_plan_product_path() -> None:
     asyncio.run(scenario())
 
 
-def test_auto_route_can_select_team_strategy_under_planned_mode() -> None:
+def test_auto_route_can_select_team_product_mode() -> None:
     async def scenario() -> None:
         model = RoleAwareTeamModel(force_team_route=True)
         manager = LangGraphRuntimeManager(

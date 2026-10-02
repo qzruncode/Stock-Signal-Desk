@@ -297,6 +297,33 @@ describe('TeamBoard', () => {
     expect(document.querySelector('[data-team-child-group]')).not.toBeInTheDocument();
   });
 
+  it('shows a visible partial receipt when the model provider fails before Team dispatch', () => {
+    const trace = teamTrace({
+      status: 'partial',
+      plan: null,
+      failure: {
+        status: 'partial',
+        errorCode: 'model_provider_unavailable',
+        detail: '模型服务暂时不可用；已保留已有工具观察和证据。',
+        phase: 'partial',
+        dispatchStatus: 'not_started',
+      },
+    });
+    mockMessage({
+      id: 'message-team-provider-unavailable',
+      status: { type: 'complete' },
+      content: [],
+      metadata: { unstable_data: [], custom: { agent_execution_trace: trace } },
+    });
+
+    render(<TeamCollaborationView />);
+
+    const receipt = screen.getByRole('status', { name: 'Team 协作未完成' });
+    expect(receipt).toHaveTextContent('未分发专家任务');
+    expect(receipt).toHaveTextContent('模型服务暂时不可用，本轮已停止；请稍后重试。');
+    expect(receipt).not.toHaveTextContent('circuit is open');
+  });
+
   it('supports a compact summary layout when member cards are rendered at process anchors', () => {
     const trace = teamTrace({
       status: 'completed',

@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from src.tools.base import evidence_record_is_eligible
+from src.tools.base import citation_scoped_evidence_records, evidence_record_is_eligible
 
 from .contracts import CriteriaAssessment
 
@@ -27,7 +27,7 @@ def _record_id(record: Mapping[str, Any]) -> str:
 def _criterion_texts(criteria: Sequence[Any]) -> list[str]:
     # Keep positional identity intact. Silently dropping an empty item would
     # let a malformed plan evade the exact one-check-per-criterion gate.
-    return [str(value or "").strip()[:600] for value in list(criteria)[:8]]
+    return [str(value or "").strip() for value in list(criteria)[:8]]
 
 
 def _unique(values: Sequence[Any], *, limit: int = 80) -> list[str]:
@@ -44,7 +44,11 @@ def _eligible_source_slots(evidence: Sequence[Mapping[str, Any]]) -> dict[int, s
     slot numbering across the canonical merge.
     """
     slots: dict[int, str] = {}
-    for position, record in enumerate(evidence, start=1):
+    # Match the model-facing packet exactly: search result hits replace their
+    # aggregate tool-call envelope before source slots are assigned. Numbering
+    # the raw action records here makes valid per-hit citations appear unknown
+    # (or, worse, resolve to a different action-level record).
+    for position, record in enumerate(citation_scoped_evidence_records(evidence)[:80], start=1):
         if not isinstance(record, Mapping) or not evidence_record_is_eligible(record):
             continue
         evidence_id = _record_id(record)
@@ -63,7 +67,7 @@ def _eligible_source_slots(evidence: Sequence[Mapping[str, Any]]) -> dict[int, s
 def blocked_criteria_evaluation(criteria: Sequence[Any], reason: str) -> dict[str, Any]:
     """Create a fail-closed result when the verifier contract is unavailable."""
     canonical = _criterion_texts(criteria)
-    detail = str(reason or "条件校验器没有返回可用结果。")[:800]
+    detail = str(reason or "条件校验器没有返回可用结果。")
     checks = [
         {
                 "criterion_index": index,
@@ -84,7 +88,7 @@ def blocked_criteria_evaluation(criteria: Sequence[Any], reason: str) -> dict[st
 
 def block_criteria_evaluation(evaluation: Mapping[str, Any], reason: str) -> dict[str, Any]:
     """Apply a deterministic Team-level guard to an otherwise valid result."""
-    detail = str(reason or "服务端前置条件未满足。")[:800]
+    detail = str(reason or "服务端前置条件未满足。")
     checks = []
     for raw_check in list(evaluation.get("checks") or [])[:8]:
         if not isinstance(raw_check, Mapping):
@@ -92,9 +96,9 @@ def block_criteria_evaluation(evaluation: Mapping[str, Any], reason: str) -> dic
         checks.append(
             {
                 "criterion_index": int(raw_check.get("criterion_index") or 0),
-                "criterion": str(raw_check.get("criterion") or "")[:600],
+                "criterion": str(raw_check.get("criterion") or ""),
                 "verdict": "unknown",
-                "explanation": f"{str(raw_check.get('explanation') or '').strip()} {detail}".strip()[:800],
+                "explanation": f"{str(raw_check.get('explanation') or '').strip()} {detail}".strip(),
                 "source_ids": [int(value) for value in list(raw_check.get("source_ids") or []) if str(value).isdigit()],
             }
         )
@@ -188,13 +192,13 @@ def validate_criteria_assessment(
             [source_slots[source_id] for source_id in source_ids],
             limit=80,
         )
-        explanation = str(raw_check.get("explanation") or "").strip()[:800]
+        explanation = str(raw_check.get("explanation") or "").strip()
         if verdict == "pass" and require_successful_operation and not has_successful_operation:
             verdict = "unknown"
-            explanation = f"{explanation} 服务端没有发现成功的实际取证操作。".strip()[:800]
+            explanation = f"{explanation} 服务端没有发现成功的实际取证操作。".strip()
         elif verdict == "pass" and require_successful_operation and not evidence_ids:
             verdict = "unknown"
-            explanation = f"{explanation} 服务端没有发现可追溯的有效证据。".strip()[:800]
+            explanation = f"{explanation} 服务端没有发现可追溯的有效证据。".strip()
         normalized_checks.append(
             {
                 "criterion_index": index,

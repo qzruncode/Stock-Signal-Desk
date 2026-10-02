@@ -152,6 +152,60 @@ def test_upload_is_hash_idempotent_and_lists_document_counts(
         assert resolve_rag_blob_path(documents[0].blob_path).is_file()
 
 
+def test_searchable_catalog_contains_only_owned_libraries_with_active_pdf_indexes(rag_service) -> None:
+    service, factory = rag_service
+    with factory() as session:
+        session.add_all([
+            RagKnowledgeBase(
+                id="kb-empty", tenant_id="local", owner_id="admin", name="尚未索引的库"
+            ),
+            RagKnowledgeBase(
+                id="kb-other-owner", tenant_id="local", owner_id="other", name="其他用户的库"
+            ),
+            RagKnowledgeBase(
+                id="kb-other-tenant", tenant_id="other-tenant", owner_id="admin", name="其他租户的库"
+            ),
+        ])
+        for document_id, knowledge_base_id, tenant_id, owner_id, index_id in (
+            ("doc-visible", "kb-1", "local", "admin", "idx-visible"),
+            ("doc-other-owner", "kb-other-owner", "local", "other", "idx-other-owner"),
+            ("doc-other-tenant", "kb-other-tenant", "other-tenant", "admin", "idx-other-tenant"),
+        ):
+            session.add(RagDocument(
+                id=document_id,
+                knowledge_base_id=knowledge_base_id,
+                tenant_id=tenant_id,
+                owner_id=owner_id,
+                filename=f"{document_id}.pdf",
+                content_hash=f"hash-{document_id}",
+                blob_path=f"documents/{document_id}.pdf",
+                status="ready",
+                active_index_version_id=index_id,
+            ))
+            session.add(RagIndexVersion(
+                id=index_id,
+                document_id=document_id,
+                version=1,
+                status="active",
+                parser_version="1",
+                chunking_version="1",
+                embedding_model="embed@revision",
+                vector_dimension=384,
+                qdrant_collection=f"collection-{document_id}",
+            ))
+        session.commit()
+
+    catalog = service.list_searchable_knowledge_bases(tenant_id="local", owner_id="admin")
+
+    assert catalog == [{
+        "id": "kb-1",
+        "name": "研究资料",
+        "description": "",
+        "status": "searchable",
+        "ready_document_count": 1,
+    }]
+
+
 def test_upload_rejects_non_pdf_and_unowned_knowledge_base(rag_service, monkeypatch) -> None:
     service, _factory = rag_service
     async def exercise_rejections():

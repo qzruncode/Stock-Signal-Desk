@@ -266,7 +266,6 @@ export interface AgentGoalTrace {
     replans?: number;
     toolCalls?: number;
     modelCalls?: number;
-    timeLimitSeconds?: number;
     actionValidationRepairs?: number;
     actionValidationRepairLimit?: number;
   };

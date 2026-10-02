@@ -1,5 +1,5 @@
 import type { FC, ReactNode } from 'react';
-import { createContext, useContext, useId, useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { MessagePrimitive, useMessage, useMessagePartRuntime, useMessageTiming, useScrollLock } from '@assistant-ui/react';
 import type { DataMessagePartProps, TextMessagePartProps } from '@assistant-ui/react';
@@ -88,27 +88,9 @@ const NativeTextPart: FC<TextMessagePartProps> = (part) => (
   <NativeTextPartContent {...part} />
 );
 
-const NativeAnswerAnimationContext = createContext(false);
-
 const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const active = messageStatus === 'running' || messageStatus === 'requires-action';
-  const animateAcceptedAnswer = useContext(NativeAnswerAnimationContext);
-  // TextDeltaChunk intentionally carries only text, so the live answer's
-  // display kind cannot be recovered from the text part itself.  The server
-  // emits a boundary immediately before the accepted answer; use the ordered
-  // part position to identify the text that follows it. Hydrated history
-  // drops that marker, so completed messages do not replay the animation.
-  const isLiveAnswerText = useMessage((state) => {
-    let afterAnswerBoundary = false;
-    return state.content.some((item) => {
-      if (item.type === 'data' && item.name === 'agent-answer-boundary') {
-        afterAnswerBoundary = true;
-        return false;
-      }
-      return afterAnswerBoundary && item.type === 'text' && item.text === part.text;
-    });
-  });
   const executionTrace = useMessage((state) => (
     state.metadata?.custom?.agent_execution_trace
       ?? state.metadata?.custom?.agentExecutionTrace
@@ -119,10 +101,7 @@ const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
         stripStructuredAnswerReferenceFallbacks(part.text, structuredAnswer),
       )
     : part.text;
-  const animate = active || isLiveAnswerText || (
-    animateAcceptedAnswer && displayKindOf(part) === 'answer'
-  );
-  return <AssistantMarkdownText {...part} text={text} evidence={executionTrace} animate={animate} />;
+  return <AssistantMarkdownText {...part} text={text} evidence={executionTrace} animate={active} />;
 };
 
 export const NativeExecutionDisclosure: FC<{
@@ -279,34 +258,28 @@ export const NativeAgentModelProjectionPart: FC<DataMessagePartProps> = ({ data 
 
 const NativeAnswerBoundaryPart: FC<DataMessagePartProps> = () => null;
 
-export const NativeAssistantParts: FC<{
-  animateAcceptedAnswer?: boolean;
-  includeStageParts?: boolean;
-}> = ({
-  animateAcceptedAnswer = false,
+export const NativeAssistantParts: FC<{ includeStageParts?: boolean }> = ({
   includeStageParts = true,
 }) => {
   return (
-    <NativeAnswerAnimationContext.Provider value={animateAcceptedAnswer}>
-      <MessagePrimitive.Parts
-        unstable_showEmptyOnNonTextEnd={false}
-        components={{
-          Text: NativeTextPart,
-          Reasoning: () => null,
-          tools: { Fallback: AgentToolCallPart },
-          data: {
-            by_name: {
-              'agent-stage': includeStageParts ? NativeAgentStagePart : NativeAnswerBoundaryPart,
-              'stock-chart': NativeStockChartPart,
-              'agent-model-projection': NativeAgentModelProjectionPart,
-              'agent-answer-boundary': NativeAnswerBoundaryPart,
-            },
-            Fallback: () => null,
+    <MessagePrimitive.Parts
+      unstable_showEmptyOnNonTextEnd={false}
+      components={{
+        Text: NativeTextPart,
+        Reasoning: () => null,
+        tools: { Fallback: AgentToolCallPart },
+        data: {
+          by_name: {
+            'agent-stage': includeStageParts ? NativeAgentStagePart : NativeAnswerBoundaryPart,
+            'stock-chart': NativeStockChartPart,
+            'agent-model-projection': NativeAgentModelProjectionPart,
+            'agent-answer-boundary': NativeAnswerBoundaryPart,
           },
-          ToolGroup: NativeToolGroup,
-          ReasoningGroup: InlineMessagePartGroup,
-        }}
-      />
-    </NativeAnswerAnimationContext.Provider>
+          Fallback: () => null,
+        },
+        ToolGroup: NativeToolGroup,
+        ReasoningGroup: InlineMessagePartGroup,
+      }}
+    />
   );
 };

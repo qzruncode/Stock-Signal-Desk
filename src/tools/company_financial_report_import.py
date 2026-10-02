@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 from src.services.company_report_service import (
     CompanyReportError,
+    existing_company_financial_report,
+    existing_report_result,
     find_company_financial_reports as _find_reports,
     import_company_financial_report as _import_report,
 )
@@ -52,6 +56,54 @@ def _tool_error(exc: CompanyReportError) -> dict[str, Any]:
     }
 
 
+def _existing_report(arguments: Mapping[str, Any]) -> dict[str, Any] | None:
+    context = current_tool_execution_context()
+    selected_ids = _selected_ids(context)
+    if len(selected_ids) != 1 or not all(arguments.get(key) for key in ("company", "candidate_id", "report_title")):
+        return None
+    return existing_company_financial_report(
+        company_query=str(arguments["company"]), candidate_id=str(arguments["candidate_id"]),
+        report_title=str(arguments["report_title"]), knowledge_base_id=selected_ids[0],
+        tenant_id=str(context.get("tenant_id") or "local"),
+        owner_id=str(context.get("owner_id") or "admin"),
+        kb_service=RagKnowledgeBaseService(),
+    )
+
+
+def _import_effect(arguments: Mapping[str, Any]) -> str:
+    # Existing ToolSpec supports argument-dependent effects. Only a verified
+    # local reuse is read-only; missing/unverified files still need approval.
+    return "read" if _existing_report(arguments) is not None else "side_effect"
+
+
+class ImportCompanyFinancialReportArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    company: str = Field(min_length=1, max_length=80, description="与候选检索相同的公司名或代码")
+    candidate_id: str = Field(pattern=r"^report_[a-f0-9]{32}$", description="候选列表中的 candidate_id，不是 evidence_id 或 tool_call_id")
+    report_title: str = Field(min_length=1, max_length=500, description="候选列表中完整的报告标题，用于审批确认")
+
+    @model_validator(mode="after")
+    def validate_discovered_candidate(self, info: ValidationInfo) -> "ImportCompanyFinancialReportArgs":
+        if info.context is None:
+            return self
+        if len(_selected_ids(current_tool_execution_context())) != 1:
+            raise ValueError("导入前请只选择一个目标知识库；没有请求审批。")
+        for record in info.context.get("tool_results", []):
+            if record.get("tool_name") != "search_company_financial_reports" or record.get("success") is not True:
+                continue
+            result = record.get("result") or {}
+            company = result.get("company") or {}
+            if self.company not in {company.get("code"), company.get("name"), (record.get("arguments") or {}).get("company")}:
+                continue
+            if any(candidate.get("candidate_id") == self.candidate_id and candidate.get("title") == self.report_title
+                   for candidate in result.get("candidates", [])):
+                return self
+        if _existing_report(self.model_dump()) is not None:
+            return self
+        raise ValueError("candidate_id、report_title、company 必须原样对应本轮 search_company_financial_reports 的真实候选；不得使用证据或工具调用编号。")
+
+
 def search_company_financial_reports(
     company: str,
     report_type: str = "latest",
@@ -83,6 +135,22 @@ def search_company_financial_reports(
     elif len(selected_ids) == 1 and len(selected_bases) == 1:
         result["import_target"] = selected_bases[0]["name"]
         result["import_block_reason"] = None
+        for candidate in result["candidates"]:
+            try:
+                existing = _existing_report({
+                    "company": (result.get("company") or {}).get("code") or company,
+                    "candidate_id": candidate.get("candidate_id"), "report_title": candidate.get("title"),
+                })
+            except Exception:
+                candidate["already_in_knowledge_base"] = None
+                result["import_block_reason"] = "无法核实目标库中是否已有原件；不能据此断言报告未入库。"
+                continue
+            candidate["already_in_knowledge_base"] = existing is not None
+            candidate["knowledge_base_document"] = (
+                {"filename": existing.get("filename"), "status": existing.get("status"),
+                 "searchable": bool(existing.get("active_index_version_id"))}
+                if existing is not None else None
+            )
     elif not selected_ids:
         result["import_target"] = None
         result["import_block_reason"] = "请先在对话框左下角选择一个知识库。"
@@ -103,6 +171,15 @@ def import_company_financial_report(
     report_title: str,
 ) -> dict[str, Any]:
     """Import one freshly revalidated official PDF into the selected knowledge base."""
+    try:
+        existing = _existing_report({"company": company, "candidate_id": candidate_id, "report_title": report_title})
+    except Exception:
+        return _tool_error(CompanyReportError(
+            "无法核实目标知识库的原件状态，没有开始下载或写入。",
+            code="knowledge_base_scope_unavailable", retryable=True,
+        ))
+    if existing is not None:
+        return existing_report_result(existing)
     if not current_tool_effect_approval():
         return {
             "success": False,
@@ -148,7 +225,7 @@ def import_company_financial_report(
         )
     except CompanyReportError as exc:
         return _tool_error(exc)
-    except Exception:
+    except Exception as exc:
         return {
             "success": False,
             "error_code": str(getattr(exc, "code", "report_import_failed")),
@@ -167,6 +244,7 @@ TOOLS = (
             "用户说‘最近一期/最新财报’时使用 report_type=latest；只返回正式报告原件，不选摘要或英文版。"
             "结果按财务报告期排序，必须从 candidates 中选 candidate_id 与原样 report_title。"
             "检索结果会指出当前对话的知识库导入条件；未选择唯一知识库时先请用户在对话框左下角选择。"
+            "already_in_knowledge_base=true 表示同一报告已存在；不要重导入，直接按需 search_knowledge_base，不能将没有阻断条件误读成报告尚未入库。"
             "若用户已明确要求下载/入库且候选列表非空，应使用 recommended_candidate_id 与对应原样标题调用导入工具。"
             "官方来源不可用时明确报告失败，不得改用 AKShare、东方财富或任意网页。"
         ),
@@ -194,18 +272,14 @@ TOOLS = (
             "将 search_company_financial_reports 返回的某一份官方 PDF 原件导入本轮唯一选中的知识库。"
             "只能传回候选中的 candidate_id、原样 report_title 和同一 company；不得提供 URL。"
             "这是有副作用的持久化操作，执行前必须经过用户审批；下载会重新从官方来源校验候选并限制为交易所 PDF 域名。"
+            "若服务端确认同一官方原件已在所选库中，仅返回现有文档状态，不下载、不写入、不请求审批。"
         ),
-        parameters=object_schema(
-            {
-                "company": {"type": "string", "minLength": 1, "maxLength": 80, "description": "与候选检索相同的公司名或代码"},
-                "candidate_id": {"type": "string", "pattern": "^report_[a-f0-9]{32}$", "description": "候选列表中的 candidate_id"},
-                "report_title": {"type": "string", "minLength": 1, "maxLength": 500, "description": "候选列表中完整的报告标题，用于审批确认"},
-            },
-            required=("company", "candidate_id", "report_title"),
-        ),
+        parameters=None,
+        args_model=ImportCompanyFinancialReportArgs,
         executor=import_company_financial_report,
         category="action",
         effect="side_effect",
+        effect_resolver=_import_effect,
         timeout_seconds=180,
         max_attempts=2,
         idempotent=True,

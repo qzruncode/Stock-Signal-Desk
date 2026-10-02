@@ -27,6 +27,19 @@ def _snake_case(value: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
 
 
+_MODEL_ARGUMENT_KEY_ALIASES = {
+    "source": ("source_id",),
+    "stock": ("symbol", "symbols"),
+    "stock_code": ("symbol", "symbols"),
+}
+_TOOL_ARGUMENT_KEY_ALIASES = {
+    # Models commonly describe a K-line lookback as days, while this tool's
+    # canonical API counts returned trading bars.
+    "read_recent_kline": {"days": "count"},
+}
+_MODEL_ENUM_VALUE_ALIASES = {"ma": "moving_average"}
+
+
 def _coerce_schema_scalar(value: Any, schema: dict[str, Any]) -> Any:
     scalar_schema = schema
     if not scalar_schema.get("type"):
@@ -54,7 +67,13 @@ def _coerce_schema_scalar(value: Any, schema: dict[str, Any]) -> Any:
             pass
     if expected == "string" and isinstance(value, str) and scalar_schema.get("enum"):
         by_lower = {str(item).lower(): item for item in scalar_schema["enum"]}
-        value = by_lower.get(value.strip().lower(), value)
+        normalized = value.strip().lower()
+        if normalized in by_lower:
+            value = by_lower[normalized]
+        else:
+            alias = _MODEL_ENUM_VALUE_ALIASES.get(normalized)
+            if alias is not None:
+                value = by_lower.get(alias.lower(), value)
     if (
         expected == "string"
         and isinstance(value, str)
@@ -67,16 +86,31 @@ def _coerce_schema_scalar(value: Any, schema: dict[str, Any]) -> Any:
 
 
 def normalize_tool_arguments(tool: ToolSpec, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Repair transport camelCase and scalar-string drift against the tool schema."""
+    """Canonicalize common model argument aliases and scalar drift by schema."""
     properties = tool.parameters.get("properties") or {}
     normalized: dict[str, Any] = {}
     for raw_key, value in arguments.items():
         key = raw_key if raw_key in properties else _snake_case(raw_key)
-        # Only alias camelCase when it resolves to a declared parameter. Keep
-        # unknown keys unchanged so the executor still raises a useful error.
+        if key not in properties:
+            tool_alias = _TOOL_ARGUMENT_KEY_ALIASES.get(tool.name, {}).get(key)
+            if tool_alias in properties:
+                key = tool_alias
+        if key not in properties:
+            candidates = [
+                candidate
+                for candidate in _MODEL_ARGUMENT_KEY_ALIASES.get(key, ())
+                if candidate in properties
+            ]
+            # Alias only when the target is unambiguous for this tool's schema.
+            if len(candidates) == 1:
+                key = candidates[0]
+        # Keep unknown keys unchanged so the schema validator still rejects
+        # them with an actionable error instead of silently discarding input.
         if key not in properties:
             key = raw_key
         value = _coerce_schema_scalar(value, properties.get(key) or {})
+        if key in normalized and normalized[key] != value:
+            raise ValueError(f"conflicting values for tool argument {key}")
         normalized[key] = value
     return normalized
 
@@ -234,7 +268,10 @@ class ToolRegistry:
             return dict(arguments)
         return normalize_tool_arguments(tool, arguments)
 
-    def validate_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def validate_arguments(
+        self, name: str, arguments: dict[str, Any], *,
+        validation_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Normalize and validate arguments before a tool enters the executor."""
         tool = self._tools.get(name)
         if tool is None:
@@ -243,7 +280,7 @@ class ToolRegistry:
             raise TypeError("tool arguments must be an object")
         normalized = normalize_tool_arguments(tool, arguments)
         if tool.args_model is not None:
-            return tool.args_model.model_validate(normalized).model_dump(
+            return tool.args_model.model_validate(normalized, context=validation_context).model_dump(
                 mode="python",
                 exclude_unset=True,
             )
@@ -265,6 +302,7 @@ class ToolRegistry:
         arguments: dict[str, Any],
         *,
         approved: bool = False,
+        validation_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Validate model-authored arguments under server-owned controls."""
         tool = self._tools.get(name)
@@ -283,7 +321,7 @@ class ToolRegistry:
         declared = set((tool.parameters or {}).get("properties") or {})
         for field_name in controlled.intersection(declared):
             prepared[field_name] = bool(approved)
-        return self.validate_arguments(name, prepared)
+        return self.validate_arguments(name, prepared, validation_context=validation_context)
 
     def effect_for(self, name: str, arguments: dict[str, Any]) -> str:
         tool = self._tools.get(name)

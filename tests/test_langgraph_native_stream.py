@@ -6,145 +6,111 @@ import asyncio
 from typing import Any, TypedDict
 
 import pytest
+from anthropic import omit
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
-from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langgraph.graph import END, START, StateGraph
 
+from src.agent.langgraph_runtime.answer_contract import render_structured_answer
 from src.agent.langgraph_runtime.events import GraphEventBridge, project_stage_history_for_client
-from src.agent.langgraph_runtime.model import LiteLLMChatModel, LiteLLMGateway
+from src.agent.langgraph_runtime.model import GuardedAnthropicChatModel, GuardedModelGateway
 from src.agent.langgraph_runtime.model_projection import StructuredContractProjectionCallback
 from src.agent.langgraph_runtime.planning import PlanningRoute
 from src.agent.langgraph_runtime.team.events import TeamWorkerEventBridge
 
 
-class _AsyncProviderStream:
-    def __init__(self, items: list[dict[str, Any]]) -> None:
-        self._items = iter(items)
-        self.closed = False
-
-    def __aiter__(self) -> "_AsyncProviderStream":
-        return self
-
-    async def __anext__(self) -> dict[str, Any]:
-        try:
-            return next(self._items)
-        except StopIteration as exc:
-            raise StopAsyncIteration from exc
-
-    async def aclose(self) -> None:
-        self.closed = True
+def _model(run_id: str = "test", **config: Any) -> GuardedAnthropicChatModel:
+    llm_config = {"model": "test-model", **config}
+    gateway = GuardedModelGateway(
+        llm_config=llm_config,
+        database=None,
+        run_id=run_id,
+        worker_id="worker",
+    )
+    return GuardedAnthropicChatModel(gateway=gateway, llm_config=llm_config)
 
 
-def _stream_items() -> list[dict[str, Any]]:
-    return [
-        {
-            "id": "chat-1",
-            "model": "test-model",
-            "choices": [{"delta": {"role": "assistant", "content": "先规划："}}],
-        },
-        {"choices": [{"delta": {"content": "核验来源，再给结论。"}}]},
-        {
-            "choices": [
-                {
-                    "delta": {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "call-1",
-                                "function": {"name": "search_source", "arguments": '{"query":"'},
-                            }
-                        ]
-                    }
-                }
-            ]
-        },
-        {
-            "choices": [
-                {
-                    "delta": {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "function": {"arguments": '测试"}'},
-                            }
-                        ],
-                        "reasoning_content": "内部推理不会进入用户答案",
-                    }
-                }
-            ]
-        },
-        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
-    ]
+def _patch_provider_stream(monkeypatch, chunks: list[ChatGenerationChunk]) -> None:
+    async def provider_stream(self, messages, stop=None, run_manager=None, **kwargs):
+        for chunk in chunks:
+            yield chunk
+
+    monkeypatch.setattr(ChatAnthropic, "_astream", provider_stream)
 
 
 @pytest.mark.parametrize(
     ("choice", "expected"),
     [
-        ("any", "required"),
-        (True, "required"),
+        ("any", {"type": "any"}),
+        (True, {"type": "any"}),
         (False, None),
-        ("auto", "auto"),
-        ("required", "required"),
-        ("search_source", {"type": "function", "function": {"name": "search_source"}}),
+        ("auto", {"type": "auto"}),
+        ("required", {"type": "any"}),
+        ("search_source", {"type": "tool", "name": "search_source"}),
         (
             {"type": "function", "function": {"name": "search_source"}},
-            {"type": "function", "function": {"name": "search_source"}},
+            {"type": "tool", "name": "search_source"},
         ),
     ],
 )
-def test_litellm_adapter_normalizes_native_tool_choice_before_provider_call(choice, expected):
-    async def scenario():
-        requests = []
-
-        async def completion(**kwargs):
-            requests.append(kwargs)
-            return _AsyncProviderStream(_stream_items())
-
-        gateway = LiteLLMGateway(
-            llm_config={"model": "test-model"},
-            database=None,
-            run_id="choice",
-            worker_id="worker",
-            completion=completion,
-        )
-        model = LiteLLMChatModel(gateway=gateway, llm_config={"model": "test-model"})
-        tool = {
-            "type": "function",
-            "function": {
-                "name": "search_source",
-                "description": "查询",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
-        await model.bind_tools([tool], tool_choice=choice).ainvoke([HumanMessage(content="查询")])
-        assert requests[0].get("tool_choice") == expected
-
-    asyncio.run(scenario())
+def test_anthropic_adapter_normalizes_tool_choice(choice, expected):
+    model = _model()
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "search_source",
+            "description": "查询",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    bound = model.bind_tools([tool], tool_choice=choice)
+    assert bound.kwargs.get("tool_choice") == expected
 
 
-def test_litellm_adapter_uses_langchain_async_stream_and_merges_tool_calls() -> None:
-    async def scenario() -> None:
-        requests: list[dict[str, Any]] = []
+def test_anthropic_sdk_has_no_connect_or_read_timeout() -> None:
+    model = _model(
+        api_base="https://gateway.example.test",
+        api_key="test-key",
+        extra_headers={"authorization": "Bearer test-key"},
+    )
+    assert model.default_request_timeout is None
+    assert model.max_retries == 0
+    assert model._client_params["timeout"] is None
+    assert model._async_client._client.timeout.as_dict() == {
+        "connect": None,
+        "read": None,
+        "write": None,
+        "pool": None,
+    }
 
-        async def completion(**kwargs: Any) -> _AsyncProviderStream:
-            requests.append(kwargs)
-            return _AsyncProviderStream(_stream_items())
 
-        gateway = LiteLLMGateway(
-            llm_config={"model": "test-model"},
-            database=None,
-            run_id="run-stream",
-            worker_id="worker",
-            completion=completion,
-        )
-        model = LiteLLMChatModel(gateway=gateway, llm_config={"model": "test-model"})
-        chunks = [chunk async for chunk in model.astream([HumanMessage(content="测试")])]
+def test_anthropic_adapter_streams_native_chunks_without_idle_deadline(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL_STREAM_IDLE_TIMEOUT_SECONDS", "0.001")
+    chunks = [
+        ChatGenerationChunk(message=AIMessageChunk(content="先规划：")),
+        ChatGenerationChunk(message=AIMessageChunk(content="核验来源，再给结论。")),
+        ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[{
+            "name": "search_source", "args": '{"query":"', "id": "call-1", "index": 0,
+        }])),
+        ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[{
+            "args": '测试"}', "index": 0,
+        }])),
+    ]
 
-        assert requests and requests[0]["stream"] is True
-        assert len(requests) == 1
-        assert any(isinstance(chunk, AIMessageChunk) for chunk in chunks)
-        combined = chunks[0]
+    async def provider_stream(self, messages, stop=None, run_manager=None, **kwargs):
+        yield chunks[0]
+        await asyncio.sleep(0.02)
         for chunk in chunks[1:]:
+            yield chunk
+
+    monkeypatch.setattr(ChatAnthropic, "_astream", provider_stream)
+    model = _model("run-stream")
+
+    async def scenario():
+        result = [chunk async for chunk in model.astream([HumanMessage(content="测试")])]
+        combined = result[0]
+        for chunk in result[1:]:
             combined = combined + chunk
         assert "先规划" in str(combined.content)
         assert combined.tool_calls[0]["name"] == "search_source"
@@ -154,142 +120,197 @@ def test_litellm_adapter_uses_langchain_async_stream_and_merges_tool_calls() -> 
     asyncio.run(scenario())
 
 
-def test_structured_output_uses_exact_tool_and_non_streaming_request() -> None:
-    async def scenario() -> None:
-        requests: list[dict[str, Any]] = []
+def test_structured_output_uses_anthropic_tool_and_native_non_streaming_call(monkeypatch):
+    requests: list[dict[str, Any]] = []
 
-        async def completion(**kwargs: Any) -> dict[str, Any]:
-            requests.append(kwargs)
-            return {
-                "id": "route-1",
-                "model": "test-model",
-                "choices": [
-                    {
-                        "finish_reason": "tool_calls",
-                        "message": {
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [
-                                {
-                                    "id": "route-call",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "PlanningRoute",
-                                        "arguments": '{"mode":"planned","reason":"需要跨来源核验"}',
-                                    },
-                                }
-                            ],
-                        },
-                    }
-                ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
-            }
+    async def provider_agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        requests.append(kwargs)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "PlanningRoute",
+                "args": {"mode": "planned", "reason": "需要跨来源核验"},
+                "id": "route-call",
+                "type": "tool_call",
+            }],
+            response_metadata={"model": "test-model"},
+            usage_metadata={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+        ))])
 
-        gateway = LiteLLMGateway(
-            llm_config={"model": "test-model"},
-            database=None,
-            run_id="run-structured",
-            worker_id="worker",
-            completion=completion,
-        )
-        model = LiteLLMChatModel(gateway=gateway, llm_config={"model": "test-model"})
+    monkeypatch.setattr(ChatAnthropic, "_agenerate", provider_agenerate)
+    model = _model("run-structured")
+
+    async def scenario():
         result = await model.with_structured_output(
             PlanningRoute,
             include_raw=True,
             tool_choice="PlanningRoute",
             stream=False,
+            strict=True,
         ).ainvoke([HumanMessage(content="判断是否需要规划")])
-
         assert result["parsing_error"] is None
         assert result["parsed"].mode == "planned"
-        assert requests[0]["stream"] is False
-        assert "stream_options" not in requests[0]
-        assert requests[0]["parallel_tool_calls"] is False
+        assert model.max_tokens is None
         assert requests[0]["tool_choice"] == {
-            "type": "function",
-            "function": {"name": "PlanningRoute"},
+            "type": "tool", "name": "PlanningRoute", "disable_parallel_tool_use": True,
         }
+        assert "timeout" not in requests[0]
+        assert requests[0]["tools"][0]["strict"] is True
 
     asyncio.run(scenario())
 
 
-def test_structured_projection_callback_survives_native_tool_binding() -> None:
-    async def scenario() -> None:
-        class Events:
-            def __init__(self) -> None:
-                self.projections: list[str] = []
+def test_structured_output_defaults_to_the_named_native_tool():
+    bound = _model().with_structured_output(PlanningRoute, strict=True).first
+    assert bound.kwargs["tool_choice"] == {
+        "type": "tool", "name": "PlanningRoute", "disable_parallel_tool_use": True,
+    }
+    assert bound.kwargs["tools"][0]["strict"] is True
 
-            def publish_model_projection(self, text: str, **_: Any) -> None:
-                self.projections.append(text)
 
-        async def completion(**_: Any) -> _AsyncProviderStream:
-            return _AsyncProviderStream([
-                {
-                    "id": "projection-1",
-                    "model": "test-model",
-                    "choices": [{"delta": {"tool_calls": [{
-                        "index": 0,
-                        "id": "projection-call",
-                        "function": {
-                            "name": "StructuredAgentAnswer",
-                            "arguments": '{"progress_text":"已完成取证，',
-                        },
-                    }]}}],
-                },
-                {
-                    "choices": [{"delta": {"tool_calls": [{
-                        "index": 0,
-                        "function": {
-                            "arguments": '正在整理答案。","blocks":[]}',
-                        },
-                    }]}}],
-                },
-            ])
+def test_non_streaming_contract_survives_langgraph_message_callbacks(monkeypatch):
+    calls = []
 
-        events = Events()
-        callback = StructuredContractProjectionCallback(
-            events,
-            projection_id="run-direct:answer:1",
-            scope="direct",
-            collaboration_id="",
-            agent_id="",
-            task_id="",
-            phase="answer",
-            kind="answer-progress",
-            target_tool_name="StructuredAgentAnswer",
-            display_part_name="agent-model-projection",
-        )
-        gateway = LiteLLMGateway(
-            llm_config={"model": "test-model"},
-            database=None,
-            run_id="run-projection",
-            worker_id="worker",
-            completion=completion,
-        )
-        model = LiteLLMChatModel(gateway=gateway, llm_config={"model": "test-model"})
-        # LangGraph binds tools after middleware returns.  Keeping the
-        # callback on the chat-model instance is the part that must survive
-        # that native binding step.
-        model = model.model_copy(update={"callbacks": [callback]})
-        await model.bind_tools(
-            [{
-                "type": "function",
-                "function": {
-                    "name": "StructuredAgentAnswer",
-                    "parameters": {"type": "object"},
-                },
+    async def provider_agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        calls.append("non_streaming")
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "PlanningRoute", "args": {"mode": "planned", "reason": "核验来源"},
+                "id": "route", "type": "tool_call",
             }],
-            tool_choice="required",
-        ).ainvoke([HumanMessage(content="生成结构化回答")])
+        ))])
 
+    async def provider_stream(self, messages, stop=None, run_manager=None, **kwargs):
+        raise AssertionError("LangGraph must not override an explicit non-streaming contract")
+        yield
+
+    monkeypatch.setattr(ChatAnthropic, "_agenerate", provider_agenerate)
+    monkeypatch.setattr(ChatAnthropic, "_astream", provider_stream)
+    model = _model("contract-with-graph-callbacks")
+
+    class ContractState(TypedDict):
+        route: str
+
+    async def node(_state):
+        result = await model.with_structured_output(PlanningRoute, stream=False).ainvoke(
+            [HumanMessage(content="核验来源")]
+        )
+        return {"route": result.mode}
+
+    graph = StateGraph(ContractState)
+    graph.add_node("contract", node)
+    graph.add_edge(START, "contract")
+    graph.add_edge("contract", END)
+
+    async def scenario():
+        events = [item async for item in graph.compile().astream({}, stream_mode=["messages", "updates"])]
+        assert any(mode == "updates" and event.get("contract", {}).get("route") == "planned" for mode, event in events)
+        assert calls == ["non_streaming"]
+        assert model.disable_streaming is False
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("model_name", ["ai/Qwen3.8-27B", "claude-sonnet-4-5-20250929"])
+def test_gateway_has_no_implicit_output_cap_even_for_profiled_models(model_name):
+    model = _model(model=model_name)
+    messages = [HumanMessage(content="生成完整回复")]
+    assert model.max_tokens is None
+    assert model._get_request_payload(messages)["max_tokens"] is omit
+    assert model._runtime_request(messages, {})["max_tokens"] is None
+    assert model._get_request_payload(messages, max_tokens=65_536)["max_tokens"] == 65_536
+
+
+def test_sdk_omits_generation_limit_in_actual_http_body(monkeypatch):
+    import httpx2 as httpx
+    from anthropic import AsyncAnthropic
+
+    requests = []
+
+    def respond(request):
+        import json
+
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "id": "message", "type": "message", "role": "assistant", "model": "test-model",
+            "content": [{"type": "text", "text": "完整回复"}],
+            "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 2, "output_tokens": 3},
+        })
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond), timeout=None) as client:
+            model = _model(api_key="test-key", api_base="https://gateway.example.test")
+            monkeypatch.setattr(model, "_async_client", AsyncAnthropic(
+                api_key="test-key", base_url="https://gateway.example.test", http_client=client,
+                timeout=None, max_retries=0,
+            ))
+            result = await model.ainvoke([HumanMessage(content="测试")], _stream=False)
+            assert result.text == "完整回复"
+        assert len(requests) == 1
+        assert "max_tokens" not in requests[0]
+        assert "max_completion_tokens" not in requests[0]
+
+    asyncio.run(scenario())
+
+
+def test_structured_projection_callback_survives_anthropic_tool_binding(monkeypatch):
+    class Events:
+        def __init__(self) -> None:
+            self.projections: list[str] = []
+
+        def publish_model_projection(self, text: str, **_: Any) -> None:
+            self.projections.append(text)
+
+    chunks = [
+        ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[{
+            "name": "StructuredAgentAnswer",
+            "args": '{"progress_text":"已完成取证，',
+            "id": "projection-call",
+            "index": 0,
+        }])),
+        ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[{
+            "args": '正在整理答案。","blocks":[]}', "index": 0,
+        }])),
+    ]
+    _patch_provider_stream(monkeypatch, chunks)
+    events = Events()
+    callback = StructuredContractProjectionCallback(
+        events,
+        projection_id="run-direct:answer:1",
+        scope="direct",
+        collaboration_id="",
+        agent_id="",
+        task_id="",
+        phase="answer",
+        kind="answer-progress",
+        target_tool_name="StructuredAgentAnswer",
+        display_part_name="agent-model-projection",
+    )
+    model = _model("run-projection").model_copy(update={"callbacks": [callback]})
+
+    async def scenario():
+        await model.bind_tools([{
+            "type": "function",
+            "function": {
+                "name": "StructuredAgentAnswer",
+                "parameters": {"type": "object"},
+            },
+        }], tool_choice="required").ainvoke([HumanMessage(content="生成结构化回答")])
         assert events.projections == ["已完成取证，", "已完成取证，正在整理答案。"]
 
     asyncio.run(scenario())
 
 
-def test_litellm_gateway_requires_a_model_from_configuration() -> None:
+def test_anthropic_adapter_forwards_output_config() -> None:
+    model = _model(output_config={"effort": "medium"})
+    assert model.output_config == {"effort": "medium"}
+
+
+def test_guarded_gateway_requires_a_model_from_configuration() -> None:
     with pytest.raises(ValueError, match="configured model settings"):
-        LiteLLMGateway(
+        GuardedModelGateway(
             llm_config={},
             database=None,
             run_id="run-missing-model",
@@ -297,26 +318,28 @@ def test_litellm_gateway_requires_a_model_from_configuration() -> None:
         )
 
 
-def test_native_callback_reports_cumulative_stream_usage_only_once() -> None:
+def test_native_callback_reports_stream_usage_once(monkeypatch):
     from langchain_core.callbacks import UsageMetadataCallbackHandler
 
+    _patch_provider_stream(monkeypatch, [
+        ChatGenerationChunk(message=AIMessageChunk(
+            content="answer", response_metadata={"model": "test-model"},
+        )),
+        ChatGenerationChunk(message=AIMessageChunk(
+            content="",
+            response_metadata={"model": "test-model"},
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )),
+    ])
+    usage = UsageMetadataCallbackHandler()
+    model = _model("run-usage").model_copy(update={"callbacks": [usage]})
+
     async def scenario():
-        async def completion(**kwargs):
-            assert kwargs['stream_options'] == {'include_usage': True}
-            return _AsyncProviderStream([
-                {'model': 'test-model', 'choices': [{'delta': {'content': 'answer'}}],
-                 'usage': {'prompt_tokens': 10, 'completion_tokens': 1, 'total_tokens': 11}},
-                {'model': 'test-model', 'choices': [],
-                 'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}},
-            ])
-        gateway = LiteLLMGateway(llm_config={'model': 'test-model'}, database=None,
-                                run_id='usage', worker_id='test', completion=completion)
-        usage = UsageMetadataCallbackHandler()
-        model = LiteLLMChatModel(gateway=gateway, llm_config={'model': 'test-model'}, callbacks=[usage])
-        response = await model.ainvoke([HumanMessage(content='test')])
-        assert response.response_metadata['model_name'] == 'test-model'
-        assert response.usage_metadata['total_tokens'] == 15
-        assert usage.usage_metadata['test-model']['total_tokens'] == 15
+        response = await model.ainvoke([HumanMessage(content="test")])
+        assert response.response_metadata["model_name"] == "test-model"
+        assert response.usage_metadata["total_tokens"] == 15
+        assert usage.usage_metadata["test-model"]["total_tokens"] == 15
+
     asyncio.run(scenario())
 
 
@@ -385,6 +408,9 @@ def test_graph_event_bridge_does_not_stream_structured_answer_candidate() -> Non
 
         def append_text(self, value: str) -> None:
             self.texts.append(value)
+
+        def add_data(self, value: dict[str, Any]) -> None:
+            assert value["part"]["name"] == "agent-answer-boundary"
 
     controller = Controller()
     events = GraphEventBridge(controller, run_id="run-structured-candidate")
@@ -542,16 +568,17 @@ def test_graph_event_bridge_keeps_structured_answer_blocks_markdown_separated() 
 
     controller = Controller()
     events = GraphEventBridge(controller, run_id="run-structured-answer-blocks")
+    structured_answer = {
+        "profile": "general",
+        "title": "行情与基本面",
+        "blocks": [
+            {"section": "行情", "kind": "fact", "content": "行情已核验。"},
+            {"section": "基本面", "kind": "fact", "content": "基本面已核验。"},
+        ],
+    }
     events.commit_model_answer(
-        "# 行情与基本面\n\n## 行情\n\n行情已核验。\n\n## 基本面\n\n基本面已核验。",
-        structured_answer={
-            "profile": "general",
-            "title": "行情与基本面",
-            "blocks": [
-                {"section": "行情", "kind": "fact", "content": "行情已核验。"},
-                {"section": "基本面", "kind": "fact", "content": "基本面已核验。"},
-            ],
-        },
+        render_structured_answer(structured_answer, [], []),
+        structured_answer=structured_answer,
     )
 
     assert controller.texts == [
@@ -568,6 +595,9 @@ def test_graph_event_bridge_keeps_planning_progress_separate_from_accepted_answe
 
         def append_text(self, value: str) -> None:
             self.texts.append(value)
+
+        def add_data(self, value: dict[str, Any]) -> None:
+            assert value["part"]["name"] == "agent-answer-boundary"
 
     controller = Controller()
     events = GraphEventBridge(controller, run_id="run-progress")

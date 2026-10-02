@@ -177,15 +177,14 @@ def test_notification_channel(
     summary="Test model connection",
     description="Send a tiny model request using saved or currently entered model configuration without persisting it.",
 )
-def test_model_connection(
+async def test_model_connection(
     request: TestModelConnectionRequest,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> TestModelConnectionResponse:
     try:
-        payload = service.test_model_connection(
+        payload = await service.test_model_connection(
             items=[item.model_dump() for item in request.items],
             mask_token=request.mask_token,
-            timeout_seconds=request.timeout_seconds,
         )
         return TestModelConnectionResponse.model_validate(payload)
     except Exception as exc:

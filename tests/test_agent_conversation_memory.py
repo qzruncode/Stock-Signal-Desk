@@ -42,6 +42,24 @@ def test_native_summary_preserves_tool_pair_and_independent_ledgers(monkeypatch)
     assert state == original
 
 
+def test_planning_skips_redundant_full_checkpoint_summary(monkeypatch):
+    monkeypatch.setenv("AGENT_SUMMARY_TRIGGER_TOKENS", "1")
+    state = {**history(), "planning_enabled": True, "planning_status": "finalizing"}
+    original = deepcopy(state)
+    model = RecordingSummaryModel(messages=iter([]), prompts=[])
+
+    update = asyncio.run(
+        ConversationMemoryMiddleware().abefore_model(
+            state,
+            SimpleNamespace(context=SimpleNamespace(model=model)),
+        )
+    )
+
+    assert update is None
+    assert not model.prompts
+    assert state == original
+
+
 def test_failed_summary_does_not_replace_history(monkeypatch):
     monkeypatch.setenv("AGENT_SUMMARY_TRIGGER_TOKENS", "1")
     state = history()

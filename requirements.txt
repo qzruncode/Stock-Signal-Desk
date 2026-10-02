@@ -23,8 +23,10 @@ jsonschema>=4.20.0          # Tool 参数在执行前按 JSON Schema 校验
 litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0   # Unified LLM client behind the Anthropic gateway
 tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
-langchain>=1.3.14,<1.4.0  # Official create_agent factory and middleware layer
-langgraph>=1.2.10,<1.3.0 # Application-hosted Agent state graph (locked to LangChain compatibility)
+langchain>=1.3.15,<1.4.0  # Includes the upstream stale structured_response checkpoint fix
+langchain-anthropic>=1.7.4,<1.8.0  # Native Anthropic-compatible chat transport with explicit timeout=None support
+anthropic>=1.8.0,<1.9.0  # Pin the SDK transport version verified with the configured package index
+langgraph>=1.2.11,<1.3.0 # Required by the compatible LangChain release with checkpoint routing fix
 langgraph-checkpoint-sqlite>=3.1.1,<4.0.0   # Local durable checkpoints
 langgraph-checkpoint-postgres>=3.1.1,<4.0.0 # Production durable checkpoints
 psycopg[binary]>=3.3.4,<4.0.0               # Postgres checkpointer runtime

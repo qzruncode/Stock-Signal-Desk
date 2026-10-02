@@ -119,7 +119,9 @@ class ExpertDefinition:
     max_concurrency: int = 1
     # Invocation budget, independent of how many distinct tools are allowed.
     # One indicator/source tool can be used for multiple required observations.
-    max_tool_calls: int = 12
+    # None inherits the run's shared budget. An explicit override is a
+    # server-owned expert policy, never an implicit per-mode cutoff.
+    max_tool_calls: int | None = None
     activation_policy: Callable[[str], bool] | None = None
     graph_node: str | None = None
 
@@ -131,8 +133,8 @@ class ExpertDefinition:
             raise ValueError(f"expert {normalized_id} must have a display_name")
         if int(self.max_concurrency) < 1 or int(self.max_concurrency) > 32:
             raise ValueError(f"expert {normalized_id} max_concurrency must be between 1 and 32")
-        if not 1 <= int(self.max_tool_calls) <= 16:
-            raise ValueError(f"expert {normalized_id} max_tool_calls must be between 1 and 16")
+        if self.max_tool_calls is not None and int(self.max_tool_calls) < 1:
+            raise ValueError(f"expert {normalized_id} max_tool_calls must be positive")
         object.__setattr__(self, "agent_id", normalized_id)
         object.__setattr__(self, "display_name", str(self.display_name).strip()[:96])
         object.__setattr__(self, "capabilities", tuple(str(item).strip()[:96] for item in self.capabilities if str(item).strip()))
@@ -334,10 +336,13 @@ class ScopedToolRegistry:
         arguments: dict[str, Any],
         *,
         approved: bool = False,
+        validation_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.get_tool(name) is None:
             raise KeyError(f"Tool not found in worker scope: {name}")
-        return self.parent.validate_model_arguments(name, arguments, approved=approved)
+        return self.parent.validate_model_arguments(
+            name, arguments, approved=approved, validation_context=validation_context,
+        )
 
     def effect_for(self, name: str, arguments: dict[str, Any]) -> str:
         if self.get_tool(name) is None:

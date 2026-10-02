@@ -227,7 +227,6 @@ export const ModelSettingsView: React.FC = () => {
       const result = await systemConfigApi.testModelConnection({
         items: TARGET_KEYS.map((key) => ({ key, value: submittedValues[key] ?? '' })),
         maskToken: config.maskToken,
-        timeoutSeconds: 30,
       });
       toast({
         title: result.success ? '测试成功' : '测试失败',

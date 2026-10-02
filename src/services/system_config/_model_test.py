@@ -3,17 +3,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
 from typing import Any, Dict, Sequence
 from urllib.parse import urlparse
 
-from src.llm.anthropic_gateway import (
-    AnthropicGatewayConfigError,
-    build_litellm_kwargs,
-    resolve_anthropic_gateway_config,
-)
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
+
+from src.llm.anthropic_gateway import AnthropicGatewayConfigError, resolve_anthropic_gateway_config
 logger = logging.getLogger(__name__)
 
 
@@ -26,12 +26,11 @@ class ModelTestMixin:
         "ANTHROPIC_MODEL",
     )
 
-    def test_model_connection(
+    async def test_model_connection(
         self,
         *,
         items: Sequence[Dict[str, str]],
         mask_token: str = "******",
-        timeout_seconds: float = 30.0,
     ) -> Dict[str, Any]:
         """Send a tiny model request without writing the submitted values."""
         effective_map = self._build_model_test_effective_map(items=items, mask_token=mask_token)
@@ -56,36 +55,46 @@ class ModelTestMixin:
                 retryable=False,
             )
 
+        started_at = time.perf_counter()
         try:
             gateway_config = resolve_anthropic_gateway_config(effective_map)
-            import litellm
-
-            started_at = time.perf_counter()
-            response = litellm.completion(
-                **build_litellm_kwargs(
-                    gateway_config,
-                    stream=False,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": "请只回复 OK，不要输出其他内容。",
-                        }
-                    ],
-                    max_tokens=16,
-                    timeout=float(timeout_seconds),
-                )
+            model = ChatAnthropic(
+                model_name=gateway_config["model"],
+                api_key=gateway_config["api_key"],
+                base_url=gateway_config["api_base"],
+                default_headers=gateway_config["extra_headers"],
+                max_tokens_to_sample=8,
+                temperature=0.1,
+                # Keep the connectivity probe on the same no-deadline SDK
+                # contract as interactive model responses.
+                timeout=None,
+                max_retries=0,
             )
-            latency_ms = int((time.perf_counter() - started_at) * 1000)
-            if not self._has_model_response_content(response):
+
+            has_content = False
+            for attempt in range(2):
+                try:
+                    response = await model.ainvoke([HumanMessage(content="Reply with OK.")])
+                    has_content = self._has_model_response_content(response)
+                    break
+                except Exception as exc:
+                    _, retryable = self._classify_model_test_exception(exc)
+                    if attempt == 0 and retryable:
+                        await asyncio.sleep(0.5)
+                        continue
+                    raise
+
+            if not has_content:
                 return self._build_model_test_result(
                     success=False,
-                    message="模型请求已返回，但没有收到有效文本响应。",
+                    message="模型服务已连接，但没有返回文本或思考内容。",
                     error_code="empty_response",
                     stage="model_response",
                     retryable=False,
-                    latency_ms=latency_ms,
+                    latency_ms=int((time.perf_counter() - started_at) * 1000),
                 )
 
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
             return self._build_model_test_result(
                 success=True,
                 message=f"模型连接成功（{gateway_config['model']}），已收到模型响应。",
@@ -104,14 +113,62 @@ class ModelTestMixin:
             )
         except Exception as exc:  # pragma: no cover - provider-specific exception types vary
             error_code, retryable = self._classify_model_test_exception(exc)
-            logger.warning("Model connection test failed (%s)", type(exc).__name__)
+            status_code = getattr(exc, "status_code", None)
+            raw_message = str(exc).lower()
+            if status_code == 502 and any(
+                marker in raw_message
+                for marker in ("connecttimeouterror", "connectionpool", "connect timeout")
+            ):
+                safe_message = (
+                    "模型网关返回 HTTP 502：连接上游模型服务超时，请检查网关到模型服务的网络或实例状态。"
+                )
+            else:
+                safe_message = self._safe_model_error_message(exc, effective_map)
+            logger.warning(
+                "Model connection test failed (%s, status=%s)",
+                type(exc).__name__,
+                status_code,
+            )
             return self._build_model_test_result(
                 success=False,
-                message=f"模型连接失败：{self._safe_model_error_message(exc, effective_map)}",
+                message=f"模型连接失败：{safe_message}",
                 error_code=error_code,
                 stage="model_request",
                 retryable=retryable,
+                latency_ms=int((time.perf_counter() - started_at) * 1000),
             )
+
+    def _has_model_response_content(self, response: Any) -> bool:
+        if isinstance(response, dict):
+            choices = response.get("choices") or []
+            for choice in choices:
+                if isinstance(choice, dict):
+                    delta = choice.get("delta") or choice.get("message") or {}
+                else:
+                    delta = getattr(choice, "delta", None) or getattr(choice, "message", None)
+                if delta is None:
+                    continue
+                for key in ("content", "reasoning_content", "reasoning"):
+                    value = delta.get(key) if isinstance(delta, dict) else getattr(delta, key, None)
+                    if self._has_non_empty_response_part(value):
+                        return True
+            return False
+        else:
+            content = getattr(response, "content", None)
+            additional = getattr(response, "additional_kwargs", {}) or {}
+            return self._has_non_empty_response_part(content) or any(
+                self._has_non_empty_response_part(additional.get(key))
+                for key in ("reasoning_content", "reasoning", "thinking")
+            )
+
+    def _has_non_empty_response_part(self, value: Any) -> bool:
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple)):
+            return any(self._has_non_empty_response_part(item) for item in value)
+        if isinstance(value, dict):
+            return any(self._has_non_empty_response_part(item) for item in value.values())
+        return False
 
     def _build_model_test_effective_map(
         self,
@@ -142,50 +199,6 @@ class ModelTestMixin:
 
         return effective
 
-    @staticmethod
-    def _has_model_response_content(response: Any) -> bool:
-        if isinstance(response, dict):
-            choices = response.get("choices") or []
-        else:
-            choices = getattr(response, "choices", None) or []
-        if not choices:
-            return False
-
-        first_choice = choices[0]
-        if isinstance(first_choice, dict):
-            message = first_choice.get("message") or {}
-            if isinstance(message, dict):
-                content = message.get("content")
-                reasoning_content = message.get("reasoning_content")
-            else:
-                content = None
-                reasoning_content = None
-        else:
-            message = getattr(first_choice, "message", None)
-            content = getattr(message, "content", None) if message is not None else None
-
-            reasoning_content = (
-                getattr(message, "reasoning_content", None) if message is not None else None
-            )
-
-        return any(
-            ModelTestMixin._has_non_empty_response_part(value)
-            for value in (content, reasoning_content)
-        )
-
-    @staticmethod
-    def _has_non_empty_response_part(value: Any) -> bool:
-        """Accept text returned in content, reasoning, or structured text blocks."""
-        if isinstance(value, list):
-            return any(ModelTestMixin._has_non_empty_response_part(part) for part in value)
-        if isinstance(value, dict):
-            return any(
-                ModelTestMixin._has_non_empty_response_part(value.get(key))
-                for key in ("text", "thinking", "content", "reasoning_content")
-                if key in value
-            )
-        return bool(str(value or "").strip())
-
     @classmethod
     def _safe_model_error_message(cls, exc: Exception, effective_map: Dict[str, str]) -> str:
         message = str(exc).strip()
@@ -204,6 +217,9 @@ class ModelTestMixin:
     @staticmethod
     def _classify_model_test_exception(exc: Exception) -> tuple[str, bool]:
         message = str(exc).lower()
+        status_code = getattr(exc, "status_code", None)
+        if status_code in {502, 503, 504}:
+            return "upstream_unavailable", True
         if isinstance(exc, TimeoutError) or "timeout" in message or "timed out" in message:
             return "timeout", True
         if isinstance(exc, OSError) or any(marker in message for marker in ("connection", "connect", "dns")):

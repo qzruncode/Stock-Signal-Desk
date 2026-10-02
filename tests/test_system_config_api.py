@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Integration tests for system configuration API endpoints."""
 
+import asyncio
 import os
 import tempfile
 import unittest
@@ -247,22 +248,26 @@ class SystemConfigApiTestCase(unittest.TestCase):
                 "latency_ms": 42,
             },
         ) as mock_test:
-            payload = system_config.test_model_connection(
-                request=ModelConnectionTestRequest(
-                    items=[
-                        {"key": "ANTHROPIC_BASE_URL", "value": "https://gw.example.com"},
-                        {"key": "ANTHROPIC_AUTH_TOKEN", "value": "secret-token"},
-                        {"key": "ANTHROPIC_MODEL", "value": "configured/provider-model"},
-                    ],
-                    timeout_seconds=5,
-                ),
-                service=self.service,
+            payload = asyncio.run(
+                system_config.test_model_connection(
+                    request=ModelConnectionTestRequest(
+                        items=[
+                            {"key": "ANTHROPIC_BASE_URL", "value": "https://gw.example.com"},
+                            {"key": "ANTHROPIC_AUTH_TOKEN", "value": "secret-token"},
+                            {"key": "ANTHROPIC_MODEL", "value": "configured/provider-model"},
+                        ],
+                    ),
+                    service=self.service,
+                )
             ).model_dump()
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["latency_ms"], 42)
         mock_test.assert_called_once()
-        self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
+        self.assertEqual(
+            set(mock_test.call_args.kwargs),
+            {"items", "mask_token"},
+        )
 
     def test_system_config_router_has_no_company_rag_model_test_routes(self) -> None:
         paths = {route.path for route in system_config.router.routes}

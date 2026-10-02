@@ -1,7 +1,6 @@
 import type { ErrorInfo, FC, ReactNode } from 'react';
 import {
   Component,
-  useState,
 } from 'react';
 import {
   AuiIf,
@@ -47,6 +46,7 @@ import { TeamCollaborationView } from './TeamBoard';
 import { NativeAssistantParts, NativeExecutionDisclosure } from './ThreadNativeParts';
 import { GoalMessageContent } from './GoalMessageContent';
 import { isRecord } from './AgentReasoningUtils';
+import { terminalRunFailureNotice } from './ChatRuntimeBridgeUtils';
 import type { AgentProductMode } from '../../utils/agentMode';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
@@ -190,6 +190,13 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
     s.metadata?.custom?.agent_execution_trace
     ?? s.metadata?.custom?.agentExecutionTrace
   ));
+  const terminalFailureNotice = useMessage((s) => terminalRunFailureNotice(
+    s.metadata?.custom?.agent_execution_trace
+      ?? s.metadata?.custom?.agentExecutionTrace,
+    s.metadata?.unstable_data,
+    s.metadata?.custom?.agent_run_status
+      ?? s.metadata?.custom?.agentRunStatus,
+  ));
   const hasTeamTerminalFailure = useMessage((s) => {
     if (productMode !== 'team') return false;
     const rawTrace = s.metadata?.custom?.agent_execution_trace
@@ -246,16 +253,10 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
     productMode === 'team' && hasTeamMessage ? publishedAnswerText : answerText,
     structuredAnswer,
   );
-  // A Team answer can arrive in the same transport update that moves the
-  // message to its terminal status.  Using only `isActive` would render that
-  // answer in one paint, which is the abrupt final block seen in the chat.
-  // A mounted live message starts without the accepted answer, so animate
-  // only when the answer appears after mount. A hydrated historical message
-  // already has answer text on its first render and therefore does not replay
-  // the typewriter animation after refresh.
-  const [answerPresentOnMount] = useState(() => Boolean(publishedAnswerText.trim()));
-  const answerArrivedAfterMount = Boolean(publishedAnswerText.trim()) && !answerPresentOnMount;
-  const animateAnswer = isActive || answerArrivedAfterMount;
+  // Progressive text is only a live-generation affordance. Once the message
+  // reaches a terminal status, render the canonical answer immediately; a
+  // background tab may throttle animation frames indefinitely.
+  const animateAnswer = isActive;
   const hasOrderedPart = useMessage((s) => s.content.some((part) => {
     if (part.type === 'tool-call') return true;
     if (part.type === 'data') {
@@ -335,7 +336,7 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
       <div className="relative min-w-0 flex-1 pb-5">
         <div className="w-full min-w-0 overflow-hidden text-[17px] leading-7 text-foreground sm:text-[18px]">
           {hasGoalMessage ? (
-            <GoalMessageContent animateAcceptedAnswer={answerArrivedAfterMount} />
+            <GoalMessageContent />
           ) : hasTeamMessage ? (
             <>
               {hasTeamProgressPart || isActive || hasTeamMessage ? (
@@ -369,7 +370,7 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
                 <AssistantTypingIndicator />
               ) : null}
               {hasNativeDisplayPart ? (
-                <NativeAssistantParts animateAcceptedAnswer={answerArrivedAfterMount} />
+                <NativeAssistantParts />
               ) : hasNativeProcessPart ? (
                 <NativeExecutionDisclosure>
                   <AgentExecutionTimeline
@@ -403,6 +404,14 @@ const AssistantMessage: FC<{ productMode: AgentProductMode }> = ({ productMode }
               <StructuredAnswerReferences answer={structuredAnswer} renderedText={displayAnswerText} />
             </>
           )}
+          {terminalFailureNotice ? (
+            <div
+              role="alert"
+              className="mt-2 rounded-lg border border-amber-300/60 bg-amber-50/70 px-3 py-2 text-sm leading-5 text-amber-900"
+            >
+              {terminalFailureNotice}
+            </div>
+          ) : null}
         </div>
         <div className="absolute bottom-0 left-0 flex h-5 items-center gap-1">
           <AssistantActionBar />

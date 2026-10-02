@@ -86,6 +86,118 @@ def test_quality_rejects_legacy_unresolved_citations() -> None:
     assert score["dimensions"]["evidence_links"]["details"]["failed_claim_checks"] == ["claim_news"]
 
 
+def test_quality_resolves_citations_to_exact_search_result_items() -> None:
+    projection = _quality_projection()
+    projection["tool_results"] = [{
+        "action_id": "search-eps",
+        "tool_call_id": "call-eps",
+        "tool_name": "search_knowledge_base",
+        "effect": "read",
+        "success": True,
+        "errors": [],
+    }]
+    projection["evidence"] = [{
+        "evidence_id": "ev_search-eps",
+        "action_id": "search-eps",
+        "tool_call_id": "call-eps",
+        "tool_name": "search_knowledge_base",
+        "effect": "read",
+        "success": True,
+        "has_data": True,
+        "evidence_eligible": True,
+        "source_refs": ["PDF 知识库"],
+        "result": {
+            "result_items": [{
+                "evidence_id": "ev_kb_eps",
+                "title": "2026年半年度报告.pdf · 第177页",
+                "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=177",
+                "summary": "基本每股收益为0.99元/股。",
+            }],
+        },
+    }]
+    projection["claim_evidence"] = [{
+        "claim_id": "claim_eps",
+        "text": "基本每股收益为0.99元/股。",
+        "kind": "fact",
+        "evidence_ids": ["ev_kb_eps"],
+        "checks": {
+            "tool_success": True,
+            "source": True,
+            "entity_scope": True,
+            "time": True,
+        },
+    }]
+    score = score_agent_run_snapshot({
+        "run": {
+            "status": "completed",
+            "tool_call_count": 1,
+            "final_text": "基本每股收益为0.99元/股。【证据 ev_kb_eps】",
+        },
+        "quality_projection": projection,
+    })
+
+    evidence_links = score["dimensions"]["evidence_links"]["details"]
+    assert score["passed"] is True
+    assert evidence_links["unknown_citations"] == []
+    assert evidence_links["unmapped_citations"] == []
+
+
+def test_quality_joins_compacted_search_hits_from_tool_observation() -> None:
+    projection = _quality_projection()
+    projection["tool_results"] = [{
+        "action_id": "search-eps",
+        "tool_call_id": "call-eps",
+        "tool_name": "search_knowledge_base",
+        "effect": "read",
+        "success": True,
+        "errors": [],
+        "result_items": [{
+            "evidence_id": "ev_kb_eps",
+            "title": "2026年半年度报告.pdf · 第7页",
+            "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=7",
+            "source": "PDF 知识库",
+            "summary": "基本每股收益为0.99元/股。",
+        }],
+    }]
+    projection["evidence"] = [{
+        "evidence_id": "ev_search-eps",
+        "action_id": "search-eps",
+        "tool_call_id": "call-eps",
+        "tool_name": "search_knowledge_base",
+        "effect": "read",
+        "success": True,
+        "has_data": True,
+        "evidence_eligible": True,
+        "source_refs": ["PDF 知识库"],
+    }]
+    projection["claim_evidence"] = [{
+        "claim_id": "claim_eps",
+        "text": "基本每股收益为0.99元/股。",
+        "kind": "fact",
+        "evidence_ids": ["ev_kb_eps"],
+        "checks": {
+            "tool_success": True,
+            "source": True,
+            "entity_scope": True,
+            "time": True,
+        },
+    }]
+
+    score = score_agent_run_snapshot({
+        "run": {
+            "status": "completed",
+            "tool_call_count": 1,
+            "final_text": "基本每股收益为0.99元/股。【证据 ev_kb_eps】",
+        },
+        "quality_projection": projection,
+    })
+
+    evidence_links = score["dimensions"]["evidence_links"]["details"]
+    assert score["passed"] is True
+    assert evidence_links["unknown_citations"] == []
+    assert evidence_links["unmapped_citations"] == []
+
+
 def _terminal_run(
     database: DatabaseManager,
     *,

@@ -18,7 +18,7 @@ from src.agent.run_registry import active_run_registry
 from src.agent.runtime_errors import emit_runtime_error
 from src.agent.runtime_safety import get_agent_runtime_limits
 from src.agent.tool_dispatch import ToolDispatcher, ToolDispatchOutcome, ToolDispatchRequest
-from src.tools.base import ToolProgressUpdate, classify_result_semantics
+from src.tools.base import ToolProgressUpdate, classify_result_semantics, tool_execution_context
 from src.tools.process_runner import execute_tool_isolated
 from src.tools.registry import ToolRegistry
 
@@ -279,7 +279,12 @@ class AtomicToolExecutor:
             raise ValueError("action requires action_id, tool_name, and object arguments")
         event_sink = _EXECUTION_EVENTS.get() or self.events
         event_controller = _EXECUTION_CONTROLLER.get() or self.controller
-        effect = self.registry.effect_for(tool_name, authored_arguments)
+        with tool_execution_context(
+            conversation_id=self.conversation_id, run_id=self.run_id,
+            tenant_id=self.tenant_id, owner_id=self.owner_id,
+            knowledge_base_ids=self.knowledge_base_ids,
+        ):
+            effect = self.registry.effect_for(tool_name, authored_arguments)
         if effect == "side_effect" and not approved:
             raise PermissionError(f"side-effect tool {tool_name} requires an approved interrupt")
         arguments = self.registry.validate_model_arguments(

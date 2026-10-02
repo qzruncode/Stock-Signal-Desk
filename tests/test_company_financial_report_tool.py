@@ -45,6 +45,7 @@ def test_import_tool_checks_server_approval_before_external_or_database_work() -
     with (
         tool_execution_context(knowledge_base_ids=("kb-1",)),
         tool_effect_approval(False),
+        patch("src.tools.company_financial_report_import._existing_report", return_value=None),
         patch("src.tools.company_financial_report_import._import_report") as import_report,
     ):
         response = import_company_financial_report(
@@ -60,6 +61,7 @@ def test_import_tool_uses_only_the_server_selected_single_knowledge_base() -> No
     with (
         tool_execution_context(knowledge_base_ids=("kb-selected",)),
         tool_effect_approval(True),
+        patch("src.tools.company_financial_report_import._existing_report", return_value=None),
         patch("src.tools.company_financial_report_import._active_selected_knowledge_bases", return_value=[{"id": "kb-selected", "name": "财报库"}]),
         patch("src.tools.company_financial_report_import._import_report", return_value=expected) as importer,
     ):

@@ -1,15 +1,18 @@
 """Typed contracts for the native multi-agent research graph.
 
 The coordinator owns task routing and the workers own domain observations.  A
-worker never hands an unbounded prompt transcript to another worker; it hands
-back one bounded, typed assessment plus server-owned evidence identifiers.
+worker never hands a prompt transcript to another worker; it hands back its
+native typed answer plus server-owned evidence identifiers without clipping
+the model-authored content.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from src.agent.runtime_safety import get_agent_runtime_limits
 
 
 OrchestratorRouteMode = Literal["direct", "plan", "team"]
@@ -50,12 +53,12 @@ class AgentTask(BaseModel):
     task_id: str = Field(min_length=1, max_length=96)
     agent_id: str = Field(min_length=1, max_length=96)
     agent_node: str = Field(min_length=1, max_length=96)
-    objective: str = Field(min_length=1, max_length=1_200)
+    objective: str = Field(min_length=1)
     input_refs: list[str] = Field(default_factory=list, max_length=12)
     # Capability count is not the per-task invocation budget (max_tool_calls).
     # The registered financial expert already owns more than 16 read tools.
     allowed_tools: list[str] = Field(min_length=1, max_length=64)
-    output_format: str = Field(default="结构化领域观察、限制和待确认问题", min_length=1, max_length=600)
+    output_format: str = Field(default="结构化领域观察、限制和待确认问题", min_length=1)
     timeout_seconds: int = Field(default=120, ge=5, le=300)
     failure_strategy: TeamFailureStrategy = "partial"
     # ``retry`` is bounded at the task boundary.  The parent graph records the
@@ -63,10 +66,10 @@ class AgentTask(BaseModel):
     max_attempts: int = Field(default=2, ge=1, le=3)
     required_evidence: list[str] = Field(default_factory=list, max_length=8)
     success_criteria: list[str] = Field(min_length=1, max_length=8)
-    max_tool_calls: int = Field(default=6, ge=1, le=16)
+    max_tool_calls: int = Field(default_factory=lambda: get_agent_runtime_limits().max_tool_calls, ge=1)
     parallel_group: str = Field(default="research", min_length=1, max_length=64)
     depends_on: list[str] = Field(default_factory=list, max_length=8)
-    activation_reason: str = Field(default="", max_length=600)
+    activation_reason: str = ""
 
 class AgentTaskDraft(BaseModel):
     """Provider-facing task draft owned by the coordinator.
@@ -82,14 +85,18 @@ class AgentTaskDraft(BaseModel):
 
     task_id: str = Field(default="", max_length=96)
     agent_id: str = Field(min_length=1, max_length=96)
-    objective: str = Field(min_length=1, max_length=1_200)
+    objective: str = Field(min_length=1)
     input_refs: list[str] = Field(default_factory=list, max_length=12)
     depends_on: list[str] = Field(default_factory=list, max_length=8)
     success_criteria: list[str] = Field(min_length=1, max_length=8)
-    activation_reason: str = Field(default="", max_length=600)
+    activation_reason: str = ""
     # Hints prioritize capabilities within the server-owned expert scope;
     # they do not remove other registered capabilities needed by the goal.
-    tool_hints: list[str] = Field(default_factory=list, max_length=16)
+    tool_hints: list[str] = Field(
+        default_factory=list,
+        max_length=16,
+        description="只填写能力目录中精确的工具名称；不要填写自然语言指令、检索 query 或目录外名称。",
+    )
     failure_strategy: TeamFailureStrategy = "partial"
     max_attempts: int = Field(default=2, ge=1, le=3)
 
@@ -104,11 +111,11 @@ class TeamPlanDraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    progress_text: str = Field(default="", max_length=1_800)
-    goal: str = Field(min_length=1, max_length=1_200)
+    progress_text: str = ""
+    goal: str = Field(min_length=1)
     completion_criteria: list[str] = Field(min_length=1, max_length=8)
-    tasks: list[AgentTaskDraft] = Field(min_length=2, max_length=12)
-    synthesis_instructions: str = Field(default="", max_length=1_600)
+    tasks: list[AgentTaskDraft] = Field(min_length=1, max_length=12)
+    synthesis_instructions: str = ""
 
 
 class TeamPlan(BaseModel):
@@ -119,12 +126,12 @@ class TeamPlan(BaseModel):
     # Keep the user-facing projection first in the provider schema.  With
     # streamed tool-call arguments this lets the coordinator explain its
     # actual delegation before the larger task graph finishes serializing.
-    progress_text: str = Field(default="", max_length=1_800)
+    progress_text: str = ""
     plan_id: str = Field(min_length=1, max_length=96)
-    goal: str = Field(min_length=1, max_length=1_200)
+    goal: str = Field(min_length=1)
     completion_criteria: list[str] = Field(min_length=1, max_length=8)
-    tasks: list[AgentTask] = Field(min_length=2, max_length=12)
-    synthesis_instructions: str = Field(min_length=1, max_length=1_600)
+    tasks: list[AgentTask] = Field(min_length=1, max_length=12)
+    synthesis_instructions: str = Field(min_length=1)
     revision: int = Field(default=1, ge=1, le=32)
     max_reexecution_rounds: int = Field(default=2, ge=0, le=5)
     budget: dict[str, int] = Field(default_factory=dict, max_length=12)
@@ -170,10 +177,10 @@ class DraftSection(BaseModel):
     task_id: str = Field(min_length=1, max_length=96)
     agent_id: str = Field(min_length=1, max_length=96)
     title: str = Field(min_length=1, max_length=160)
-    content: str = Field(default="", max_length=4_000)
+    content: str = ""
     status: TeamWorkerStatus = "partial"
     evidence_ids: list[str] = Field(default_factory=list, max_length=80)
-    limitations: list[str] = Field(default_factory=list, max_length=8)
+    limitations: list[str] = Field(default_factory=list)
 
 
 class DraftAggregation(BaseModel):
@@ -220,7 +227,7 @@ class ConflictIssue(BaseModel):
         "other",
     ] = "other"
     severity: Literal["low", "medium", "high"] = "medium"
-    reason: str = Field(min_length=1, max_length=700)
+    reason: str = Field(min_length=1)
     task_ids: list[str] = Field(default_factory=list, max_length=8)
     # Models cite stable per-run source slots.  Canonical evidence hashes are
     # resolved by the server and remain an internal publication identifier.
@@ -233,8 +240,8 @@ class ConflictAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: ConflictStatus
-    reason: str = Field(default="", max_length=900)
-    progress_text: str = Field(default="", max_length=1_200)
+    reason: str = ""
+    progress_text: str = ""
     issues: list[ConflictIssue] = Field(default_factory=list, max_length=12)
     risk_flags: list[str] = Field(default_factory=list, max_length=12)
     requires_adversarial_review: bool = False
@@ -246,8 +253,8 @@ class CaseReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stance: Literal["bull", "bear"]
-    summary: str = Field(min_length=1, max_length=1_600)
-    progress_text: str = Field(default="", max_length=1_200)
+    summary: str = Field(min_length=1)
+    progress_text: str = ""
     arguments: list[str] = Field(default_factory=list, max_length=10)
     supporting_source_ids: list[int] = Field(default_factory=list, max_length=40)
     counter_source_ids: list[int] = Field(default_factory=list, max_length=40)
@@ -274,9 +281,9 @@ class ConsensusResolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     verdict: ConsensusVerdict
-    conclusion: str = Field(min_length=1, max_length=1_800)
-    rationale: str = Field(default="", max_length=1_200)
-    progress_text: str = Field(default="", max_length=1_200)
+    conclusion: str = Field(min_length=1)
+    rationale: str = ""
+    progress_text: str = ""
     source_ids: list[int] = Field(default_factory=list, max_length=80)
     unresolved_conflicts: list[str] = Field(default_factory=list, max_length=12)
     confidence: TeamConfidence = "unknown"
@@ -289,9 +296,9 @@ class OrchestratorRoute(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    progress_text: str = Field(default="", max_length=1_200)
+    progress_text: str = ""
     mode: OrchestratorRouteMode
-    reason: str = Field(min_length=1, max_length=600)
+    reason: str = Field(min_length=1)
     execution_strategy: Literal["single_agent", "team"] = "single_agent"
 
 
@@ -300,14 +307,14 @@ class WorkerAssessment(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    summary: str = Field(min_length=1, max_length=2_400)
+    summary: str = Field(min_length=1)
     # The worker's user-facing projection is model-authored and scoped to its
     # own lane; it is separate from the server lifecycle summary.
-    progress_text: str = Field(default="", max_length=1_800)
-    findings: list[str] = Field(default_factory=list, max_length=12)
-    finding_evidence_refs: list[list[str]] = Field(default_factory=list, max_length=12)
-    limitations: list[str] = Field(default_factory=list, max_length=8)
-    open_questions: list[str] = Field(default_factory=list, max_length=8)
+    progress_text: str = ""
+    findings: list[str] = Field(default_factory=list)
+    finding_evidence_refs: list[list[str]] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
     confidence: TeamConfidence = "unknown"
 
 
@@ -323,10 +330,10 @@ class CoordinatorHandoffNarration(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    progress_text: str = Field(min_length=1, max_length=1_200)
+    progress_text: str = Field(min_length=1)
     received_task_ids: list[str] = Field(default_factory=list, max_length=12)
     pending_task_ids: list[str] = Field(default_factory=list, max_length=12)
-    next_action: str = Field(default="", max_length=600)
+    next_action: str = ""
 
 
 class CriterionCheck(BaseModel):
@@ -340,9 +347,9 @@ class CriterionCheck(BaseModel):
     criterion_index: int = Field(ge=1, le=8)
     # The server replaces this display text with the canonical plan criterion;
     # keeping it optional makes the model contract smaller and less forgeable.
-    criterion: str = Field(default="", max_length=600)
+    criterion: str = ""
     verdict: CriteriaVerdict
-    explanation: str = Field(min_length=1, max_length=800)
+    explanation: str = Field(min_length=1)
     source_ids: list[int] = Field(default_factory=list, max_length=80)
 
 
@@ -352,6 +359,12 @@ class CriteriaAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     checks: list[CriterionCheck] = Field(min_length=1, max_length=8)
+
+
+class VerifiedCriterionCheck(CriterionCheck):
+    """Server-owned references that survive worker-to-Team source renumbering."""
+
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class AgentResult(BaseModel):
@@ -370,19 +383,19 @@ class AgentResult(BaseModel):
     # five more rounds, so the persisted report must accept the combined
     # attempt number instead of crashing the parent graph on a valid repair.
     attempt: int = Field(default=1, ge=1, le=8)
-    summary: str = Field(default="", max_length=2_400)
-    findings: list[str] = Field(default_factory=list, max_length=12)
-    finding_evidence_refs: list[list[str]] = Field(default_factory=list, max_length=12)
-    limitations: list[str] = Field(default_factory=list, max_length=8)
-    open_questions: list[str] = Field(default_factory=list, max_length=8)
+    summary: str = ""
+    findings: list[str] = Field(default_factory=list)
+    finding_evidence_refs: list[list[str]] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
     confidence: TeamConfidence = "unknown"
     failure_strategy: TeamFailureStrategy = "partial"
     evidence_ids: list[str] = Field(default_factory=list, max_length=80)
-    tool_call_count: int = Field(default=0, ge=0, le=64)
-    model_turn_count: int = Field(default=0, ge=0, le=64)
+    tool_call_count: int = Field(default=0, ge=0)
+    model_turn_count: int = Field(default=0, ge=0)
     assessment_status: Literal["typed", "fallback"] = "typed"
     criteria_status: CriteriaStatus = "blocked"
-    criteria_checks: list[CriterionCheck] = Field(default_factory=list, max_length=8)
+    criteria_checks: list[VerifiedCriterionCheck] = Field(default_factory=list, max_length=8)
     unmet_criteria: list[str] = Field(default_factory=list, max_length=8)
     error_code: str | None = Field(default=None, max_length=128)
     error_detail: str = Field(default="", max_length=600)
@@ -447,9 +460,12 @@ class TeamReviewIssue(BaseModel):
         "other",
     ] = "other"
     severity: Literal["low", "medium", "high"] = "medium"
-    reason: str = Field(min_length=1, max_length=600)
-    task_ids: list[str] = Field(default_factory=list, max_length=8)
-    repair_instruction: str = Field(default="", max_length=600)
+    reason: str = Field(min_length=1)
+    task_ids: list[str] = Field(
+        default_factory=list, max_length=8,
+        description="Exact task_ids from the current Team plan. Required and non-empty when resolution=research.",
+    )
+    repair_instruction: str = ""
     resolution: Literal["research", "qualify", "block"] = Field(
         default="research",
         description=(
@@ -458,6 +474,12 @@ class TeamReviewIssue(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def require_research_targets(self) -> "TeamReviewIssue":
+        if self.resolution == "research" and not any(str(value).strip() for value in self.task_ids):
+            raise ValueError("research issues must include non-empty task_ids from the current plan")
+        return self
+
 
 class CriticReview(BaseModel):
     """Independent review of coverage, evidence, and semantic safety."""
@@ -465,8 +487,8 @@ class CriticReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     verdict: TeamReviewVerdict
-    summary: str = Field(default="", max_length=900)
-    progress_text: str = Field(default="", max_length=1_200)
+    summary: str = ""
+    progress_text: str = ""
     issues: list[TeamReviewIssue] = Field(default_factory=list, max_length=12)
 
 

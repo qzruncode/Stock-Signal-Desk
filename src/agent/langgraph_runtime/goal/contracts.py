@@ -118,8 +118,12 @@ class GoalFinalAnswer(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    answer: str = Field(min_length=1, max_length=24_000)
-    evidence_ids: list[str] = Field(default_factory=list, max_length=80)
+    answer: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(
+        default_factory=list,
+        max_length=80,
+        description="支撑最终答案事实结论的 evidence_id，只能从本轮 eligible=true 的证据中选择。",
+    )
     limitations: list[str] = Field(default_factory=list, max_length=12)
 
 

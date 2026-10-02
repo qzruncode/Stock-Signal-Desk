@@ -566,6 +566,39 @@ describe('buildTeamBoardModel', () => {
     expect(model.problem).toBe(true);
   });
 
+  it('surfaces a terminal provider outage as a partial Team failure', () => {
+    const model = buildTeamBoardModel(
+      [],
+      [stage({
+        stage: 'publish',
+        status: 'failed',
+        summary: '模型服务暂时不可用；已保留已有工具观察和证据。',
+        error_code: 'model_provider_unavailable',
+        details: { team_id: 'team-1' },
+      })],
+      {
+        team: {
+          team_id: 'team-1',
+          status: 'partial',
+          plan: null,
+          failure: {
+            status: 'partial',
+            error_code: 'model_provider_unavailable',
+            detail: '模型服务暂时不可用；已保留已有工具观察和证据。',
+            dispatch_status: 'not_started',
+          },
+        },
+      } as unknown as AgentExecutionTrace,
+      false,
+    );
+
+    expect(model.failure).toEqual(expect.objectContaining({
+      status: 'partial',
+      errorCode: 'model_provider_unavailable',
+      dispatchStatus: 'not_started',
+    }));
+  });
+
   it('marks a post-dispatch Team failure as stopped instead of not started', () => {
     const model = buildTeamBoardModel(
       [],

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 from src.agent.tool_dispatch import ToolDispatchRequest, ToolDispatcher
-from src.tools.base import ToolSpec, current_tool_execution_context, object_schema
+from src.tools.base import ToolSpec, current_tool_execution_context, object_schema, tool_execution_context
 from src.tools.registry import ToolRegistry
 
 
@@ -75,3 +75,31 @@ def test_checkpoint_restore_keeps_only_bounded_server_selected_knowledge_bases()
         assert ids == [f"kb-{index}" for index in range(1, 9)]
 
     asyncio.run(scenario())
+
+
+def test_failed_retrieval_is_not_reported_as_a_successful_no_evidence_search(monkeypatch):
+    from src.rag.retrieval import RagSearchError
+    from src.tools.search_knowledge_base import search_knowledge_base
+
+    class UnavailableSearch:
+        def search(self, *_args, **_kwargs):
+            raise RagSearchError("Reranker 服务连接失败。", code="network_error", retryable=True)
+
+    monkeypatch.setattr("src.tools.search_knowledge_base.RagSearchService", UnavailableSearch)
+    with tool_execution_context(knowledge_base_ids=("kb-selected",), tenant_id="local", owner_id="admin"):
+        result = search_knowledge_base("报告主营业务")
+    assert result["success"] is False
+    assert result["no_evidence"] is False
+    assert result["retrieval_completed"] is False
+    assert result["retryable"] is True
+    assert result["error_code"] == "network_error"
+
+
+def test_missing_scope_does_not_claim_the_knowledge_base_has_no_document():
+    from src.tools.search_knowledge_base import search_knowledge_base
+
+    with tool_execution_context():
+        result = search_knowledge_base("报告主营业务")
+    assert result["success"] is False
+    assert result["no_evidence"] is False
+    assert result["retrieval_completed"] is False

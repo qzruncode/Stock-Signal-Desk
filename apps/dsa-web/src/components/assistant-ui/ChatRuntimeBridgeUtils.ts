@@ -66,6 +66,37 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
 
+export const terminalRunFailureNotice = (
+  trace: unknown,
+  rawStages: unknown,
+  runStatus?: unknown,
+): string => {
+  if (!isRecord(trace)) return '';
+  const rawMetadata = trace.runMetadata ?? trace.run_metadata;
+  const rawExecution = isRecord(rawMetadata) ? rawMetadata.execution : undefined;
+  const status = runStatus ?? (isRecord(rawExecution) ? rawExecution.status : undefined);
+  if (status !== 'failed' && status !== 'partial') return '';
+
+  const stages = Array.isArray(rawStages)
+    ? rawStages
+    : Array.isArray(trace.stages)
+      ? trace.stages
+      : [];
+  const failedStage = [...stages].reverse().find((stage) => (
+    isRecord(stage) && (stage.status === 'failed' || stage.status === 'blocked')
+  ));
+  const stageName = isRecord(failedStage) ? String(failedStage.stage || '') : '';
+  if (stageName === 'routing') {
+    return '本轮未能开始分析：自动判断执行模式失败。请稍后点击“重新生成”重试。';
+  }
+
+  const summary = isRecord(failedStage) ? String(failedStage.summary || '').trim() : '';
+  if (status === 'partial') {
+    return `本轮未能完整完成${summary ? `：${summary}` : '。'} 执行详情已保留，可点击“重新生成”重试。`;
+  }
+  return `本轮执行未完成${summary ? `：${summary}` : ''}。执行详情已保留，可点击“重新生成”重试。`;
+};
+
 /**
  * Keep headings in a terminal answer renderable when adjacent structured
  * blocks do not include the blank line that Markdown requires.
@@ -88,6 +119,28 @@ const normalizeAnswerMarkdownBoundaries = (
       }
       return lineBreak;
     },
+  );
+};
+
+const comparableTeamAnswer = (text: string): string => normalizeAnswerForTraceMatch(
+  text.replace(/【\s*(?:(?:证据)\s*[:：]?\s*)?ev_[^\s】]+】/gu, ''),
+).replace(/\s*(\[本轮结果存在未完成的核验：)/g, '$1');
+
+const matchingCitationBearingTeamAnswer = (
+  parts: Record<string, unknown>[],
+  canonicalAnswer: string,
+): boolean => {
+  const answerParts = parts.flatMap((part) => {
+    if (String(part.type || '') !== 'text') return [];
+    const displayKind = String(part.displayKind ?? part.display_kind ?? 'progress');
+    const text = String(part.text || '');
+    return displayKind === 'answer' && text ? [text] : [];
+  });
+  const persistedAnswer = answerParts.join('\n\n');
+  const hasEvidenceMarker = /【\s*(?:(?:证据)\s*[:：]?\s*)?ev_[^\s】]+】/u.test(persistedAnswer);
+  return Boolean(
+    hasEvidenceMarker
+      && comparableTeamAnswer(persistedAnswer) === comparableTeamAnswer(canonicalAnswer),
   );
 };
 
@@ -208,9 +261,14 @@ const displayPartsForRuntime = (
     : [];
   const replayParts = rawParts;
   // Team's terminal narrative has one owner: the committed chat answer.
-  // A bounded execution trace is for the collaboration lanes, not a second
-  // copy of the answer that may silently replace it with a truncated prefix.
+  // A bounded execution trace is not allowed to replace a complete answer
+  // with a truncated prefix. When its citation-bearing answer matches after
+  // removing evidence markers and normalizing formatting, keep that copy so
+  // PDF references survive conversation hydration.
   const canonicalTeamAnswer = Boolean(canonicalAnswer && executionTrace?.team);
+  const hasCompleteCitationAnswer = canonicalTeamAnswer
+    && matchingCitationBearingTeamAnswer(rawParts, canonicalAnswer);
+  const useCanonicalTeamAnswer = canonicalTeamAnswer && !hasCompleteCitationAnswer;
   let answerPartSeen = false;
   const seenProgressTexts = new Set<string>();
   const seenAnswerSectionNumbers = new Set<string>();
@@ -221,7 +279,7 @@ const displayPartsForRuntime = (
     const type = String(rawPart.type || '');
     if (type === 'text') {
       const displayKind = String(rawPart.displayKind ?? rawPart.display_kind ?? 'progress');
-      if (canonicalTeamAnswer && displayKind === 'answer') return;
+      if (useCanonicalTeamAnswer && displayKind === 'answer') return;
       const rawText = String(rawPart.text || '');
       const normalizedText = displayKind === 'answer'
         ? normalizeAnswerMarkdownBoundaries(rawText, seenAnswerSectionNumbers)
@@ -295,7 +353,7 @@ const displayPartsForRuntime = (
     parts.push(toolPart as RuntimeContentPart);
   });
 
-  if (canonicalAnswer && (canonicalTeamAnswer || !answerPartSeen)) {
+  if (canonicalAnswer && (useCanonicalTeamAnswer || !answerPartSeen)) {
     parts.push({
       type: 'text',
       text: canonicalAnswer,
@@ -401,6 +459,7 @@ export const toRuntimeMessages = (
                   ...(messageExecutionTrace
                     ? { custom: {
                         agent_execution_trace: messageExecutionTrace,
+                        ...(traceRecord?.status ? { agent_run_status: traceRecord.status } : {}),
                         ...(runDurationMs !== undefined ? { agent_run_duration_ms: runDurationMs } : {}),
                       } }
                     : {}),
@@ -416,6 +475,9 @@ export const toRuntimeMessages = (
     && hasPersistedExecution(persistedStages, executionTrace)
   ) {
     const stageRunId = latestStage?.runId ?? latestStage?.run_id;
+    const currentTraceRecord = historicalTraceRecords.find((record) => (
+      record.runId === String(runId || stageRunId || '')
+    ));
     runtimeMessages.push({
       id: `${conversationId}-agent-trace-${runId || stageRunId || 'latest'}`,
       role: 'assistant',
@@ -423,7 +485,18 @@ export const toRuntimeMessages = (
       content: displayPartsForRuntime(executionTrace, normalizedAssistantText),
       metadata: {
         ...(persistedStages.length > 0 ? { unstable_data: persistedStages } : {}),
-        ...(executionTrace ? { custom: { agent_execution_trace: executionTrace } } : {}),
+        ...(executionTrace ? {
+          custom: {
+            agent_execution_trace: executionTrace,
+            ...(
+              currentTraceRecord?.status
+                ? { agent_run_status: currentTraceRecord.status }
+                : latestStage?.status === 'failed'
+                  ? { agent_run_status: 'failed' }
+                  : {}
+            ),
+          },
+        } : {}),
       },
     });
   }

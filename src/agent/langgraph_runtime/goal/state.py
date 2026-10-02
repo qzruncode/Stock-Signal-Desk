@@ -50,12 +50,10 @@ class GoalState(LangChainAgentState, total=False):
     goal_current_action_id: str
     goal_pending_confirmation_criteria: list[str]
     goal_started_at: str
-    goal_deadline_epoch: float
     goal_iterations: int
     goal_replan_count: int
     goal_iteration_limit: int
     goal_replan_limit: int
-    goal_time_limit_seconds: int
     goal_tool_call_limit: int
     goal_model_call_limit: int
     goal_action_validation_repair_limit: int
@@ -111,12 +109,10 @@ class GoalGraphInput(TypedDict, total=False):
     goal_current_action_id: str
     goal_pending_confirmation_criteria: list[str]
     goal_started_at: str
-    goal_deadline_epoch: float
     goal_iterations: int
     goal_replan_count: int
     goal_iteration_limit: int
     goal_replan_limit: int
-    goal_time_limit_seconds: int
     goal_tool_call_limit: int
     goal_model_call_limit: int
     goal_action_validation_repair_limit: int
@@ -151,6 +147,7 @@ class GoalContext:
     tenant_id: str
     owner_id: str
     knowledge_base_ids: tuple[str, ...] = ()
+    knowledge_base_catalog: dict[str, Any] | None = None
     side_effect_lock: Any | None = None
 
 

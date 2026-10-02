@@ -384,9 +384,24 @@ class GraphEventBridge:
         if not normalized:
             return
 
+        evidence_records = list(evidence)
+        tool_records = list(tool_results)
+        structured_suffix: str | None = None
         if structured_answer is not None:
-            evidence_records = list(evidence)
-            tool_records = list(tool_results)
+            structured_suffix = self._structured_answer_suffix(
+                normalized,
+                structured_answer,
+                evidence_records,
+                tool_records,
+            )
+            if structured_suffix is None:
+                # A terminal fallback or repaired answer can supersede an
+                # earlier model candidate. Never let the candidate's typed
+                # parts replace the server-owned text that was actually
+                # accepted for publication.
+                structured_answer = None
+
+        if structured_answer is not None:
             display_parts = structured_answer_display_parts(
                 structured_answer,
                 evidence_records,
@@ -447,14 +462,8 @@ class GraphEventBridge:
                             else None,
                         )
 
-                suffix = self._structured_answer_suffix(
-                    normalized,
-                    structured_answer,
-                    evidence_records,
-                    tool_records,
-                )
-                if suffix:
-                    self._publish_text_delta(suffix, display_kind="answer")
+                if structured_suffix:
+                    self._publish_text_delta(structured_suffix, display_kind="answer")
                 self._last_committed_answer = normalized
                 self._displayed_structured_answer_key = display_key
                 return
@@ -467,6 +476,14 @@ class GraphEventBridge:
         # it before publishing the validated answer so retries cannot append
         # the same full answer over and over.
         self._model_text_buffer = []
+        # Plain terminal fallbacks need the same boundary as typed answers.
+        # Otherwise a preceding progress delta and this answer coalesce into
+        # one progress part, and terminal hydration appends the answer again.
+        self._emit_display_part(
+            name="agent-answer-boundary",
+            data={"round_id": self._round_id},
+            part_id=f"{self.run_id}:answer",
+        )
         streamed = self._model_text_published if self._model_progress_committed else ""
         if streamed == normalized:
             pass
@@ -487,8 +504,8 @@ class GraphEventBridge:
         structured_answer: Mapping[str, Any],
         evidence: Sequence[Any],
         tool_results: Sequence[Any],
-    ) -> str:
-        """Keep terminal diagnostics after the structured blocks in order."""
+    ) -> str | None:
+        """Return the terminal suffix only when the typed answer matches it."""
         without_chart_fallback = render_structured_answer(
             structured_answer,
             evidence,
@@ -504,7 +521,7 @@ class GraphEventBridge:
         for rendered in (with_chart_fallback, without_chart_fallback):
             if rendered and normalized.startswith(rendered):
                 return normalized[len(rendered):].strip()
-        return ""
+        return None
 
     def _publish_model_text(self, value: str) -> None:
         text = str(value or "")
@@ -565,7 +582,7 @@ class GraphEventBridge:
         blocks = [
             {
                 "section": str(block.get("section") or "")[:160],
-                "content": str(block.get("content") or "")[:12_000],
+                "content": str(block.get("content") or ""),
             }
             for block in list(report.get("blocks") or [])[:16]
             if isinstance(block, Mapping) and str(block.get("content") or "").strip()

@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Anthropic 网关单源 LLM 接入 helper。
+"""Anthropic-compatible model gateway configuration.
 
 全后端统一的 LLM 调用入口：仅读 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` /
 `ANTHROPIC_MODEL` 三个环境变量（由前端「设置 - 模型设置」页写入），三者任一缺失
 即抛 :class:`AnthropicGatewayConfigError`，不回落到任何多供应商来源。
 
-底层仍用 `litellm`（`custom_llm_provider="anthropic"`）发起 HTTP 调用，因此本模块
-只收敛「配置解析 + kwargs 组装」，不替换 litellm 库本身。
+Interactive chat, settings connectivity checks, and runtime health probes use
+LangChain's maintained Anthropic adapter with an explicit ``timeout=None``.
+LiteLLM remains available for token counting, but must not transport model
+responses: its ``timeout=None`` may resolve to an internal finite default.
 """
 
 from __future__ import annotations
@@ -83,7 +85,6 @@ def resolve_anthropic_gateway_config(values: Mapping[str, Any] | None = None) ->
     # 再清洗 ANSI 转义。后缀仅用于本地窗口判定，传给 litellm/网关前剥离。
     stripped_model, context_window = _parse_model_context_window(raw_model.strip())
     model_name = _clean_model_name(stripped_model)
-
     return {
         "model": model_name,
         "custom_llm_provider": "anthropic",
@@ -108,8 +109,8 @@ def build_litellm_kwargs(llm_cfg: Dict[str, Any], *, stream: bool, **extra: Any)
     kwargs: Dict[str, Any] = {
         "model": llm_cfg["model"],
         "stream": stream,
-        # Model thinking has no application-imposed deadline. Cancellation and
-        # provider-reported failures remain observable without a local timer.
+        # This legacy kwargs helper is not used for model response transport;
+        # LiteLLM may replace None with its own finite default.
         "timeout": None,
     }
     if llm_cfg.get("api_key"):

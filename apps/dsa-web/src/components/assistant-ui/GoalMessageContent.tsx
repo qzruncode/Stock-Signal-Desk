@@ -7,7 +7,7 @@ import { StructuredAnswerReferences } from './StructuredAnswerReferences';
 import { structuredAnswerFromTrace } from './StructuredAnswerReferencesUtils';
 
 /** Model prose and native tools share one ordered chat stream, live or replayed. */
-export const GoalMessageContent: FC<{ animateAcceptedAnswer?: boolean }> = ({ animateAcceptedAnswer }) => {
+export const GoalMessageContent: FC = () => {
   const running = useMessage((state) => state.status?.type === 'running');
   const answerText = useMessage((state) => assistantPublishedAnswerTextFromContent(state.content));
   const trace = useMessage((state) => (
@@ -20,7 +20,7 @@ export const GoalMessageContent: FC<{ animateAcceptedAnswer?: boolean }> = ({ an
 
   return (
     <>
-      <NativeAssistantParts animateAcceptedAnswer={animateAcceptedAnswer} includeStageParts={false} />
+      <NativeAssistantParts includeStageParts={false} />
       <StructuredAnswerReferences
         answer={structuredAnswerFromTrace(trace)}
         renderedText={answerText}

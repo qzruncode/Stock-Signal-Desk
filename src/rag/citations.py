@@ -14,19 +14,29 @@ _PAGE_REFERENCE_PATTERNS = (
     re.compile(r"\bpages?\s+(\d+)(?:\s*(?:-|–|—|~|to)\s*(\d+))?\b", re.IGNORECASE),
     re.compile(r"\bp\.\s*(\d+)(?:\s*(?:-|–|—|~)\s*(\d+))?\b", re.IGNORECASE),
 )
+_CHINESE_PAGE_LIST = re.compile(
+    r"第\s*(\d+(?:\s*(?:-|–|—|~|～|至|到)\s*\d+)?"
+    r"(?:\s*(?:、|,|，|和|及)\s*\d+(?:\s*(?:-|–|—|~|～|至|到)\s*\d+)?)+)\s*页"
+)
+_PAGE_NUMBER_RANGE = re.compile(r"(\d+)(?:\s*(?:-|–|—|~|～|至|到)\s*(\d+))?")
 _MAX_PAGE_RANGE_SIZE = 200
 
 
 def _pages_in_text(value: Any) -> set[int]:
     pages: set[int] = set()
     text = str(value or "")
-    for pattern in _PAGE_REFERENCE_PATTERNS:
-        for match in pattern.finditer(text):
-            start = int(match.group(1))
-            end = int(match.group(2) or start)
-            if start < 1 or end < start or end - start > _MAX_PAGE_RANGE_SIZE:
-                continue
-            pages.update(range(start, end + 1))
+    matches = [match for pattern in _PAGE_REFERENCE_PATTERNS for match in pattern.finditer(text)]
+    matches.extend(
+        page_match
+        for page_list in _CHINESE_PAGE_LIST.finditer(text)
+        for page_match in _PAGE_NUMBER_RANGE.finditer(page_list.group(1))
+    )
+    for match in matches:
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
+        if start < 1 or end < start or end - start > _MAX_PAGE_RANGE_SIZE:
+            continue
+        pages.update(range(start, end + 1))
     return pages
 
 
@@ -105,16 +115,77 @@ def _exact_text_match_score(claim: str, passage: str) -> int:
     return 0
 
 
+def _numeric_evidence_match_score(claim: str, passage: str) -> int:
+    """Match page-scoped numeric claims only when values and a label are exact.
+
+    This is deliberately narrower than semantic matching: every material
+    number in the claim must occur in the retrieved passage, and the passage
+    must share a concrete Chinese label or English term with the claim.
+    """
+    percentages = re.findall(
+        r"[+-]?\d[\d,]*(?:\.\d+)?\s*%",
+        claim,
+    )
+    without_percentages = re.sub(
+        r"[+-]?\d[\d,]*(?:\.\d+)?\s*%",
+        " ",
+        claim,
+    )
+    long_numbers = [
+        value
+        for value in re.findall(r"[+-]?\d[\d,]*(?:\.\d+)?", without_percentages)
+        if sum(character.isdigit() for character in value) >= 5
+    ]
+    values = [*percentages, *long_numbers]
+    if not values:
+        return 0
+
+    normalized_passage = re.sub(r"\s+", "", passage).replace(",", "")
+    normalized_values = [
+        re.sub(r"\s+", "", value).replace(",", "")
+        for value in values
+    ]
+    if any(value not in normalized_passage for value in normalized_values):
+        return 0
+
+    chinese_runs = re.findall(r"[\u3400-\u9fff]{4,}", claim)
+    english_anchors = {
+        value
+        for value in re.findall(r"[a-z]{5,}", claim.casefold())
+    }
+    shared_chinese_anchor_length = 0
+    for run in chinese_runs:
+        for width in range(min(len(run), 32), 3, -1):
+            if any(
+                run[index : index + width] in passage
+                for index in range(len(run) - width + 1)
+            ):
+                shared_chinese_anchor_length = width
+                break
+        if shared_chinese_anchor_length:
+            break
+    shared_anchor_length = max(
+        [shared_chinese_anchor_length]
+        + [len(value) for value in english_anchors if value in passage.casefold()]
+        + [0]
+    )
+    if not shared_anchor_length:
+        return 0
+
+    return sum(sum(character.isdigit() for character in value) for value in values) + shared_anchor_length
+
+
 def repair_pdf_citations_from_exact_text(
     blocks: Iterable[Any],
     evidence: Iterable[Any],
 ) -> tuple[list[dict[str, Any]], int]:
-    """Bind a PDF claim to the retrieved hit containing its exact quoted text.
+    """Bind a PDF claim to the retrieved hit containing its exact supporting text.
 
     The model's numbered source choice remains the default. This narrowly
-    repairs it only when a substantial verbatim passage identifies a stronger
-    hit in this run; page-only blocks may inherit that exact hit on the same
-    page. No embedding score or model judgment is treated as citation proof.
+    repairs it only when a substantial verbatim passage or exact page-scoped
+    numeric facts identify a stronger hit in this run; page-only blocks may
+    inherit that hit on the same page. No embedding score or model judgment is
+    treated as citation proof.
     """
     normalized_blocks = [dict(item) for item in blocks if isinstance(item, Mapping)]
     hits = [
@@ -141,6 +212,7 @@ def repair_pdf_citations_from_exact_text(
         for item in hits
     }
     exact_matches: dict[int, list[tuple[int, str]]] = {}
+    page_exact_matches: dict[int, dict[int, list[tuple[int, str]]]] = {}
     trusted_page_ids: dict[int, set[str]] = {}
 
     for index, block in enumerate(normalized_blocks):
@@ -148,10 +220,20 @@ def repair_pdf_citations_from_exact_text(
         referenced_pages = _pages_in_text(claim)
         scored: list[tuple[int, str]] = []
         for evidence_id, passage in passages.items():
-            score = _exact_text_match_score(claim, passage)
+            score = max(
+                _exact_text_match_score(claim, passage),
+                _numeric_evidence_match_score(claim, passage),
+            )
             if not score:
                 continue
             pages = _hit_pages(hit_by_id[evidence_id])
+            if referenced_pages:
+                for page in referenced_pages.intersection(pages):
+                    page_exact_matches.setdefault(index, {}).setdefault(page, []).append(
+                        (score, evidence_id)
+                    )
+                for page in pages:
+                    trusted_page_ids.setdefault(page, set()).add(evidence_id)
             if referenced_pages and not referenced_pages.issubset(pages):
                 continue
             scored.append((score, evidence_id))
@@ -164,6 +246,22 @@ def repair_pdf_citations_from_exact_text(
 
     remapped = 0
     for index, block in enumerate(normalized_blocks):
+        raw_ids = block.get("evidence_ids")
+        current_ids = (
+            [str(value).strip() for value in raw_ids if str(value).strip()]
+            if isinstance(raw_ids, (list, tuple))
+            else []
+        )
+        claim = "\n".join(str(block.get(key) or "") for key in ("section", "content"))
+        referenced_pages = _pages_in_text(claim)
+        # A combined claim can need several independent passages. A stronger
+        # match for one sentence is not proof that the other sources are wrong.
+        # Keep the model's valid multi-source choice; the normal claim/page
+        # validator remains responsible for detecting unsupported content.
+        if len(current_ids) > 1 and all(value in hit_by_id for value in current_ids):
+            current_pages = set().union(*(_hit_pages(hit_by_id[value]) for value in current_ids))
+            if referenced_pages.issubset(current_pages):
+                continue
         selected: list[str] = []
         if exact_matches.get(index):
             selected = [exact_matches[index][0][1]]
@@ -171,6 +269,16 @@ def repair_pdf_citations_from_exact_text(
             claim = "\n".join(str(block.get(key) or "") for key in ("section", "content"))
             referenced_pages = _pages_in_text(claim)
             if referenced_pages:
+                candidates_by_page = page_exact_matches.get(index, {})
+                if all(candidates_by_page.get(page) for page in referenced_pages):
+                    for page in sorted(referenced_pages):
+                        best = sorted(
+                            candidates_by_page[page],
+                            key=lambda item: (-item[0], item[1]),
+                        )[0][1]
+                        if best not in selected:
+                            selected.append(best)
+            if not selected and referenced_pages:
                 matching_pages = [
                     evidence_id
                     for page in sorted(referenced_pages)
@@ -180,13 +288,7 @@ def repair_pdf_citations_from_exact_text(
                 selected = list(dict.fromkeys(matching_pages[:1]))
         if not selected:
             continue
-        raw_ids = block.get("evidence_ids")
-        current_ids = (
-            [str(value).strip() for value in raw_ids if str(value).strip()]
-            if isinstance(raw_ids, (list, tuple))
-            else []
-        )
-        if current_ids == selected and not block.get("source_ids"):
+        if current_ids == selected:
             continue
         block["evidence_ids"] = selected
         # Numeric source slots would otherwise re-resolve to the model's old,
