@@ -144,5 +144,3 @@ export const CihIndexReportPicker: React.FC<CihIndexReportPickerProps> = ({
     </div>
   );
 };
-
-export default CihIndexReportPicker;

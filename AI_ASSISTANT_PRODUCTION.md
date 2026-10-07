@@ -2,9 +2,12 @@
 
 ## 运行边界
 
-生产聊天由应用内的 `langchain.agents.create_agent` 承载，并由 LangGraph 原生
-Checkpointer 持久化消息—工具循环。它不依赖 LangGraph Server，也没有 Planner、固定
-Workflow、能力注册表或按意图切换的业务模板。
+生产聊天由应用内的 LangChain / LangGraph 运行时承载，并由 LangGraph 原生
+Checkpointer 持久化状态。Direct 使用 `langchain.agents.create_agent` 的消息—工具循环，
+Plan 使用规划协调器，Team 使用 supervisor/worker 图，Goal 使用独立目标图；Auto
+通过模型选择已开放模式。它不依赖 LangGraph Server。各模式的部署与证据、审批、预算
+边界共享，具体见 [运行架构](AGENT_ORCHESTRATOR_V4.md)及
+[Plan / Team / Goal 契约](src/agent/langgraph_runtime/PLANNING.md)。
 
 PostgreSQL 是生产数据库；SQLite 仅用于本地。所有 API worker 使用同一个数据库、原生
 Postgres Checkpointer、运行租约和事件表，因此刷新页面或切换 worker 后可从事件游标续流。
@@ -95,6 +98,9 @@ Docling 是唯一 PDF 结构解析器，缺少依赖时入库任务会明确失�
 上的 PyTorch 不支持 Python 3.13；本机 RAG 启动脚本会使用 Python 3.11 和 `requirements-rag-worker-macos.lock`
 创建隔离的 Celery worker 环境，从官方 PyPI 按哈希安装 Docling 及兼容的 PyTorch、NumPy、SciPy、OpenCV、cryptography 版本，避免
 本机镜像缺少解析器发行包；同时固定 Transformers 4.57.6 与 Hugging Face Hub 0.36.0，避免 Transformers 5.x 与 Intel PyTorch 2.2.2 冲突。
+该 Intel 兼容环境不是安全生产部署承诺：截至 2026-10-07，PyTorch 2.2.2 和 Transformers 4.57.6 仍有已知安全告警。
+[PyTorch 官方已停止 Intel macOS 新版二进制发行](https://dev-discuss.pytorch.org/t/pytorch-macos-x86-builds-deprecation-starting-january-2024/1690)，
+不能通过简单升级 pip 锁文件解决。生产优先使用下述 Linux worker 路径，并验证与 API 共享数据库及原件卷；不要对不可信 PDF 使用未修复的兼容 worker。
 Docling 官方解析核心在 Intel Mac 上需从源码构建，首次安装前需具备 Xcode Command Line Tools；启动脚本会在缺少时明确提示，不会静默降级。其他平台的 worker 使用
 项目主环境及 `requirements.lock`。两个环境都在 worker 启动前检查 Docling、RapidOCR、ONNX Runtime
 及中文 OCR 配置。

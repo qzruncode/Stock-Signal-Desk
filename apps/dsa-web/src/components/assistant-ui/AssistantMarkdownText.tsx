@@ -71,10 +71,11 @@ const useProgressiveText = (
 
   useEffect(() => {
     if (!shouldAnimate || !text) {
-      if (shouldAnimate && visibleTextRef.current !== text) {
-        setVisibleText(text);
+      // Empty live updates render directly; retain the last visible prefix so
+      // a continuing stream does not restart from an invisible empty state.
+      if (!shouldAnimate) {
+        visibleTextRef.current = text;
       }
-      visibleTextRef.current = text;
       onAnimationCompleteRef.current?.();
       return undefined;
     }
@@ -128,10 +129,10 @@ const useProgressiveText = (
     return () => window.cancelAnimationFrame(frameId);
   }, [shouldAnimate, text]);
 
-  if (shouldAnimate && text && !text.startsWith(visibleTextRef.current)) {
+  if (shouldAnimate && text && !text.startsWith(visibleText)) {
     return text;
   }
-  return shouldAnimate ? visibleText : text;
+  return shouldAnimate && text ? visibleText : text;
 };
 
 const evidenceSourceLabel = (value: string): string => {

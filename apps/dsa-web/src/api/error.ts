@@ -1,5 +1,3 @@
-import axios from 'axios';
-
 export type ApiErrorCategory =
   | 'agent_disabled'
   | 'missing_params'
@@ -212,7 +210,7 @@ export function createParsedApiError(options: CreateParsedApiErrorOptions): Pars
   };
 }
 
-export function isParsedApiError(value: unknown): value is ParsedApiError {
+function isParsedApiError(value: unknown): value is ParsedApiError {
   return isRecord(value)
     && typeof value.title === 'string'
     && typeof value.message === 'string'
@@ -220,15 +218,7 @@ export function isParsedApiError(value: unknown): value is ParsedApiError {
     && typeof value.category === 'string';
 }
 
-export function isApiRequestError(
-  value: unknown,
-): value is Error & ErrorCarrier & { parsedError: ParsedApiError } {
-  return value instanceof Error
-    && isRecord(value)
-    && isParsedApiError((value as ErrorCarrier).parsedError);
-}
-
-export function formatParsedApiError(parsed: ParsedApiError): string {
+function formatParsedApiError(parsed: ParsedApiError): string {
   if (!parsed.title.trim()) {
     return parsed.message;
   }
@@ -283,11 +273,7 @@ export function attachParsedApiError(error: unknown): ParsedApiError {
   return parsed;
 }
 
-export function isLocalConnectionFailure(error: unknown): boolean {
-  return parseApiError(error).category === 'local_connection_failed';
-}
-
-export function parseApiError(error: unknown): ParsedApiError {
+function parseApiError(error: unknown): ParsedApiError {
   const response = getResponse(error);
   const status = response?.status;
   const payloadText = extractErrorPayloadText(response?.data);
@@ -458,8 +444,4 @@ export function toApiErrorMessage(error: unknown, fallback = '请求未成功完
   const parsed = getParsedApiError(error);
   const message = formatParsedApiError(parsed);
   return message.trim() || fallback;
-}
-
-export function isAxiosApiError(error: unknown): boolean {
-  return axios.isAxiosError(error);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ExportedMessageRepository } from '@assistant-ui/core';
+import type { ExportedMessageRepository } from '@assistant-ui/react';
 
 import {
   removeUserTurnFromThread,

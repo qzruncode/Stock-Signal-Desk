@@ -71,4 +71,3 @@ export function useStockIndex(): UseStockIndexResult {
 /**
  * Get default exported Hook
  */
-export default useStockIndex;

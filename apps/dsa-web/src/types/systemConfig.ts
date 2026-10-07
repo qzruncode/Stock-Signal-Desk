@@ -1,4 +1,4 @@
-export type SystemConfigCategory =
+type SystemConfigCategory =
   | 'base'
   | 'data_source'
   | 'ai_model'
@@ -7,7 +7,7 @@ export type SystemConfigCategory =
   | 'agent'
   | 'uncategorized';
 
-export type SystemConfigDataType =
+type SystemConfigDataType =
   | 'string'
   | 'integer'
   | 'number'
@@ -16,7 +16,7 @@ export type SystemConfigDataType =
   | 'json'
   | 'time';
 
-export type SystemConfigUIControl =
+type SystemConfigUIControl =
   | 'text'
   | 'password'
   | 'number'
@@ -30,7 +30,7 @@ export interface SystemConfigOption {
   value: string;
 }
 
-export interface SystemConfigDocLink {
+interface SystemConfigDocLink {
   label: string;
   href: string;
 }
@@ -68,7 +68,7 @@ export interface SystemConfigSchemaResponse {
   categories: SystemConfigCategorySchema[];
 }
 
-export interface SystemConfigItem {
+interface SystemConfigItem {
   key: string;
   value: string;
   rawValueExists: boolean;
@@ -97,7 +97,7 @@ export interface TestModelConnectionResponse {
   latencyMs?: number | null;
 }
 
-export interface SetupStatusCheck {
+interface SetupStatusCheck {
   key: string;
   title: string;
   category: 'base' | 'ai_model' | 'agent' | 'notification' | 'system';
@@ -115,7 +115,7 @@ export interface SetupStatusResponse {
   checks: SetupStatusCheck[];
 }
 
-export interface SystemConfigUpdateItem {
+interface SystemConfigUpdateItem {
   key: string;
   value: string;
 }
@@ -137,7 +137,7 @@ export interface UpdateSystemConfigResponse {
   warnings: string[];
 }
 
-export interface ConfigValidationIssue {
+interface ConfigValidationIssue {
   key: string;
   code: string;
   message: string;
@@ -146,9 +146,9 @@ export interface ConfigValidationIssue {
   actual?: string;
 }
 
-export type NotificationTestChannel = 'wechat';
+type NotificationTestChannel = 'wechat';
 
-export interface NotificationTestAttempt {
+interface NotificationTestAttempt {
   channel: NotificationTestChannel;
   success: boolean;
   message: string;

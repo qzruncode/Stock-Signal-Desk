@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toolRegistryApi } from '../api/toolRegistry';
 import type { ToolRegistryResponse } from '../types/toolRegistry';
 
-export type ToolRegistryStatus = 'loading' | 'ready' | 'error';
+type ToolRegistryStatus = 'loading' | 'ready' | 'error';
 
 export interface UseToolRegistryResult {
   status: ToolRegistryStatus;
@@ -51,5 +51,3 @@ export function useToolRegistry(): UseToolRegistryResult {
 
   return { status, data, error, refetch };
 }
-
-export default useToolRegistry;

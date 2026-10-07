@@ -72,60 +72,6 @@ def _normalize_record_units(
     return normalized
 
 
-def _normalize_record_list(
-    records: list[dict], source: str | None = None
-) -> list[dict]:
-    return [_normalize_record_units(record, source) for record in records]
-
-
-def _normalize_kline_df(df, stock_code: str, source: str) -> list[dict]:
-    """Normalize akshare K-line DataFrame to standard dict list."""
-    import pandas as pd
-
-    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
-        return []
-
-    df = df.copy()
-
-    col_map = {
-        "日期": "date",
-        "开盘": "open",
-        "收盘": "close",
-        "最高": "high",
-        "最低": "low",
-        "成交量": "volume",
-        "成交额": "amount",
-        "涨跌幅": "pct_chg",
-        "换手率": "turnover_rate",
-    }
-    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-
-    keep = [
-        "date",
-        "open",
-        "close",
-        "high",
-        "low",
-        "volume",
-        "amount",
-        "pct_chg",
-        "turnover_rate",
-    ]
-    df = df[[c for c in keep if c in df.columns]]
-
-    if "date" in df.columns:
-        df["date"] = df["date"].astype(str)
-
-    df = df.where(pd.notnull(df), None)
-
-    records = df.to_dict(orient="records")
-    normalized_records = []
-    for r in records:
-        r["_source"] = source
-        normalized_records.append(_normalize_record_units(r, source))
-    return normalized_records
-
-
 def normalize_legacy_bar(row):
     source = str(row.get("data_source") or "")
     values = _normalize_record_units(

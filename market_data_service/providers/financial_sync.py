@@ -13,16 +13,6 @@ _REPORT_PERIOD_CANDIDATES = ((12, 31), (9, 30), (6, 30), (3, 31))
 _MAX_REPORT_PERIODS = 12
 _REPORT_PERIOD_BUFFER_DAYS = 25
 _PERIOD_FETCH_WORKERS = 3
-_REQUIRED_UPDATE_FIELDS = frozenset(
-    {
-        "revenue_latest",
-        "net_profit_latest",
-        "revenue_ttm",
-        "parent_net_profit_ttm",
-        "deducted_net_profit_ttm",
-        "debt_ratio",
-    }
-)
 
 
 def _set(**values):
@@ -255,10 +245,6 @@ def _row_to_update(
             values[target] = value
     values.update(_ttm_fields(code, period, row, rows_by_period))
     return values
-
-
-def _is_complete_update(fields: dict[str, Any]) -> bool:
-    return _REQUIRED_UPDATE_FIELDS.issubset(fields)
 
 
 def _quarter_index(report_date: str) -> int | None:

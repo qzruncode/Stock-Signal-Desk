@@ -1,4 +1,4 @@
-import type { ExportedMessageRepository, ThreadUserMessagePart } from '@assistant-ui/core';
+import type { ExportedMessageRepository, ThreadUserMessagePart } from '@assistant-ui/react';
 
 type AgentRequestPart =
   | { type: 'text'; text: string }

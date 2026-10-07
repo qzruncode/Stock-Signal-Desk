@@ -12,7 +12,7 @@ export interface DatasetSummary extends Record<Freshness, number> {
   id: DatasetId; label: string; scope: 'market' | 'subscribed'; total: number; coverage_percent: number | null;
   latest_data_time: string | null; oldest_data_time: string | null; policy: SyncPolicy; latest_job: SyncJob | null;
 }
-export interface ServiceHealth {
+interface ServiceHealth {
   status: string; database: string; provider: string; checked_at: string;
   legacy_import_issues?: number;
   components: Record<string, { healthy: boolean; last_seen_at: string; detail: string }>;

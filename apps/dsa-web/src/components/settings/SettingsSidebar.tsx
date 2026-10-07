@@ -70,5 +70,3 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
     </nav>
   );
 };
-
-export default SettingsSidebar;

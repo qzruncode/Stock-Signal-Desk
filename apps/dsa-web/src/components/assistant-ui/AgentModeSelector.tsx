@@ -31,5 +31,3 @@ export const AgentModeSelector: FC<AgentModeSelectorProps> = ({
     />
   </div>
 );
-
-export default AgentModeSelector;

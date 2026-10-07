@@ -11,13 +11,12 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.v1.endpoints.agent import chat as chat_mod
 from src.agent.run_registry import ActiveRun, RunBroadcaster, active_run_registry
 import src.auth as auth
 

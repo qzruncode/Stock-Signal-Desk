@@ -2,7 +2,7 @@
   "name": "daily-stock-analysis-firecrawl",
   "version": "0.1.0",
   "private": true,
-  "description": "Project-local Firecrawl service controller for Daily Stock Analysis.",
+  "description": "Project-local Firecrawl service controller for Stock Assistant.",
   "scripts": {
     "install:firecrawl": "bash ./scripts/install-firecrawl.sh",
     "start": "npm run install:firecrawl && bash ./scripts/start-firecrawl.sh"

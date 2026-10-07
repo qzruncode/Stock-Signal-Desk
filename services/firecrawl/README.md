@@ -18,6 +18,17 @@ outside Firecrawl as remote fallbacks only.
 
 Useful commands:
 
+First-time native installation requires Git, Node.js 22, pnpm, Redis and a Rust
+toolchain; the WebUI/RSSHub use Node.js 24 separately. With nvm, install both
+versions before starting. The installer may install Redis through Homebrew and
+Rust through rustup if missing, and downloads/builds upstream dependencies and
+browser binaries. Prepare these prerequisites before using `dev.sh` on a new
+machine. Inspect `scripts/install-firecrawl.sh` for the pinned revision and
+exact build steps.
+
+The downloaded upstream source is AGPL-3.0; see its `LICENSE` and the repository's
+[third-party notice](../../THIRD_PARTY_NOTICES.md).
+
 ```bash
 ./dev.sh start
 ./dev.sh status

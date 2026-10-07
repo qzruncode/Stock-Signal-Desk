@@ -26,7 +26,7 @@ export const DEPENDENCY_LABELS: Record<string, string> = {
   toolCatalog: '工具目录',
 };
 
-export const ALERT_COPY: Record<string, { title: string; description: string }> = {
+const ALERT_COPY: Record<string, { title: string; description: string }> = {
   agentSuccessRateBelowSlo: {
     title: '系统完成率低于 SLO',
     description: '近 24 小时的 Agent 终态完成率低于配置目标。',
@@ -93,9 +93,9 @@ export const severityLabel = (severity: SignalSeverity): string => {
   return '提示';
 };
 
-export const normalizeAlertCode = (code: string): string => code.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+const normalizeAlertCode = (code: string): string => code.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
 
-export const alertDetail = (alert: AgentMetricAlert): string => {
+const alertDetail = (alert: AgentMetricAlert): string => {
   if (alert.code === 'agent_success_rate_below_slo') {
     return `实际 ${formatPercent(alert.value)} · 阈值 ${formatPercent(alert.threshold)}`;
   }

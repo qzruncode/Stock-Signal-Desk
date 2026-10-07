@@ -359,5 +359,3 @@ const Metric: FC<{ label: string; value: number }> = ({ label, value }) => (
     <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">{value}</p>
   </div>
 );
-
-export default CheckpointHistoryDrawer;

@@ -31,7 +31,7 @@ const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
   '/knowledge': KnowledgeBasePage.preload!,
 };
 
-export const preloadRoute = (path: string): void => {
+const preloadRoute = (path: string): void => {
   const preload = ROUTE_PRELOAD_MAP[path];
   if (preload) {
     void preload();

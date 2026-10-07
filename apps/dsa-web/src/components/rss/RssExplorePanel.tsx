@@ -148,5 +148,3 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
     </div>
   );
 };
-
-export default RssExplorePanel;

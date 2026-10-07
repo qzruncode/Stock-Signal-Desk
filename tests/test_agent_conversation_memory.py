@@ -13,6 +13,7 @@ from src.agent.langgraph_runtime.memory import ConversationMemoryMiddleware
 
 class RecordingSummaryModel(GenericFakeChatModel):
     prompts: list[list[BaseMessage]] = Field(default_factory=list, exclude=True)
+    llm_config: dict = Field(default_factory=dict, exclude=True)
 
     def _generate(self, messages, *args, **kwargs):
         self.prompts.append(list(messages))
@@ -132,6 +133,7 @@ def test_summary_input_is_bounded_by_model_window_and_keeps_both_ends(monkeypatc
         messages=iter([AIMessage(content="bounded summary")]),
         prompts=[],
         profile={"max_input_tokens": 16_000},
+        llm_config={"max_tokens": 4_000},
     )
 
     update = asyncio.run(

@@ -158,7 +158,7 @@ ensure_pdf_parser_runtime() {
         "$worker_python" -m pip check || fail "Intel Mac RAG worker 依赖冲突，拒绝启动。"
     fi
 
-    "$worker_python" -c 'import onnxruntime; from importlib.metadata import version; from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions; from docling.document_converter import DocumentConverter; options = PdfPipelineOptions(do_ocr=True, ocr_options=RapidOcrOptions(lang=["ch"])); assert version("docling") == "2.129.0"; assert version("rapidocr") == "3.9.2"; assert options.do_ocr and options.ocr_options.lang == ["ch"] and options.ocr_options.backend == "onnxruntime"' \
+    "$worker_python" -c 'import onnxruntime; from importlib.metadata import version; from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions; from docling.document_converter import DocumentConverter; options = PdfPipelineOptions(do_ocr=True, ocr_options=RapidOcrOptions(lang=["ch"])); assert version("docling") == "2.131.0"; assert version("rapidocr") == "3.9.2"; assert options.do_ocr and options.ocr_options.lang == ["ch"] and options.ocr_options.backend == "onnxruntime"' \
         >/dev/null 2>&1 || fail "RAG worker 的 Docling/RapidOCR 依赖或中文 OCR 配置无效；拒绝启动。"
     WORKER_PYTHON_BIN="$worker_python"
 }

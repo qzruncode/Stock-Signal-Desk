@@ -95,22 +95,6 @@ _TREND_PREDICTION_TRANSLATIONS = {
     "strong_bearish": {"zh": "强烈看空", "en": "Strong Bearish"},
 }
 
-_CONFIDENCE_LEVEL_CANONICAL_MAP = {
-    "高": "high",
-    "high": "high",
-    "中": "medium",
-    "medium": "medium",
-    "med": "medium",
-    "低": "low",
-    "low": "low",
-}
-
-_CONFIDENCE_LEVEL_TRANSLATIONS = {
-    "high": {"zh": "高", "en": "High"},
-    "medium": {"zh": "中", "en": "Medium"},
-    "low": {"zh": "低", "en": "Low"},
-}
-
 _CHIP_HEALTH_CANONICAL_MAP = {
     "健康": "healthy",
     "healthy": "healthy",
@@ -141,21 +125,6 @@ _BIAS_STATUS_TRANSLATIONS = {
     "safe": {"zh": "安全", "en": "Safe"},
     "caution": {"zh": "警戒", "en": "Caution"},
     "danger": {"zh": "危险", "en": "Danger"},
-}
-
-_PLACEHOLDER_BY_LANGUAGE = {
-    "zh": "待补充",
-    "en": "TBD",
-}
-
-_UNKNOWN_BY_LANGUAGE = {
-    "zh": "未知",
-    "en": "Unknown",
-}
-
-_NO_DATA_BY_LANGUAGE = {
-    "zh": "数据缺失",
-    "en": "Data unavailable",
 }
 
 _GENERIC_STOCK_NAME_BY_LANGUAGE = {
@@ -350,21 +319,6 @@ def get_report_labels(language: Optional[str]) -> Dict[str, str]:
     return _REPORT_LABELS[normalized]
 
 
-def get_placeholder_text(language: Optional[str]) -> str:
-    """Return placeholder text for missing localized content."""
-    return _PLACEHOLDER_BY_LANGUAGE[normalize_report_language(language)]
-
-
-def get_unknown_text(language: Optional[str]) -> str:
-    """Return localized unknown text."""
-    return _UNKNOWN_BY_LANGUAGE[normalize_report_language(language)]
-
-
-def get_no_data_text(language: Optional[str]) -> str:
-    """Return localized data unavailable text."""
-    return _NO_DATA_BY_LANGUAGE[normalize_report_language(language)]
-
-
 def _normalize_lookup_key(value: Any) -> str:
     return str(value or "").strip().lower().replace("_", " ").replace("-", " ")
 
@@ -450,16 +404,6 @@ def localize_trend_prediction(value: Any, language: Optional[str]) -> str:
         normalized_language,
         canonical_map=_TREND_PREDICTION_CANONICAL_MAP,
         translations=_TREND_PREDICTION_TRANSLATIONS,
-    )
-
-
-def localize_confidence_level(value: Any, language: Optional[str]) -> str:
-    """Translate confidence level between Chinese and English when recognized."""
-    return _translate_from_map(
-        value,
-        language,
-        canonical_map=_CONFIDENCE_LEVEL_CANONICAL_MAP,
-        translations=_CONFIDENCE_LEVEL_TRANSLATIONS,
     )
 
 

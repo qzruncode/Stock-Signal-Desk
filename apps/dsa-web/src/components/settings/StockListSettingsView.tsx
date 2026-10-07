@@ -72,7 +72,7 @@ function markdownCell(value: unknown): string {
   return String(value ?? '-').replace(/[|\r\n]/g, (character) => (character === '|' ? '\\|' : ' '));
 }
 
-export function StockListSettingsView() {
+function StockListSettingsView() {
   const [view, setView] = useState<ViewMode>('market');
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);

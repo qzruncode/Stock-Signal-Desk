@@ -6,6 +6,7 @@ from scripts.check_agent_architecture import (
     BANNED_FILES,
     BANNED_REGISTERED_TOOLS,
     PROJECT_ROOT,
+    _banned_control_symbols_for,
     audit_architecture,
 )
 from src.tools.registry import ToolRegistry
@@ -21,6 +22,14 @@ def test_removed_control_plane_files_do_not_return() -> None:
     assert not [relative for relative in BANNED_FILES if (PROJECT_ROOT / relative).exists()]
     legacy_root = Path(PROJECT_ROOT) / "src/agent/orchestrator_v2"
     assert not legacy_root.exists()
+
+
+def test_goal_contract_is_allowed_only_inside_goal_runtime() -> None:
+    goal_path = PROJECT_ROOT / "src/agent/langgraph_runtime/goal/graph.py"
+    generic_path = PROJECT_ROOT / "src/agent/langgraph_runtime/graph.py"
+
+    assert "GoalContract" not in _banned_control_symbols_for(goal_path)
+    assert "GoalContract" in _banned_control_symbols_for(generic_path)
 
 
 def test_composite_sop_tools_are_not_registered() -> None:

@@ -3,7 +3,7 @@ import { Button, InlineAlert } from '../common';
 import { ToolListItem } from './ToolListItem';
 import { useToolRegistry } from '../../hooks/useToolRegistry';
 
-export const ToolRegistryView: React.FC = () => {
+const ToolRegistryView: React.FC = () => {
   const { status, data, error, refetch } = useToolRegistry();
 
   if (status === 'loading') {

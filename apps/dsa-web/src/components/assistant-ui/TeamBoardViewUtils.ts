@@ -49,7 +49,7 @@ export const roleIconClassName = (role: TeamMemberModel['role']): string => {
   }
 };
 
-export const parseArgs = (part: TeamPartRecord): Record<string, unknown> => {
+const parseArgs = (part: TeamPartRecord): Record<string, unknown> => {
   const raw = part.args;
   if (isRecord(raw)) return raw;
   const argsText = typeof part.argsText === 'string'

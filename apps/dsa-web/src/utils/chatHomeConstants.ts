@@ -13,7 +13,6 @@ export type ActiveStream = {
   startedFromTerminalSnapshot: boolean;
 };
 
-export const MAX_CACHED_CONVERSATIONS = 12;
 export const TERMINAL_RUN_STATUSES = new Set([
   'completed',
   'partial',

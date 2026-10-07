@@ -116,5 +116,3 @@ export const GelonghuiSubjectPicker: React.FC<GelonghuiSubjectPickerProps> = ({
     </div>
   );
 };
-
-export default GelonghuiSubjectPicker;

@@ -2,14 +2,13 @@
 """Tests for the shared Anthropic gateway helper (src/llm/anthropic_gateway).
 
 Covers: full-config shape, each-missing-field raises, [1m] context-window
-suffix stripping, ANSI/SGR fragment cleaning, and kwargs assembly defaults.
+suffix stripping, and ANSI/SGR fragment cleaning.
 """
 import unittest
 from unittest import mock
 
 from src.llm.anthropic_gateway import (
     AnthropicGatewayConfigError,
-    build_litellm_kwargs,
     resolve_anthropic_gateway_config,
 )
 
@@ -189,57 +188,6 @@ class TestParseModelContextWindow(unittest.TestCase):
 
     def test_suffix_in_middle_not_stripped(self):
         self.assertEqual(self._parse("[1m]model"), ("[1m]model", 200_000))
-
-
-class TestBuildLitellmKwargs(unittest.TestCase):
-    """build_litellm_kwargs: config → litellm call kwargs."""
-
-    def _cfg(self):
-        return {
-            "model": "claude-sonnet-4-6",
-            "custom_llm_provider": "anthropic",
-            "api_key": "sk-test-token",
-            "api_base": "https://gw.example.com",
-            "extra_headers": {"authorization": "Bearer sk-test-token"},
-            "context_window": 200_000,
-        }
-
-    def test_stream_flag_set(self):
-        kwargs = build_litellm_kwargs(self._cfg(), stream=True, messages=[{"role": "user", "content": "hi"}])
-        self.assertTrue(kwargs["stream"])
-        self.assertEqual(kwargs["model"], "claude-sonnet-4-6")
-        self.assertEqual(kwargs["api_key"], "sk-test-token")
-        self.assertEqual(kwargs["api_base"], "https://gw.example.com")
-        self.assertEqual(kwargs["custom_llm_provider"], "anthropic")
-        self.assertEqual(kwargs["extra_headers"], {"authorization": "Bearer sk-test-token"})
-        self.assertEqual(kwargs["messages"], [{"role": "user", "content": "hi"}])
-        self.assertIsNone(kwargs["timeout"])
-
-    def test_stream_false(self):
-        kwargs = build_litellm_kwargs(self._cfg(), stream=False)
-        self.assertFalse(kwargs["stream"])
-
-    def test_extra_kwargs_merged(self):
-        kwargs = build_litellm_kwargs(
-            self._cfg(),
-            stream=False,
-            messages=[],
-            tools=[{"type": "function", "function": {"name": "f"}}],
-            tool_choice="auto",
-            max_tokens=1024,
-        )
-        self.assertEqual(kwargs["tool_choice"], "auto")
-        self.assertEqual(kwargs["max_tokens"], 1024)
-        self.assertEqual(len(kwargs["tools"]), 1)
-
-    def test_missing_auth_fields_omitted(self):
-        cfg = {"model": "claude-sonnet-4-6"}  # 无 api_key/api_base 等
-        kwargs = build_litellm_kwargs(cfg, stream=False, messages=[])
-        self.assertEqual(kwargs["model"], "claude-sonnet-4-6")
-        self.assertNotIn("api_key", kwargs)
-        self.assertNotIn("api_base", kwargs)
-        self.assertNotIn("custom_llm_provider", kwargs)
-        self.assertNotIn("extra_headers", kwargs)
 
 
 if __name__ == "__main__":

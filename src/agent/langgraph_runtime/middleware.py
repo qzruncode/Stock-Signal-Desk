@@ -2676,6 +2676,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         artificial_messages: list[ToolMessage] = []
         rejected: list[str] = []
         duplicate_failures: list[dict[str, Any]] = []
+        validation_failures: list[dict[str, Any]] = []
         failed_read_keys = _failed_read_tool_call_keys(state)
         allowed_side_effect: dict[str, Any] | None = None
         allowed_calls = 0
@@ -2745,6 +2746,17 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     )
                     effect = context.registry.effect_for(tool_name, arguments)
             except Exception as exc:
+                # This rejection bypasses ToolNode, so retain its observation
+                # in the same audit ledger used by executed tool failures.
+                validation_failures.append(_failed_record(
+                    tool_call_id=call_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    error_code="invalid_arguments",
+                    message=f"{type(exc).__name__}: {exc}",
+                    sensitive_fields=spec.sensitive_fields,
+                    server_controlled_fields=spec.server_controlled_fields,
+                ))
                 artificial_messages.append(
                     _error_tool_message(
                         tool_call_id=call_id,
@@ -2807,11 +2819,12 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         updates: dict[str, Any] = {}
         if artificial_messages:
             updates["messages"] = artificial_messages
-        if duplicate_failures:
-            updates["tool_results"] = duplicate_failures
+        failed_calls = [*validation_failures, *duplicate_failures]
+        if failed_calls:
+            updates["tool_results"] = failed_calls
             updates["completed_tool_call_ids"] = [
                 str(item.get("id") or "")
-                for item in duplicate_failures
+                for item in failed_calls
                 if str(item.get("id") or "")
             ]
             updates["tool_call_count"] = len(duplicate_failures)

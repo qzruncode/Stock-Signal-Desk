@@ -62,5 +62,3 @@ export function useRssNamespaces(): UseRssNamespacesResult {
     filtered,
   };
 }
-
-export default useRssNamespaces;

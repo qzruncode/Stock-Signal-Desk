@@ -1,6 +1,6 @@
-# Docling 2.129 Intel macOS: PyTorch stopped publishing Intel Mac wheels after 2.2.2.
+# Intel macOS: PyTorch stopped publishing Intel Mac wheels after 2.2.2.
 # Transformers 5.x requires newer PyTorch; use the compatible 4.x line and Hub API.
-cryptography==48.0.1
+cryptography==50.0.0
 huggingface-hub==0.36.0
 numpy==1.26.4
 opencv-python==4.11.0.86

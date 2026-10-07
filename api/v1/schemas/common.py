@@ -20,7 +20,7 @@ class RootResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "message": "Daily Stock Analysis API is running",
+                "message": "Stock Assistant API is running",
                 "version": "1.0.0",
             }
         }

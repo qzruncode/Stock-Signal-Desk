@@ -1,12 +1,11 @@
 diff --git a/node_modules/assistant-stream/dist/core/modules/text.js b/node_modules/assistant-stream/dist/core/modules/text.js
-index b921f30..de4b4cb 100644
 --- a/node_modules/assistant-stream/dist/core/modules/text.js
 +++ b/node_modules/assistant-stream/dist/core/modules/text.js
-@@ -6,6 +6,7 @@ var TextStreamControllerImpl = class {
- 		this._controller = controller;
+@@ -9,6 +9,7 @@ var TextStreamControllerImpl = class {
+ 		this._strict = options.strict ?? true;
  	}
  	append(textDelta) {
 +		if (this._isClosed) return this;
- 		this._controller.enqueue({
+ 		const chunk = {
  			type: "text-delta",
  			path: [],

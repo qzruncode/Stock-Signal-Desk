@@ -361,5 +361,3 @@ export function RunDetailContent({
     </div>
   );
 }
-
-export default RunDetailContent;

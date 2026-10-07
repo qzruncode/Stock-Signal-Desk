@@ -87,5 +87,3 @@ export const RssDownloadMenu: React.FC<RssDownloadMenuProps> = ({ spec }) => {
     </div>
   );
 };
-
-export default RssDownloadMenu;

@@ -7,7 +7,7 @@ import { Button } from '../common';
 // Worker 配置只执行一次：`?url` 让 vite 把 worker 输出为独立 asset，懒加载时才下载。
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
-export interface PdfViewerProps {
+interface PdfViewerProps {
   /** Same-origin, authenticated TextDocumentResource URL. */
   resourceUrl: string;
   /** Optional page to show after the PDF is loaded. */

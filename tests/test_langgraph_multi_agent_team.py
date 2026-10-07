@@ -217,7 +217,6 @@ def test_worker_child_timeout_keeps_streamed_state_and_skips_empty_contract_call
         model = RoleAwareTeamModel()
         executor = FakeAtomicExecutor()
         await manager.start(testing=True)
-        original_wait_for = team_graph_module.asyncio.wait_for
         try:
             context = manager._context(
                 llm_config={},
@@ -746,7 +745,9 @@ def test_completion_gate_evaluates_readiness_before_final_answer_exists() -> Non
     assert "不要求后续 FinalSynthesizer 的成品已经存在" in messages[0].content
 
 
-def test_production_expert_scopes_fit_the_executable_plan_contract() -> None:
+@pytest.mark.parametrize("tool_call_limit", [12, 23])
+def test_production_expert_scopes_fit_the_executable_plan_contract(monkeypatch, tool_call_limit) -> None:
+    monkeypatch.setenv("AGENT_MAX_TOOL_CALLS", str(tool_call_limit))
     registry = ToolRegistry()
     draft = _team_plan_draft(_team_plan())
     for task in draft["tasks"]:
@@ -754,7 +755,7 @@ def test_production_expert_scopes_fit_the_executable_plan_contract() -> None:
     plan = _normalize_plan(draft, registry)
     for task in plan["tasks"]:
         assert set(task["allowed_tools"]) == set(expert_tool_names(registry, task["agent_id"]))
-        assert task["max_tool_calls"] == 12
+        assert task["max_tool_calls"] == tool_call_limit
     assert any(len(task["allowed_tools"]) > 16 for task in plan["tasks"])
 
 

@@ -445,12 +445,10 @@ class GraphEventBridge:
                         # literal text in the browser.
                         if answer_text_parts_emitted:
                             self._publish_text_delta(
-                                "\n\n",
-                                display_kind="answer",
+                                "\n\n"
                             )
                         self._publish_text_delta(
-                            str(part.get("text") or ""),
-                            display_kind="answer",
+                            str(part.get("text") or "")
                         )
                         answer_text_parts_emitted += 1
                     elif part.get("type") == "data":
@@ -463,7 +461,7 @@ class GraphEventBridge:
                         )
 
                 if structured_suffix:
-                    self._publish_text_delta(structured_suffix, display_kind="answer")
+                    self._publish_text_delta(structured_suffix)
                 self._last_committed_answer = normalized
                 self._displayed_structured_answer_key = display_key
                 return
@@ -530,7 +528,7 @@ class GraphEventBridge:
         self._publish_text_delta(text)
         self._model_text_published += text
 
-    def _publish_text_delta(self, value: str, *, display_kind: str = "progress") -> None:
+    def _publish_text_delta(self, value: str) -> None:
         text = str(value or "")
         if not text:
             return

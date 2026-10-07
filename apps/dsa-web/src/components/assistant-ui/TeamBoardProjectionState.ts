@@ -129,7 +129,7 @@ export interface TeamModelProjection {
 
 export const ROLE_ORDER = ['market', 'fundamental', 'news', 'reviewer', 'unknown'];
 
-export const ROLE_LABELS: Record<string, string> = {
+const ROLE_LABELS: Record<string, string> = {
   market: '行情分析',
   fundamental: '基本面分析',
   news: '新闻分析',
@@ -183,7 +183,7 @@ export const statusValue = (value: unknown): TeamMemberStatus | undefined => {
  * terminal, so keep the completed fact and remove only the contradictory
  * next-stage clause while preserving useful failure/partial details.
  */
-export const reviewSummaryForStatus = (
+const reviewSummaryForStatus = (
   summary: string,
   status: TeamMemberStatus | undefined,
 ): string => {
@@ -204,7 +204,7 @@ export const stageOutcomeStatus = (event: AgentStageEvent | undefined): TeamMemb
   statusValue(recordValue(event?.details, 'status', 'team_status', 'teamStatus'))
 );
 
-export const partValue = (part: TeamPartRecord, ...keys: string[]): unknown => (
+const partValue = (part: TeamPartRecord, ...keys: string[]): unknown => (
   recordValue(part, ...keys)
 );
 
@@ -218,7 +218,7 @@ export const partToolName = (part: TeamPartRecord): string => normalizeText(
   160,
 );
 
-export const eventIdentityValues = (event: AgentStageEvent): string[] => [
+const eventIdentityValues = (event: AgentStageEvent): string[] => [
   event.actionId,
   event.toolCallId,
 ].map((value) => normalizeText(value, 192)).filter(Boolean);
@@ -249,7 +249,7 @@ export const eventAgentId = (event: AgentStageEvent): string => normalizeText(
   96,
 );
 
-export const isToolEvent = (event: AgentStageEvent): boolean => (
+const isToolEvent = (event: AgentStageEvent): boolean => (
   event.stage === 'tool' || event.stage === 'execute'
 );
 
@@ -305,7 +305,7 @@ export const teamTrace = (trace: AgentExecutionTrace | null | undefined): TraceR
   isRecord(trace?.team) ? trace.team : undefined
 );
 
-export const recordsFrom = (value: unknown): TraceRecord[] => (
+const recordsFrom = (value: unknown): TraceRecord[] => (
   Array.isArray(value) ? value.filter(isRecord) : []
 );
 
@@ -325,7 +325,7 @@ export const resultRecords = (team: TraceRecord | undefined): TraceRecord[] => {
   return isRecord(reports) ? Object.values(reports).filter(isRecord) : [];
 };
 
-export const latestByOrder = <T,>(values: readonly T[]): T | undefined => values.at(-1);
+const latestByOrder = <T,>(values: readonly T[]): T | undefined => values.at(-1);
 
 export const stageEventsFromParts = (parts: readonly unknown[]): Record<string, unknown>[] => (
   parts.flatMap((value) => {
@@ -340,7 +340,7 @@ export const stageEventsFromParts = (parts: readonly unknown[]): Record<string, 
   })
 );
 
-export const stageEventIdentity = (event: AgentStageEvent): string => [
+const stageEventIdentity = (event: AgentStageEvent): string => [
   event.event,
   event.runId,
   event.collaborationId || '',
@@ -390,7 +390,7 @@ export const orderedStageEvents = (
     .map(({ event }) => event);
 };
 
-export const camelCaseKey = (value: string): string => value.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+const camelCaseKey = (value: string): string => value.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
 
 export const reviewPhase = (
   team: TraceRecord | undefined,

@@ -126,5 +126,3 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
     </Modal>
   );
 };
-
-export default HtmlTransformerForm;

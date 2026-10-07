@@ -154,5 +154,3 @@ export const RssOptionsPanel: React.FC<RssOptionsPanelProps> = ({ options, onOpt
     </div>
   );
 };
-
-export default RssOptionsPanel;

@@ -55,7 +55,7 @@ function collectValuesFromPaste(text: string): Record<string, string> | null {
   return Object.keys(matched).length > 0 ? matched : null;
 }
 
-export const ModelSettingsView: React.FC = () => {
+const ModelSettingsView: React.FC = () => {
   const { toast } = useToast();
   const [schema, setSchema] = useState<SystemConfigSchemaResponse | null>(null);
   const [config, setConfig] = useState<SystemConfigResponse | null>(null);

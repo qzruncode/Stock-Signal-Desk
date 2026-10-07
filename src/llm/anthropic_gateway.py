@@ -97,29 +97,3 @@ def resolve_anthropic_gateway_config(values: Mapping[str, Any] | None = None) ->
         # minimal config explicitly opt in, so existing low-level loop tests
         # remain isolated from this extra orchestration stage.
     }
-
-
-def build_litellm_kwargs(llm_cfg: Dict[str, Any], *, stream: bool, **extra: Any) -> Dict[str, Any]:
-    """Assemble litellm kwargs from the gateway config.
-
-    合并基础鉴权字段（model/api_key/api_base/custom_llm_provider/extra_headers，
-    缺省不写）与调用方额外参数（messages/tools/tool_choice 等）。stream 由调用方
-    显式指定，避免误传。
-    """
-    kwargs: Dict[str, Any] = {
-        "model": llm_cfg["model"],
-        "stream": stream,
-        # This legacy kwargs helper is not used for model response transport;
-        # LiteLLM may replace None with its own finite default.
-        "timeout": None,
-    }
-    if llm_cfg.get("api_key"):
-        kwargs["api_key"] = llm_cfg["api_key"]
-    if llm_cfg.get("api_base"):
-        kwargs["api_base"] = llm_cfg["api_base"]
-    if llm_cfg.get("custom_llm_provider"):
-        kwargs["custom_llm_provider"] = llm_cfg["custom_llm_provider"]
-    if llm_cfg.get("extra_headers"):
-        kwargs["extra_headers"] = llm_cfg["extra_headers"]
-    kwargs.update(extra)
-    return kwargs

@@ -1726,14 +1726,6 @@ def test_document_grounding_does_not_imply_pdf_only_source_scope(user_text: str)
 
 def test_pdf_answer_rebinds_exact_quote_to_matching_hit_from_this_run() -> None:
     async def scenario() -> None:
-        page_340 = {
-            "evidence_id": "ev_kb_page_340",
-            "page_start": 340,
-            "page_end": 340,
-            "filename": "Agentic_Design_Patterns_Complete.pdf",
-            "snippet": "Weaknesses, Originality, Quality, Clarity, and Significance.",
-            "url": "/api/v1/knowledge-bases/documents/doc-1/content#page=340",
-        }
         page_14 = {
             "evidence_id": "ev_kb_page_14",
             "page_start": 14,
@@ -2569,7 +2561,7 @@ def test_native_rss_validation_preserves_error_feedback_and_allows_corrected_cal
         assert [call["action_id"] for call in executor.calls] == ["rss-valid"]
         assert executor.calls[0]["arguments"]["source_params"] == {"id": "101"}
         failed = result.state["tool_results"][0]
-        assert failed["success"] is False
+        assert failed["success"] is False, result.state["tool_results"]
         assert failed["error_code"] == "invalid_arguments"
         assert "subject" in str(failed["errors"])
         assert "invalid JSON" not in str(failed["errors"])
@@ -2651,6 +2643,7 @@ def test_group_context_follows_checkpoint_branch_ownership(history_mode) -> None
         try:
             first = await manager.run_new(
                 messages=[{"role": "user", "content": "读取新能源分组"}],
+                agent_mode="direct",
                 user_text="读取新能源分组",
                 system_prompt="",
                 llm_config={},
@@ -2676,6 +2669,7 @@ def test_group_context_follows_checkpoint_branch_ownership(history_mode) -> None
             )
             second = await manager.run_new(
                 messages=[{"role": "user", "content": "继续刚才的分析"}],
+                agent_mode="direct",
                 user_text="继续刚才的分析",
                 system_prompt="",
                 llm_config={},
@@ -2806,6 +2800,7 @@ def test_native_tool_handler_reuses_the_application_executor_contract() -> None:
                 controller=None,
                 run_id="run-native-read-adapter",
                 conversation_id="native-read-adapter",
+                agent_mode="direct",
                 run_attempt=1,
                 tenant_id="tenant",
                 owner_id="owner",
@@ -2843,6 +2838,7 @@ def test_cancelled_tool_turn_is_removed_before_the_next_checkpoint_continuation(
                     database=None,
                     controller=None,
                     run_id="cancelled-tool-run",
+                    agent_mode="direct",
                     conversation_id="cancelled-tool-continuation",
                     run_attempt=1,
                     tenant_id="tenant",
@@ -2879,6 +2875,7 @@ def test_cancelled_tool_turn_is_removed_before_the_next_checkpoint_continuation(
                 database=None,
                 controller=None,
                 run_id="continued-after-cancel",
+                agent_mode="direct",
                 conversation_id="cancelled-tool-continuation",
                 run_attempt=1,
                 tenant_id="tenant",
@@ -2914,6 +2911,7 @@ def test_snapshot_branch_replaces_the_native_checkpoint_messages() -> None:
                 database=None,
                 controller=None,
                 run_id="before-snapshot-branch",
+                agent_mode="direct",
                 conversation_id="snapshot-branch",
                 run_attempt=1,
                 tenant_id="tenant",

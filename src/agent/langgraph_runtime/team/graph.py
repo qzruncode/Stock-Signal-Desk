@@ -2167,7 +2167,6 @@ def _normalize_finding_evidence(
         and evidence_record_is_eligible(item)
         and str(item.get("evidence_id") or item.get("id") or "").strip()
     }
-    known = set(source_by_slot.values())
     source_references = list(assessment.finding_evidence_refs or [])
     if len(source_references) > len(assessment.findings):
         # A malformed extra finding map must not discard valid earlier
@@ -2907,7 +2906,6 @@ def _send_team_tasks(state: Mapping[str, Any], task_ids: Sequence[str]) -> list[
         task = task_by_id.get(normalized_id)
         if task is None:
             return "team_fail"
-        expert_id = str(task.get("agent_id") or "").strip().lower()
         target = str(task.get("agent_node") or "").strip()
         if not target:
             return "team_fail"
@@ -3329,12 +3327,6 @@ def build_team_graph(
 ) -> Any:
     """Compile the durable Collaboration graph around the existing Agent loop."""
     active_expert_registry = _expert_registry_or_default(expert_registry)
-    direct_graph = build_agent_graph(
-        checkpointer=None,
-        registry=registry,
-        response_format=response_format,
-    )
-
     async def route(state: AgentState, runtime: Any) -> dict[str, Any]:
         return await resolve_orchestrator_route(
             state,

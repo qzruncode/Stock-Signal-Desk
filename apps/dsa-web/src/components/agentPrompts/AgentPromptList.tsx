@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Pencil, Trash2, Zap } from 'lucide-react';
 import { Button, ConfirmDialog } from '../common';
 import type { AgentPromptTemplate } from '../../types/agentPrompts';
 
-export interface AgentPromptFallbackPrompt {
+interface AgentPromptFallbackPrompt {
   /** 系统默认 prompt 的正文（回落到源码常量时）。 */
   content: string;
 }
@@ -193,5 +193,3 @@ export const AgentPromptList: React.FC<AgentPromptListProps> = ({
     </>
   );
 };
-
-export default AgentPromptList;

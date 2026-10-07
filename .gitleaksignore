@@ -1,0 +1,13 @@
+# Reviewed 2026-10-07: historical UI examples; notification defaults remain empty.
+2190efc99d2e86a47e0ff3be3ce66cabd0aad7e6:src/core/config_registry/_notification_fields1.py:discord-client-id:130
+3949d0a477411cc19cacd8a9b5d86ed23722b077:src/core/config_registry/notification.py:discord-client-id:138
+01e35b2c6553704a152ce3352c5926c7bfabbbb3:src/core/config_registry/notification.py:discord-client-id:130
+b1e6f2c1e292dbd8a8c7c3d817702f269e2cf881:src/core/config_registry.py:discord-client-id:1530
+
+# Reviewed 2026-10-07: synthetic search test credentials and channel templates.
+2190efc99d2e86a47e0ff3be3ce66cabd0aad7e6:tests/test_anspire_search_part1.py:generic-api-key:219
+01e35b2c6553704a152ce3352c5926c7bfabbbb3:src/core/config_registry/ai_model.py:generic-api-key:317
+b1e6f2c1e292dbd8a8c7c3d817702f269e2cf881:tests/test_anspire_search.py:generic-api-key:138
+
+# Reviewed 2026-10-07: the historical WeChat URL contains a one-character placeholder.
+b1e6f2c1e292dbd8a8c7c3d817702f269e2cf881:src/config.py:generic-api-key:528

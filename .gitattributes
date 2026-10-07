@@ -1,0 +1,3 @@
+# Unified diffs prepend a context space to upstream tab-indented source.
+# Keep other whitespace checks enabled, including trailing whitespace.
+apps/dsa-web/patches/*.patch whitespace=-space-before-tab

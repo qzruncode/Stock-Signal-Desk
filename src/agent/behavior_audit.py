@@ -541,18 +541,6 @@ def describe_tool_outcome(tool_name: str, observation: Mapping[str, Any] | None)
     success = success_value is True
     access = describe_tool_access(tool_name, item)
     quality = describe_tool_quality(tool_name, item)
-    result_count = _field(
-        item,
-        "result_count",
-        "resultCount",
-        "count",
-        "item_count",
-        "itemCount",
-    )
-    try:
-        result_count_int = int(result_count) if result_count is not None else None
-    except (TypeError, ValueError):
-        result_count_int = None
     stale = _truthy(_field(item, "is_stale", "isStale"))
     partial = _truthy(_field(item, "partial", "partial_result", "partialResult"))
     fallback = _truthy(_field(item, "fallback_used", "fallbackUsed"))
@@ -778,7 +766,6 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         mode = _access_mode(tool_name, item, step)
         extracted = _content_extracted(item, step, mode)
         refs = _reference_urls(item)
-        result_items = _sequence(_field(item, "result_items", "resultItems"))
         reference_kind = REFERENCE_ONLY_TOOL_KINDS.get(tool_name)
         if mode == "reference_only":
             reference_only_tool_count += 1

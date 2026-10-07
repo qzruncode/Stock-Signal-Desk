@@ -5,7 +5,7 @@ export type IndicatorParameterValue = string | number | boolean | null;
 
 export const INDICATOR_SCREEN_SCOPE_ID = 'watchlist_scope';
 
-export interface IndicatorScreenUniverse {
+interface IndicatorScreenUniverse {
   status: 'active';
   markets: Array<'sh' | 'sz' | 'bj'>;
   includeSt: boolean;
@@ -14,7 +14,7 @@ export interface IndicatorScreenUniverse {
   codes?: string[] | null;
 }
 
-export interface IndicatorTechnicalRule {
+interface IndicatorTechnicalRule {
   strategy: 'atr_relative_frequency';
   atrPeriod: number;
   atrAverage: 'sma' | 'ema' | 'wilder';
@@ -29,7 +29,7 @@ export interface IndicatorTechnicalRule {
   minQualifiedRatioPct: number | null;
 }
 
-export interface IndicatorScreenSpec {
+interface IndicatorScreenSpec {
   version: '1.0';
   universe: IndicatorScreenUniverse;
   technicalRule: IndicatorTechnicalRule;
@@ -56,7 +56,7 @@ export interface IndicatorScreenSpec {
   previewLimit: number;
 }
 
-export interface IndicatorFinancialScreenSpec {
+interface IndicatorFinancialScreenSpec {
   version: '1.0';
   universe: IndicatorScreenUniverse;
   financialFilters: IndicatorScreenSpec['financialFilters'];
@@ -75,7 +75,7 @@ export interface IndicatorFinancialScreenSpec {
   previewLimit: number;
 }
 
-export interface IndicatorParameterOption {
+interface IndicatorParameterOption {
   value: string;
   label: string;
 }
@@ -127,7 +127,7 @@ export interface IndicatorCatalogItem {
   defaultSpec: IndicatorScreenSpec | IndicatorFinancialScreenSpec;
 }
 
-export interface IndicatorScreenColumn {
+interface IndicatorScreenColumn {
   field: string;
   label: string;
   format: string;

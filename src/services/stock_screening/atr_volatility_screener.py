@@ -470,7 +470,6 @@ def run_atr_volatility_screen(
     fallback_financial_count = 0
     fallback_financial_sources: set[str] = set()
     cached_financial_count = 0
-    primary_financial_available = True
     warnings: list[str] = []
     if required_financial_fields:
         try:

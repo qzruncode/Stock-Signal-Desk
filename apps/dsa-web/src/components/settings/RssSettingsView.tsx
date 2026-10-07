@@ -5,7 +5,7 @@ import { HtmlTransformerForm } from '../rss/HtmlTransformerForm';
 import { RssExplorePanel } from '../rss/RssExplorePanel';
 import { useRssNamespaces } from '../../hooks/useRssNamespaces';
 
-export const RssSettingsView: React.FC = () => {
+const RssSettingsView: React.FC = () => {
   const [transformerOpen, setTransformerOpen] = useState(false);
   const [sourceListOpen, setSourceListOpen] = useState(false);
   const {

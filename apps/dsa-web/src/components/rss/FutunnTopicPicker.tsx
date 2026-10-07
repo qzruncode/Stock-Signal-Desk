@@ -121,5 +121,3 @@ export const FutunnTopicPicker: React.FC<FutunnTopicPickerProps> = ({
     </div>
   );
 };
-
-export default FutunnTopicPicker;

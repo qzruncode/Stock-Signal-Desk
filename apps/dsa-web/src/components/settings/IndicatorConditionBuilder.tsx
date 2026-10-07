@@ -249,5 +249,3 @@ export function IndicatorConditionBuilder({
     </div>
   );
 }
-
-export default IndicatorConditionBuilder;

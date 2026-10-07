@@ -12,7 +12,7 @@ Goal 默认只允许用户显式选择；部署验证稳定后，设置服务端
 `AGENT_GOAL_AUTO_ROUTING_ENABLED=true` 才开放 Auto -> Goal。显式
 `agent_mode=goal` 不受该开关影响。
 
-Auto 模式默认由模型选择 Direct、Plan 或 Team；Goal 只有在 `AGENT_GOAL_AUTO_ROUTING_ENABLED=true` 灰度开关打开后才加入 Auto 候选。Direct 模式使用原有问答循环，不生成 Planning 步骤；Plan 模式显式生成步骤并逐步核验；Team 模式显式生成领域任务并并行交接；Goal 模式围绕 GoalContract、证据门禁和服务端预算执行独立动作循环。内部直接调用 runtime 的默认值仍是 direct，测试或受控调用方可以明确传 `agent_mode`。
+Auto 模式默认由模型选择 Direct、Plan 或 Team；Goal 只有在 `AGENT_GOAL_AUTO_ROUTING_ENABLED=true` 灰度开关打开后才加入 Auto 候选。Direct 模式使用原有问答循环，不生成 Planning 步骤；Plan 模式显式生成步骤并逐步核验；Team 模式显式生成领域任务并并行交接；Goal 模式围绕 GoalContract、证据门禁和服务端预算执行独立动作循环。未提供 `agent_mode` 时默认使用 Auto；仅测试基础 Agent Loop 的受控调用方应显式传 `agent_mode="direct"`，不能把没有路由响应的脚本模型送入 Auto。
 
 ## 执行与完成
 
@@ -85,6 +85,6 @@ Planner 目录只传递操作名、简短描述、effect 和 category；完整�
 
 普通问答的请求上下文同样会将上一轮结构化答案渲染为普通对话内容，不回放它的输出协议回执。本轮原生工具消息对保持不变，完整 checkpoint 与运行记录不受此投影影响。
 
-后端重点见 `tests/test_agent_planning.py` 和 `tests/test_langgraph_multi_agent_team.py`：四种产品模式、Auto 路由、非法计划、条件未满足、伪造证据、重规划、实际分析、上下文投影、审批恢复、并行 worker、冲突/多空/共识和部分答案发布。另运行受影响的原生流、checkpoint、审批及持久化测试。
+后端重点见 `tests/test_agent_planning.py`、`tests/test_langgraph_multi_agent_team.py` 和 `tests/test_agent_goal.py`：五种产品模式、Auto 路由、非法计划、条件未满足、伪造证据、重规划、实际分析、上下文投影、审批恢复、并行 worker、冲突/多空/共识和部分答案发布。另运行受影响的原生流、checkpoint、审批及持久化测试。
 
 前端重点验证 AgentReasoning、ChatRuntimeBridge、agentStage 和 RunDetailContent。真实验收还需在页面验证简单解释、短句多步骤任务、失败重规划及刷新回放，不能用单元测试代替模型和浏览器验收。

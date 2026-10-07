@@ -36,7 +36,6 @@ from src.tools.webfetch import (
     _TEXT_APPLICATION_MIMES,
     _CONTENT_TOKENS,
     _BOILERPLATE_TOKENS,
-    WEBFETCH_DESCRIPTION,
  )
 
 __all__ = [

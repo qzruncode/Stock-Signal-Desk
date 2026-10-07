@@ -145,5 +145,3 @@ export function useRssFeeds(
 
   return { feedData, loading, error, fetchFeeds };
 }
-
-export default useRssFeeds;

@@ -202,5 +202,3 @@ export function CompactSelect({
     </SelectPrimitive.Root>
   );
 }
-
-export default CompactSelect;

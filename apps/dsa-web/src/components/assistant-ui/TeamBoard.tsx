@@ -9,7 +9,7 @@ import { useTeamBoardState } from './TeamBoardState';
 import { teamMemberFlowFromParts, teamModelProjectionsFromParts, type TeamBoardModel, type TeamFailureModel, type TeamMemberFlowItem, type TeamModelProjection, type TeamMemberModel } from './TeamBoardUtils';
 import { terminalStatuses, statusLabel, statusProblem } from './TeamBoardViewUtils';
 import { TeamMemberCard, TeamReviewCard } from './TeamBoardLanes';
-export { TeamMemberCard, TeamReviewCard } from './TeamBoardLanes';
+export { TeamReviewCard } from './TeamBoardLanes';
 const TeamLaneProjection: FC<{
   projection: TeamModelProjection;
   animate: boolean;

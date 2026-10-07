@@ -214,7 +214,7 @@ const isRenderableModelProgress = (value: string): boolean => {
   return stack.length === 0;
 };
 
-export const NativeAgentModelProjectionPart: FC<DataMessagePartProps> = ({ data }) => {
+const NativeAgentModelProjectionPart: FC<DataMessagePartProps> = ({ data }) => {
   const active = useMessage((state) => (
     state.status?.type === 'running' || state.status?.type === 'requires-action'
   ));

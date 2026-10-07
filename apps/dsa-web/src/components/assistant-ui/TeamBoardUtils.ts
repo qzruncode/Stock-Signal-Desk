@@ -3,10 +3,10 @@ import { runtimeErrorId, teamRuntimeErrors } from './TeamRuntimeErrors';
 import { agentStageEvents, reconcileTerminalStageEvents, type AgentStageEvent } from '../../utils/agentStage';
 import { isRecord, recordValue, teamProgressText, type TraceRecord } from './AgentReasoningUtils';
 import { type TeamRole, terminalStatuses, type TeamPartRecord, type TeamToolRecord, type TeamChartRecord, type TeamReviewPhase, type TeamReviewReport, type TeamMemberModel, type TeamMemberFlowItem, type TeamBoardModel, type TeamWorkerProgressAnchor, type TeamModelProjection, ROLE_ORDER, isWorkerRole, normalizeText, normalizedRole, roleLabel, statusValue, stageOutcomeStatus, partToolId, partToolName, partIdentityValues, identitiesMatch, eventRole, eventTaskId, eventAgentId, findToolEvent, findChartEvent, findRuntimeErrorEvent, teamTrace, taskRecords, resultRecords, stageEventsFromParts, orderedStageEvents, reviewPhase, memberStatus, terminalMemberStatus, memberProgress, memberSummary, uniqueProgress } from './TeamBoardProjectionState';
-export type { TeamRole, TeamMemberStatus, TeamPartRecord, TeamToolRecord, TeamChartRecord, TeamReviewPhase, TeamReviewReport, TeamFailureModel, TeamMemberModel, TeamMemberFlowItem, TeamBoardModel, TeamWorkerProgressAnchor, TeamModelProjection } from './TeamBoardProjectionState';
+export type { TeamRole, TeamMemberStatus, TeamPartRecord, TeamToolRecord, TeamFailureModel, TeamMemberModel, TeamMemberFlowItem, TeamBoardModel, TeamWorkerProgressAnchor, TeamModelProjection } from './TeamBoardProjectionState';
 export const teamRoleLabel = (role: TeamRole): string => roleLabel(role);
 
-export const teamModelProjectionFrom = (value: unknown): Omit<TeamModelProjection, 'partId' | 'contentIndex'> | undefined => {
+const teamModelProjectionFrom = (value: unknown): Omit<TeamModelProjection, 'partId' | 'contentIndex'> | undefined => {
   if (!isRecord(value)) return undefined;
   const text = normalizeText(recordValue(value, 'text'), 1_800);
   const projectionSource = normalizeText(recordValue(value, 'projection_source', 'projectionSource'), 32);
@@ -87,7 +87,7 @@ export const teamModelProjectionsFromParts = (
     });
 };
 
-export const teamProjectionMatchesMember = (
+const teamProjectionMatchesMember = (
   projection: Pick<TeamModelProjection, 'taskId' | 'agentId'>,
   member: Pick<TeamMemberModel, 'taskId' | 'agentId'>,
 ): boolean => {
@@ -177,10 +177,6 @@ export const teamMemberFlowFromParts = (
   return flow.sort((left, right) => left.contentIndex - right.contentIndex);
 };
 
-export const teamEventRole = (event: AgentStageEvent): TeamRole | undefined => eventRole(event);
-
-export const teamEventTaskId = (event: AgentStageEvent): string => eventTaskId(event);
-
 /**
  * Return the first user-facing progress sentence emitted by each worker.
  *
@@ -227,11 +223,6 @@ export const teamToolEventForPart = (
   part: TeamPartRecord,
   events: readonly AgentStageEvent[],
 ): AgentStageEvent | undefined => findToolEvent(part, events);
-
-export const teamToolPart = (value: unknown): TeamPartRecord | undefined => {
-  if (!isRecord(value) || value.type !== 'tool-call') return undefined;
-  return value as TeamPartRecord;
-};
 
 export const buildTeamBoardModel = (
   rawParts: readonly unknown[],

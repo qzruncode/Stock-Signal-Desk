@@ -1,4 +1,4 @@
-import type { ThreadMessageLike } from '@assistant-ui/core';
+import type { ThreadMessageLike } from '@assistant-ui/react';
 import type { ReadonlyJSONValue } from 'assistant-stream/utils';
 import type {
   AgentExecutionTrace,

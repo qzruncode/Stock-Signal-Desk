@@ -20,5 +20,3 @@ export const ChatHomeRuntimeSurface: React.FC<ChatHomeRuntimeSurfaceProps> = ({
     <ChatLayout {...layoutProps} />
   </AssistantRuntimeProvider>
 );
-
-export default ChatHomeRuntimeSurface;

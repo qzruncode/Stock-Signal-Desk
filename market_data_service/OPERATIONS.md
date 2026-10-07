@@ -76,7 +76,7 @@ bash market_data_service/manage.sh start
 bash market_data_service/manage.sh status
 ```
 
-首次需要先准备独立 PostgreSQL 数据库与 Redis，并在 `.env.market-data` 填写连接串；脚本不会擅自修改系统默认数据库。当前开发机已准备：项目 `.market-data/postgres` 集群（5433）、Redis（6381）、`market_data` 数据库。不要复用其他服务的 Redis 端口。脚本只会恢复该项目明确初始化的基础设施。
+首次需要先准备独立 PostgreSQL 数据库与 Redis，并在 `.env.market-data` 填写连接串；脚本不会初始化系统默认数据库。示例使用 PostgreSQL 5433、Redis 6381 和 `market_data` 数据库，这些不是新克隆仓库自带的服务。可以自行部署，或使用上面的 Docker Compose。脚本只会恢复该项目明确初始化的 `.market-data/postgres` 集群及 Redis；未初始化时须先准备基础设施。不要复用业务数据库或其他服务的 Redis。
 
 开发 API 为 8010；源码与状态日志在 `.market-data/logs`。`restart` 加载新代码；`stop` 只关闭 API/采集/调度，不删除或停止 PostgreSQL/Redis 数据。
 

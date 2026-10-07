@@ -349,5 +349,3 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
     </div>
   );
 };
-
-export default RssRouteParamForm;

@@ -2,7 +2,7 @@ import React from 'react';
 import { FormSelect } from './FormControls';
 import type { CompactSelectDensity } from './CompactSelect';
 
-export interface SelectOption {
+interface SelectOption {
   value: string;
   label: string;
 }

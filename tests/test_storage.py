@@ -36,9 +36,6 @@ class TestStorage(unittest.TestCase):
         text_complex = "MA10为20.5，建议在30元买入"
         self.assertEqual(DatabaseManager._parse_sniper_value(text_complex), 30.0)
 
-        text_multiple = "支撑位10元，阻力位20元"  # 应该提取最后一个"元"前面的数字，即20，或者更复杂的逻辑？
-        # 当前逻辑是找最后一个冒号，然后找之后的第一个"元"，提取中间的数字。
-        # 测试没有冒号的情况
         self.assertEqual(DatabaseManager._parse_sniper_value("30元"), 30.0)
 
         # 测试多个数字在"元"之前
@@ -137,7 +134,7 @@ class TestStorage(unittest.TestCase):
         try:
             with patch.object(db, "get_session", return_value=session):
                 with patch.object(connection, "exec_driver_sql", wraps=connection.exec_driver_sql) as mock_exec:
-                    result = db._run_write_transaction("unit-test", lambda current_session: 7)
+                    result = db._run_write_transaction("unit-test", lambda _current_session: 7)
 
             self.assertEqual(result, 7)
             self.assertTrue(any(call.args == ("BEGIN IMMEDIATE",) for call in mock_exec.call_args_list))

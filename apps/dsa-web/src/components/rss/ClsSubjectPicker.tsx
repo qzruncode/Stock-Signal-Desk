@@ -126,5 +126,3 @@ export const ClsSubjectPicker: React.FC<ClsSubjectPickerProps> = ({
     </div>
   );
 };
-
-export default ClsSubjectPicker;

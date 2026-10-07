@@ -161,5 +161,3 @@ export function StockListGroupDialogs({
     </>
   );
 }
-
-export default StockListGroupDialogs;

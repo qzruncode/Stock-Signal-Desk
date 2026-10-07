@@ -14,7 +14,7 @@ type FormState =
 /**
  * AI 助手 system prompt 模板管理视图，挂载在 /setting 页的「AI 助手 Prompt」分类下。
  */
-export const AgentPromptView: React.FC = () => {
+const AgentPromptView: React.FC = () => {
   const {
     status,
     templates,

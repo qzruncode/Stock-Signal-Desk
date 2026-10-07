@@ -10,10 +10,6 @@
       "headers": {
         "Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"
       }
-    },
-    "obscura": {
-      "command": "/Users/xiejiawei/.local/bin/obscura",
-      "args": ["mcp", "--stealth"]
     }
   }
 }

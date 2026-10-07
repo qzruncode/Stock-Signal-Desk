@@ -77,7 +77,7 @@ export const TimelineDetailLines: FC<{ lines: DetailLine[] }> = ({ lines }) => {
   );
 };
 
-export const TimelineTeamWorkerStatusRow: FC<{ row: TimelineRow }> = ({ row }) => {
+const TimelineTeamWorkerStatusRow: FC<{ row: TimelineRow }> = ({ row }) => {
   const event = row.event;
   if (!event) return null;
   const problem = event.status === 'failed'
@@ -166,7 +166,7 @@ export const TimelineStageRow: FC<{ row: TimelineRow }> = ({ row }) => {
 };
 
 /** Render Team control-plane progress like Planning, without exposing node names. */
-export const TimelineNaturalProgressRow: FC<{ row: TimelineRow }> = ({ row }) => {
+const TimelineNaturalProgressRow: FC<{ row: TimelineRow }> = ({ row }) => {
   const event = row.event;
   if (!event) return null;
   const problem = event.status === 'failed'
@@ -191,7 +191,7 @@ export const TimelineNaturalProgressRow: FC<{ row: TimelineRow }> = ({ row }) =>
 };
 
 /** Render Planning as user-facing progress, never as a field-by-field dump. */
-export const TimelinePlanningRow: FC<{ row: TimelineRow }> = ({ row }) => {
+const TimelinePlanningRow: FC<{ row: TimelineRow }> = ({ row }) => {
   const event = row.event;
   if (!event) return null;
   const retrying = isRecoverablePlanningRetry(event);

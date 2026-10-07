@@ -2,7 +2,7 @@ import apiClient from './index';
 import { toCamelCase } from './utils';
 import type { AgentGoalTrace, AgentPlanningTrace, AgentTeamTrace } from './agent';
 
-export type AgentRunStatus =
+type AgentRunStatus =
   | 'queued'
   | 'running'
   | 'recovering'
@@ -23,9 +23,9 @@ export interface AgentRunFeedback {
   updatedAt?: string | null;
 }
 
-export type AgentBehaviorStatus = 'clear' | 'info' | 'warning' | 'danger';
+type AgentBehaviorStatus = 'clear' | 'info' | 'warning' | 'danger';
 
-export interface AgentBehaviorFinding {
+interface AgentBehaviorFinding {
   code: string;
   severity: 'info' | 'warning' | 'danger';
   disposition?: 'action_required' | 'advisory' | string;
@@ -39,14 +39,14 @@ export interface AgentBehaviorFinding {
   links?: string[];
 }
 
-export interface AgentBehaviorCheck {
+interface AgentBehaviorCheck {
   code: string;
   label: string;
   status: AgentBehaviorStatus;
   detail: string;
 }
 
-export interface AgentBehaviorStep {
+interface AgentBehaviorStep {
   actionId?: string;
   toolName?: string;
   success?: boolean;
@@ -104,7 +104,7 @@ export interface AgentBehaviorAudit {
   };
 }
 
-export interface AgentSourceSampleResult {
+interface AgentSourceSampleResult {
   url: string;
   kind?: string | null;
   success: boolean;
@@ -175,13 +175,13 @@ export interface AgentRunListResponse {
   limit: number;
 }
 
-export interface AgentRunQualityDimension {
+interface AgentRunQualityDimension {
   score: number;
   weight: number;
   details: Record<string, unknown>;
 }
 
-export interface AgentRunQualityScore {
+interface AgentRunQualityScore {
   evaluatorVersion: string;
   status: 'passed' | 'failed';
   passed: boolean;

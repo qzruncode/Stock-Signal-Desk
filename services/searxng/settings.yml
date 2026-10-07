@@ -9,7 +9,7 @@ use_default_settings:
 
 general:
   debug: false
-  instance_name: "Daily Stock Analysis Search"
+  instance_name: "Stock Assistant Search"
 
 search:
   safe_search: 0

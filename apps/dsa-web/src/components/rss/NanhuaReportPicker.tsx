@@ -162,5 +162,3 @@ export const NanhuaReportPicker: React.FC<NanhuaReportPickerProps> = ({
     </div>
   );
 };
-
-export default NanhuaReportPicker;

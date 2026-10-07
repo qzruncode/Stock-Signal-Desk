@@ -282,7 +282,7 @@ export const assistantEvidenceIndexFromTrace = (
   return index;
 };
 
-export const assistantEvidenceFootnoteLabel = (index: number): string => (
+const assistantEvidenceFootnoteLabel = (index: number): string => (
   CIRCLED_DIGITS[index] ?? String(index + 1)
 );
 

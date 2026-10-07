@@ -1,4 +1,4 @@
-# Daily Stock Analysis AI Instructions
+# Stock Assistant AI Instructions
 
 This file is intentionally compatible with Claude Code and Codex. Follow it when editing this repository.
 
@@ -18,12 +18,12 @@ This file is intentionally compatible with Claude Code and Codex. Follow it when
 
 ## Validation
 
-Use the bundled Node runtime in Codex when the system Node is too old:
+Use the Node version pinned in `apps/dsa-web/.nvmrc` (currently Node 24; with nvm, run `nvm use`). Run these commands from `apps/dsa-web`:
 
 ```bash
-PATH="/Users/xiejiawei/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH" npm run lint
-PATH="/Users/xiejiawei/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH" npm run build
-PATH="/Users/xiejiawei/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH" npm run check:constraints
+npm run lint
+npm run build
+npm run check:constraints
 ```
 
 For Python changes:

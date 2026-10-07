@@ -17,7 +17,7 @@ export type ToolCategory =
   | 'news_source'
   | 'deterministic_calculation';
 
-export interface ToolParameterSpec {
+interface ToolParameterSpec {
   name: string;
   type: string;
   description?: string | null;

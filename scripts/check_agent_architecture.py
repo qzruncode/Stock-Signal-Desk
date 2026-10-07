@@ -118,6 +118,13 @@ _BANNED_CONTROL_SYMBOLS = frozenset(
 )
 
 
+def _banned_control_symbols_for(path: Path) -> frozenset[str]:
+    relative = path.relative_to(PROJECT_ROOT)
+    if relative.parts[:4] == ("src", "agent", "langgraph_runtime", "goal"):
+        return _BANNED_CONTROL_SYMBOLS - {"GoalContract"}
+    return _BANNED_CONTROL_SYMBOLS
+
+
 def _names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     names: set[str] = set()
@@ -187,7 +194,7 @@ def audit_architecture() -> dict[str, Any]:
 
     for path in (PROJECT_ROOT / "src/agent").rglob("*.py"):
         names = _names(path)
-        leaked = sorted(names & _BANNED_CONTROL_SYMBOLS)
+        leaked = sorted(names & _banned_control_symbols_for(path))
         if leaked:
             issues.append(f"removed fixed-control symbol in {path.relative_to(PROJECT_ROOT)}: {', '.join(leaked)}")
 

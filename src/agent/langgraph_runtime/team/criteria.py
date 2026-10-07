@@ -164,12 +164,6 @@ def validate_criteria_assessment(
     unknown_source_ids = sorted(set(cited_source_ids) - set(source_slots))
     if unknown_source_ids:
         raise CriteriaValidationError(f"criteria cite unavailable evidence source ids: {unknown_source_ids}")
-    cited_ids = _unique(
-        source_slots[source_id]
-        for source_id in cited_source_ids
-        if source_id in source_slots
-    )
-
     has_successful_operation = bool(known_ids) or any(
         isinstance(record, Mapping)
         and record.get("success") is True

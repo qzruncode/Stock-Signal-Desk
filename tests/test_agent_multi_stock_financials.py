@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
 from datetime import datetime
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.tools.get_multi_stock_financials import (

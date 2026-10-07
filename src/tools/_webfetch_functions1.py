@@ -36,7 +36,6 @@ from src.tools.webfetch import (
     _TEXT_APPLICATION_MIMES,
     _CONTENT_TOKENS,
     _BOILERPLATE_TOKENS,
-    WEBFETCH_DESCRIPTION,
  )
 
 __all__ = ['_accept_header_for', '_allow_private', '_validate_public_url', '_extract_text_from_html', '_markdownify', '_metadata_from_soup', '_normalized_similarity', '_semantic_candidate', '_extract_html', '_challenge_reason', '_quality_warning', '_decode_text', '_document_extension', '_convert_document', '_unusable_document_reason', '_timed_result', '_html_result']

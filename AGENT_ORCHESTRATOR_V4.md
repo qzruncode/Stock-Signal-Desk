@@ -2,15 +2,19 @@
 
 ## 运行模型
 
-聊天 Agent 只有一条通用控制循环：
+聊天通过统一运行入口选择产品模式。Direct 使用通用控制循环：
 
 ```text
 用户消息 → 模型判断 → 0..N 个原子工具 → 工具观察/证据 → 模型判断 → 最终回答
 ```
 
-应用通过 `langchain.agents.create_agent` 编译该循环，并使用 LangGraph
-Checkpointer 作为唯一的编排状态。它不是旧 Pipeline 外的一层包装：没有 Goal
-Contract、Capability Graph、按关键词选 Workflow、固定股票分析 SOP 或领域 Renderer。
+应用通过 `langchain.agents.create_agent` 编译基础循环，并使用 LangGraph
+Checkpointer 持久化执行状态。当前提供 Auto、Direct、Plan、Team、Goal 五种模式：
+Plan 使用 PlanningCoordinator 分步执行与核验，Team 使用 supervisor/worker 协作图，
+Goal 使用 GoalContract 与独立 GoalGraph。Auto 由模型选择 Direct / Plan / Team；
+只有开启 `AGENT_GOAL_AUTO_ROUTING_ENABLED` 后才会自动选择 Goal。
+各模式共享工具、证据、审批、预算及最终发布边界；详细契约见
+[PLANNING.md](src/agent/langgraph_runtime/PLANNING.md)。
 
 模型每轮都会看到全部 operation schema、紧凑的 operation/source 目录和已返回的紧凑观察。
 参数与 operation 描述以绑定 schema 为准，目录只补充 effect 和来源选择信息。它可直接回答、
@@ -73,9 +77,9 @@ Markdown 表格或连续列表后的明确来源行可以统一覆盖紧邻的�
 
 ## 架构不变量
 
-- 一个共享的 `create_agent` 图是唯一的聊天执行入口。
+- 产品模式由统一运行入口分发；Direct / Plan 使用基础 Agent 能力，Team / Goal 使用对应图，共享运行安全边界。
 - 每个已注册 operation 同时出现在模型绑定 schema 和完整目录中。
 - 不存在 Capability 注册表、固定 Workflow 白名单、意图关键词路由或复合 SOP 工具。
 - 任意副作用都不能绕过 interrupt、服务端批准和幂等账本。
 - 每条外部事实都可从最终回答追到成功工具结果、数据时间与来源。
-- 通用问答和长尾问题走同一循环；“专业性”来自动态取证和清晰的不确定性边界，不来自预写流程。
+- 通用问答和长尾问题可按所选模式动态取证；专业性来自证据与核验，不依赖固定股票分析 SOP。

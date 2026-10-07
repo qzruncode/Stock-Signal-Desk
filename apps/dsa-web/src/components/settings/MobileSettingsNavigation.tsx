@@ -67,5 +67,3 @@ export const MobileSettingsNavigation: React.FC<MobileSettingsNavigationProps> =
     </div>
   );
 };
-
-export default MobileSettingsNavigation;

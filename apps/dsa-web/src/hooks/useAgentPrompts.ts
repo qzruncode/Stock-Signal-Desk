@@ -7,7 +7,7 @@ import type {
   UpdateAgentPromptRequest,
 } from '../types/agentPrompts';
 
-export type AgentPromptsStatus = 'loading' | 'ready' | 'error';
+type AgentPromptsStatus = 'loading' | 'ready' | 'error';
 
 export interface UseAgentPromptsResult {
   status: AgentPromptsStatus;
@@ -120,5 +120,3 @@ export function useAgentPrompts(): UseAgentPromptsResult {
     mutating,
   };
 }
-
-export default useAgentPrompts;

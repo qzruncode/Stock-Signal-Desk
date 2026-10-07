@@ -200,7 +200,7 @@ function TextDocumentCard({
   );
 }
 
-export function FeedItemCard({ item, onOpen }: { item: RssItem; onOpen: () => void }) {
+function FeedItemCard({ item, onOpen }: { item: RssItem; onOpen: () => void }) {
   const normalizedTitle = item.title.trim().replace(/\s+/g, ' ');
   const normalizedSummary = item.summary.trim().replace(/\s+/g, ' ');
   const showSummary = Boolean(normalizedSummary && normalizedSummary !== normalizedTitle);
@@ -422,5 +422,3 @@ export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec
     </>
   );
 };
-
-export default RssFeedList;

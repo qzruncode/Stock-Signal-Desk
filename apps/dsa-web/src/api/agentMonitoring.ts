@@ -1,13 +1,13 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
 
-export interface AgentStepMetric {
+interface AgentStepMetric {
   toolName: string;
   status: string;
   count: number;
 }
 
-export interface AgentRuntimeMetrics {
+interface AgentRuntimeMetrics {
   runs: Record<string, number>;
   steps: AgentStepMetric[];
   expiredRunLeases: number;

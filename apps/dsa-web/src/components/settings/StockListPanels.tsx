@@ -19,8 +19,8 @@ import type { WatchlistGroup, WatchlistResponse } from '../../api/watchlist';
 import { cn } from '../../utils/cn';
 import { StockListCompactSelect as CompactSelect } from './StockListCompactSelect';
 
-export type StockListViewMode = 'market' | 'watchlist';
-export interface MarketFormValues {
+type StockListViewMode = 'market' | 'watchlist';
+interface MarketFormValues {
   search: string;
   market: string;
 }
@@ -567,5 +567,3 @@ export function StockListPanels({
       </div>
   );
 }
-
-export default StockListPanels;

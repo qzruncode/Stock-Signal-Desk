@@ -168,5 +168,3 @@ export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
     </div>
   );
 };
-
-export default ToolListItem;

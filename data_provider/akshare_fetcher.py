@@ -55,7 +55,6 @@ from .utils import (
 )
 from .rate_limiter import akshare_rate_limiter
 from .realtime_types import UnifiedRealtimeQuote, ChipDistribution, RealtimeSource, safe_float, safe_int
-from .us_index_mapping import is_us_index_code, is_us_stock_code
 
 # ── Re-export module-level API from split sub-modules ────────────────────
 from .circuit_breaker import get_realtime_circuit_breaker, RealtimeCircuitBreaker
@@ -73,9 +72,7 @@ from .fetchers.kline import (
     fetch_stock_kline_history as _fetch_stock_kline_history,
     _normalize_data as _normalize_kline_data,
     get_main_indices as _fetch_main_indices,
-    _is_us_code,
-    _is_hk_code,
-    _is_etf_code,
+    _is_hk_code as _canonical_is_hk_code,
     _to_sina_tx_symbol,
 )
 from .fetchers.market import (
@@ -431,32 +428,9 @@ class AkshareFetcher:
 _realtime_circuit_breaker = get_realtime_circuit_breaker()
 
 
-# ── Legacy helpers (kept for test compatibility) ─────────────────────────
-
-
-def _is_etf_code(stock_code: str) -> bool:
-    etf_prefixes = ("51", "52", "56", "58", "15", "16", "18")
-    code = stock_code.strip().split(".")[0]
-    return code.startswith(etf_prefixes) and len(code) == 6
-
-
-def _is_hk_code(stock_code: str) -> bool:
-    code = stock_code.strip().lower()
-    if code.endswith(".hk"):
-        numeric_part = code[:-3]
-        return numeric_part.isdigit() and 1 <= len(numeric_part) <= 5
-    if code.startswith("hk"):
-        numeric_part = code[2:]
-        return numeric_part.isdigit() and 1 <= len(numeric_part) <= 5
-    return code.isdigit() and len(code) == 5
-
-
 def is_hk_stock_code(stock_code: str) -> bool:
-    return _is_hk_code(stock_code)
-
-
-def _is_us_code(stock_code: str) -> bool:
-    return is_us_stock_code(stock_code)
+    """Public compatibility wrapper for Hong Kong stock code detection."""
+    return _canonical_is_hk_code(stock_code)
 
 
 if __name__ == "__main__":

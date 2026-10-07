@@ -12,7 +12,7 @@ export type KnowledgeBaseItem = {
   updatedAt: string | null;
 };
 
-export type KnowledgeBaseTask = {
+type KnowledgeBaseTask = {
   id: string;
   operation: string;
   status: string;
@@ -88,7 +88,7 @@ export type KnowledgeBaseSearchResult = {
   rrfScore?: number;
 };
 
-export type KnowledgeBaseModelServiceResult = {
+type KnowledgeBaseModelServiceResult = {
   success: boolean;
   model: string;
   message: string;

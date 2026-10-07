@@ -2,7 +2,7 @@ import apiClient from './index';
 
 // ── Feed item（纯文本正文、稳定条目引用和会话资源）──────────────────────
 
-export interface RssAttachment {
+interface RssAttachment {
   url: string;
   mime_type: string;
   title?: string;
@@ -10,7 +10,7 @@ export interface RssAttachment {
   duration_in_seconds?: number | null;
 }
 
-export interface RssItemRef {
+interface RssItemRef {
   route_path: string;
   params: Record<string, unknown>;
   options: Record<string, unknown>;
@@ -134,7 +134,7 @@ export interface RssFeedBySpecResponse {
 
 export type RssFeedFormat = 'rss' | 'atom' | 'json' | 'rss3';
 
-export interface HtmlTransformParams {
+interface HtmlTransformParams {
   url: string;
   title?: string;
   item?: string;
@@ -189,7 +189,7 @@ export interface GelonghuiSubjectsResponse {
 }
 
 /** 南华期货研报二级分类（供 /nanhua/report/:type1/:type2 路由选参）。 */
-export interface NanhuaReportType2 {
+interface NanhuaReportType2 {
   type: string;
   name: string;
 }

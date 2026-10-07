@@ -27,7 +27,7 @@ export const uniqueStrings = (values: string[]) => Array.from(new Set(values));
 export const record = (value: unknown): Record<string, unknown> => (
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 );
-export const errorString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+const errorString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 export const errorStringList = (value: unknown): string[] => (
   Array.isArray(value)
     ? value.flatMap(errorStringList)
@@ -89,8 +89,8 @@ export const errorCodeFrom = (value: unknown) => {
     || errorString(runtimeError.error_code);
 };
 export const isHttpUrl = (value: string) => /^https?:\/\//i.test(value);
-export const REFERENCE_ONLY_TOOLS = new Set(['read_company_research_reports_akshare', 'read_company_news_akshare']);
-export const CONTENT_READER_TOOLS = new Set(['read_web_source', 'read_text_document', 'read_rss_item', 'read_registered_rss_item']);
+const REFERENCE_ONLY_TOOLS = new Set(['read_company_research_reports_akshare', 'read_company_news_akshare']);
+const CONTENT_READER_TOOLS = new Set(['read_web_source', 'read_text_document', 'read_rss_item', 'read_registered_rss_item']);
 export const accessModeFor = (toolName: string, result?: Record<string, unknown>) => {
   const access = record(field(result, ['contentAccess', 'content_access', 'retrievalAudit', 'retrieval_audit']));
   const explicit = text(field(access, ['mode', 'accessMode', 'access_mode']));
@@ -244,7 +244,7 @@ export const findStepForTool = (
   const sameTool = steps.filter((step) => text(step.toolName) === toolName || text(step.tool_name) === toolName);
   return sameTool.length === 1 ? sameTool[0] : undefined;
 };
-export const violationLabel = (code: string) => ({
+const violationLabel = (code: string) => ({
   execution_contract_failed: '部分执行步骤没有完整结束',
   evidence_link_contract_failed: '部分结论没有完成逐条资料对应',
   answer_contract_failed: '回答内容没有完全满足要求',

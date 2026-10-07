@@ -1,4 +1,4 @@
-import type { ExportedMessageRepository } from '@assistant-ui/core';
+import type { ExportedMessageRepository } from '@assistant-ui/react';
 
 type ExportedMessageItem = ExportedMessageRepository['messages'][number];
 

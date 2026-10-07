@@ -79,5 +79,3 @@ export const AgentPromptForm: React.FC<AgentPromptFormProps> = ({
     </form>
   );
 };
-
-export default AgentPromptForm;

@@ -11,9 +11,9 @@ import type {
 import { Input } from './Input';
 import { Checkbox } from '../ui/checkbox';
 
-export type FormFieldLayout = 'inline' | 'stacked';
+type FormFieldLayout = 'inline' | 'stacked';
 
-export interface FormFieldProps {
+interface FormFieldProps {
   label?: ReactNode;
   htmlFor?: string;
   children: ReactNode;
@@ -26,7 +26,7 @@ export interface FormFieldProps {
 }
 
 /** Shared label/control layout for compact settings forms and regular forms. */
-export function FormField({
+function FormField({
   label,
   htmlFor,
   children,

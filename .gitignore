@@ -109,7 +109,6 @@ services/searxng/.venv/
 # Node.js (vitest 缓存等)
 /node_modules/
 
-docs
 .claude/plans
 
 # 运行时产物（截图、临时输出）

@@ -132,7 +132,6 @@ def _get_stock_realtime_quote_em(stock_code: str) -> Optional[UnifiedRealtimeQuo
     import concurrent.futures
 
     try:
-        current_time = time.time()
         df = realtime_cache.get()
         cache_hit = df is not None
         if cache_hit:
@@ -140,7 +139,6 @@ def _get_stock_realtime_quote_em(stock_code: str) -> Optional[UnifiedRealtimeQuo
             logger.debug("[缓存命中] A股实时行情(东财) - 缓存年龄 %ds/%ds", cache_age, realtime_cache.ttl)
         else:
             logger.info("[缓存未命中] 触发全量刷新 A股实时行情(东财)")
-            last_error: Optional[Exception] = None
             df = None
             _EM_TIMEOUT = 20
 
@@ -155,12 +153,10 @@ def _get_stock_realtime_quote_em(stock_code: str) -> Optional[UnifiedRealtimeQuo
                 api_elapsed = _time.time() - api_start
                 logger.info("[API返回] ak.stock_zh_a_spot_em 成功: 返回 %d 只股票, 耗时 %.2fs", len(df), api_elapsed)
             except concurrent.futures.TimeoutError:
-                last_error = TimeoutError(f"ak.stock_zh_a_spot_em 超时 ({_EM_TIMEOUT}s)")
                 api_elapsed = _time.time() - api_start
                 logger.info("[API超时] ak.stock_zh_a_spot_em 超时 (耗时 %.2fs)，走降级源", api_elapsed)
                 df = None
             except Exception as e:
-                last_error = e
                 api_elapsed = _time.time() - api_start
                 logger.info("[API错误] ak.stock_zh_a_spot_em 失败: %s (耗时 %.2fs)", e, api_elapsed)
 

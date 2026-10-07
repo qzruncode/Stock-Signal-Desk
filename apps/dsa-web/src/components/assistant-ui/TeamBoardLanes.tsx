@@ -11,7 +11,7 @@ import { recoveryStatusLabel } from './TeamRuntimeErrors';
 import { Tooltip } from '../common/Tooltip';
 import { teamRoleLabel, type TeamBoardModel, type TeamMemberFlowItem, type TeamModelProjection, type TeamMemberModel, type TeamMemberStatus, type TeamToolRecord } from './TeamBoardUtils';
 import { terminalStatuses, statusLabel, statusProblem, statusClassName, roleIconClassName, toolPartProps } from './TeamBoardViewUtils';
-export const StatusIcon: FC<{ status: TeamMemberStatus; className?: string }> = ({ status, className }) => {
+const StatusIcon: FC<{ status: TeamMemberStatus; className?: string }> = ({ status, className }) => {
   if (statusProblem(status)) {
     return <CircleAlertIcon className={className} aria-hidden="true" />;
   }
@@ -63,7 +63,7 @@ export const RuntimeErrorLine: FC<{ event?: TeamToolRecord['runtimeError'] }> = 
   );
 };
 
-export const TeamToolList: FC<{
+const TeamToolList: FC<{
   tools: TeamToolRecord[];
 }> = ({ tools }) => {
   const [expanded, setExpanded] = useState(false);
@@ -122,7 +122,7 @@ export const TeamToolList: FC<{
   );
 };
 
-export const TeamMemberFlow: FC<{
+const TeamMemberFlow: FC<{
   flow: TeamMemberFlowItem[];
   animate: boolean;
 }> = ({ flow, animate }) => {
@@ -296,7 +296,7 @@ export const TeamMemberCard: FC<{
   );
 };
 
-export const TeamReviewFlow: FC<{
+const TeamReviewFlow: FC<{
   projections: TeamModelProjection[];
   animate: boolean;
 }> = ({ projections, animate }) => {
